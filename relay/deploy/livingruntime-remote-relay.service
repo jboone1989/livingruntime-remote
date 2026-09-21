@@ -1,0 +1,23 @@
+[Unit]
+Description=LivingRuntime Remote Public Relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=livingruntime-remote
+Group=livingruntime-remote
+WorkingDirectory=/opt/livingruntime-remote-relay/current
+EnvironmentFile=/etc/livingruntime-remote-relay.env
+ExecStart=/opt/livingruntime-remote-relay/venv/bin/python /opt/livingruntime-remote-relay/current/server.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/livingruntime-remote-relay
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

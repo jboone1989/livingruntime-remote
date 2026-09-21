@@ -1,0 +1,70 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  plugin:
+    name: Plugin MCP tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile plugin sources
+        run: |
+          python -m py_compile \
+            plugin/scripts/bridge.py \
+            plugin/scripts/launcher.py \
+            plugin/scripts/configure.py \
+            plugin/scripts/configmodel.py \
+            plugin/scripts/install-personal.py \
+            plugin/scripts/tunnel.py \
+            plugin/scripts/relay_agent.py \
+            plugin/scripts/connector.py \
+            plugin/scripts/contract.py \
+            plugin/scripts/selfcheck.py
+      - name: Validate plugin manifests
+        run: python plugin/scripts/selfcheck.py
+      - name: Install plugin MCP runtime
+        run: python -m pip install --disable-pip-version-check -r plugin/requirements.txt
+      - name: Run plugin tests
+        run: python -m unittest discover -s plugin/tests -v
+
+  gateway:
+    name: Gateway tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile gateway sources
+        run: python -m py_compile gateway/policy.py gateway/server.py gateway/smoke_test.py
+      - name: Run policy tests
+        working-directory: gateway
+        run: python -m unittest -v test_policy.py
+      - name: Install gateway MCP runtime
+        run: python -m pip install --disable-pip-version-check "mcp==2.2.0" "uvicorn>=0.35,<1" httpx
+      - name: Run gateway tests
+        working-directory: gateway
+        run: python -m unittest -v test_discovery.py
+
+  relay:
+    name: Public relay tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install relay runtime
+        run: python -m pip install --disable-pip-version-check -r relay/requirements.txt
+      - name: Compile relay sources
+        run: python -m py_compile relay/auth.py relay/embedded_auth.py relay/store.py relay/server.py
+      - name: Run relay tests
+        working-directory: relay
+        run: python -m unittest discover -v

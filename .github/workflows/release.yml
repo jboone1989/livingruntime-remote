@@ -1,0 +1,77 @@
+name: connector-release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.asset }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            asset: livingruntime-remote-connector-windows-amd64.exe
+          - runner: ubuntu-latest
+            asset: livingruntime-remote-connector-linux-amd64
+          - runner: ubuntu-24.04-arm
+            asset: livingruntime-remote-connector-linux-arm64
+          - runner: macos-15-intel
+            asset: livingruntime-remote-connector-macos-amd64
+          - runner: macos-latest
+            asset: livingruntime-remote-connector-macos-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build dependencies
+        run: python -m pip install --disable-pip-version-check -r plugin/requirements.txt "pyinstaller>=6,<7"
+      - name: Build single-file connector
+        run: >
+          python -m PyInstaller
+          --clean
+          --noconfirm
+          --onefile
+          --name livingruntime-remote-connector
+          --paths plugin/scripts
+          plugin/scripts/connector.py
+      - name: Smoke-test packaged connector
+        run: >
+          python -c "from pathlib import Path; import os,subprocess;
+          p=Path('dist')/('livingruntime-remote-connector.exe' if os.name=='nt' else 'livingruntime-remote-connector');
+          subprocess.check_call([str(p.resolve()),'--version'])"
+      - name: Normalize release asset name
+        env:
+          ASSET_NAME: ${{ matrix.asset }}
+        run: >
+          python -c "from pathlib import Path; import os,shutil;
+          src=Path('dist')/('livingruntime-remote-connector.exe' if os.name=='nt' else 'livingruntime-remote-connector');
+          dst=Path('dist')/os.environ['ASSET_NAME'];
+          shutil.move(src,dst)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true

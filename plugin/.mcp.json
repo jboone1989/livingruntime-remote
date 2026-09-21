@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "livingruntime_remote": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["./scripts/launcher.py"],
+      "cwd": "."
+    }
+  }
+}

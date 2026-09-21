@@ -1,0 +1,28 @@
+# Reference unit. install.sh writes the live unit with the selected user and port.
+[Unit]
+Description=LivingRuntime Remote MCP Gateway
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/livingruntime/remote-mcp-gateway
+EnvironmentFile=/etc/remote-mcp-gateway.env
+ExecStart=/opt/livingruntime/remote-mcp-gateway/.venv/bin/uvicorn server:app --host 127.0.0.1 --port 8765 --workers 1 --no-access-log
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
