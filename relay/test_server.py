@@ -29,6 +29,9 @@ from store import RelayStore
 class RelayServerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.demo_path = Path(self.tmp.name) / "demo.mp4"
+        self.demo_path.write_bytes(b"fake-mp4")
+        os.environ["LIVINGRUNTIME_DEMO_RECORDING_PATH"] = str(self.demo_path)
         self.store = RelayStore(str(Path(self.tmp.name) / "relay.sqlite3"))
         self.app = server.create_app(self.store)
 
@@ -97,6 +100,13 @@ class RelayServerTests(unittest.TestCase):
             self.assertEqual(support.status_code, 200)
             self.assertIn("connection_status", support.text)
             self.assertIn("capabilities", support.text)
+
+            demo = client.get("/demo")
+            self.assertEqual(demo.status_code, 200)
+            self.assertIn("/demo.mp4", demo.text)
+            recording = client.get("/demo.mp4")
+            self.assertEqual(recording.status_code, 200)
+            self.assertEqual(recording.headers["content-type"], "video/mp4")
 
     def test_unauthenticated_mcp_returns_oauth_resource_challenge(self):
         with TestClient(self.app) as client:

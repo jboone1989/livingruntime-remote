@@ -26,6 +26,19 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(openai["interface"]["displayName"], "LivingRuntime Remote")
         self.assertTrue((self.root / "assets" / "logo.png").exists())
 
+    def test_openai_listing_fields_meet_directory_limits(self) -> None:
+        plugin = json.loads((self.root / "plugin.json").read_text(encoding="utf-8"))
+        interface = plugin["extensions"]["com.openai"]["interface"]
+        self.assertLessEqual(len(interface["displayName"]), 30)
+        self.assertLessEqual(len(interface["shortDescription"]), 30)
+        prompts = interface["defaultPrompt"]
+        self.assertLessEqual(len(prompts), 3)
+        for prompt in prompts:
+            self.assertLessEqual(len(prompt), 128)
+            self.assertNotIn("@", prompt)
+        color = interface["brandColor"]
+        self.assertRegex(color, r"^#[0-9A-Fa-f]{6}$")
+
     def test_app_mapping_does_not_invent_a_chatgpt_id(self) -> None:
         apps = json.loads((self.root / ".app.json").read_text(encoding="utf-8"))
         self.assertEqual(apps, {"apps": {}})

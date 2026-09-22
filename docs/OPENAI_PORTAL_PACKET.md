@@ -16,7 +16,7 @@ Use this file as the source of truth when creating the public **With MCP** submi
 
 ### Short description
 
-Operate user-controlled development machines through bounded, auditable remote tools.
+Bounded remote host tools
 
 ### Long description
 
@@ -38,6 +38,8 @@ LivingRuntime Remote lets ChatGPT and Codex operate development machines the use
 - **Authorization-server metadata:** https://remote.livingruntime.com/.well-known/oauth-authorization-server
 - **OIDC metadata:** https://remote.livingruntime.com/.well-known/openid-configuration
 - **Custom UI:** none
+- **Demo recording URL:** https://remote.livingruntime.com/demo.mp4
+- **Demo page:** https://remote.livingruntime.com/demo
 
 ## Reviewer account
 
@@ -50,10 +52,9 @@ LivingRuntime Remote lets ChatGPT and Codex operate development machines the use
 
 ## Starter prompts
 
-1. Check whether my LivingRuntime Remote device is connected, then list the projects I can access.
-2. Read README.md from one of my configured projects and summarize it.
-3. Show the Git status of one of my configured projects and explain any uncommitted changes.
-4. Check recent logs for an allowlisted service and help me identify the relevant source file.
+1. Check whether my remote device is connected, then list the projects I can access.
+2. Read README.md from a configured project and summarize it.
+3. Show the Git status of a configured project and explain any uncommitted changes.
 
 ## Tests
 
@@ -92,6 +93,7 @@ These cannot be selected safely or accurately by repository automation:
 ## Final pre-submit checks
 
 - Production health returns the current release.
+- Demo recording URL returns a public MP4 over HTTPS.
 - OAuth sign-in, token exchange, UserInfo, and authenticated MCP access succeed.
 - Reviewer Connector is online.
 - Reviewer `connection_status` exposes only the review root.

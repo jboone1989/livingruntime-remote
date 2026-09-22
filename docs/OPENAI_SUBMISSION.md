@@ -14,6 +14,8 @@ LivingRuntime Remote is prepared as a remote-MCP-only plugin submission.
 - Privacy: `https://remote.livingruntime.com/privacy`
 - Terms: `https://remote.livingruntime.com/terms`
 - Install: `https://remote.livingruntime.com/install`
+- Demo recording: `https://remote.livingruntime.com/demo.mp4`
+- Demo page: `https://remote.livingruntime.com/demo`
 - Source: `https://github.com/jboone1989/livingruntime-remote`
 - Submission import file: `plugin/chatgpt-app-submission.json`
 

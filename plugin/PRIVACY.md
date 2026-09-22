@@ -1,37 +1,32 @@
 # Privacy policy
 
-LivingRuntime Remote connects ChatGPT-compatible clients to machines and repositories that the user is authorized to control.
+LivingRuntime Remote connects ChatGPT and other compatible MCP clients to machines that the user controls through a paired Connector.
 
-## Data handled
+## Data the service handles
 
-LivingRuntime Remote may process:
+- Account identity data required for OAuth sign-in, including email address and verification state.
+- Non-secret Connector metadata such as the Connector name, online state, configured workspace roots, project aliases, and allowlisted service names.
+- Tool inputs and outputs for bounded file, Git, command, process, service, patch, and log operations requested by the user.
+- Pairing and session records required to route requests to the user's paired Connector.
+- Local audit records written on the Connector machine for Remote operations.
 
-- Account identity needed for OAuth sign-in, including email address and verification state.
-- OAuth client metadata and hashed access/refresh-token values with their scopes and expiration times. Raw bearer and refresh tokens are not stored.
-- Pairing and device metadata such as device ID, connector name, creation time, and last-seen time. Device bearer tokens are stored only as hashes by the relay.
-- Tool inputs and outputs required to perform bounded file, Git, process, service, and log operations.
-- Non-secret connection metadata configured on the Connector machine, such as an SSH host alias, allowed workspace roots, project aliases, and allowlisted systemd unit names.
-- Local audit records written on the user's Connector or target machine.
+## Credentials and secrets
 
-Successful relay task results are consumed and deleted after delivery to the requesting client. Stale queued, claimed, or completed relay tasks are eligible for cleanup after 24 hours.
+LivingRuntime Remote does not store SSH passwords or SSH private keys. Those remain in the user's existing SSH configuration on the Connector machine.
 
-## Credentials
+OAuth access and refresh tokens are stored by the LivingRuntime Remote authorization service only as required to maintain authenticated sessions. Connector device credentials are stored locally on the Connector; the relay stores only the information required to authenticate and route the paired device.
 
-LivingRuntime Remote does not store SSH passwords or SSH private keys on the public relay. SSH credentials remain in the user's existing SSH configuration on the Connector machine.
-
-OAuth account passwords are stored only as salted scrypt hashes. Raw OAuth bearer, refresh, and device tokens are not stored in relay databases.
+Do not put secrets in tool arguments or file contents unless you intend those values to be sent through the connected client as part of the requested operation.
 
 ## Sharing
 
-When LivingRuntime Remote is used with ChatGPT or another compatible client, tool arguments and results travel through that client's normal MCP request path and through the LivingRuntime Remote relay so the paired Connector can execute the requested bounded operation.
+When LivingRuntime Remote is used with ChatGPT, tool arguments and results travel through the normal OpenAI app/MCP request path. The Connector then performs the requested bounded operation on the user's machine or SSH-reachable host.
 
-Do not place secrets in tool arguments or file contents that you do not want transmitted through the connected client and relay.
+LivingRuntime Remote does not sell user data.
 
-## Retention and control
+## Retention
 
-OAuth account records and paired-device records remain until the account or device is revoked or removed. Expired OAuth authorization state and token hashes are cleaned up by the service. Local configuration and audit logs remain on the user's machines until deleted.
-
-ChatGPT-side retention follows the user's OpenAI account or workspace settings.
+OAuth, pairing, and relay state is retained only as needed to provide active Remote sessions and device pairing. Users can revoke a paired Connector with `disconnect_device`. Local configuration and audit logs remain on the user's machines until they delete them. ChatGPT-side retention follows the user's OpenAI account or workspace settings.
 
 ## Contact
 
