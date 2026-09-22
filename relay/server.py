@@ -24,7 +24,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.10"
+VERSION = "0.4.11"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
 READ = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", *IDENTITY_SCOPES]}]}
@@ -182,7 +182,7 @@ button{{width:100%;margin-top:20px;padding:12px;border:0;border-radius:10px;font
         body,
         headers={
             "cache-control": "no-store",
-            "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
             "x-content-type-options": "nosniff",
         },
     )

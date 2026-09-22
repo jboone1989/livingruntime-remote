@@ -1,6 +1,6 @@
 # LivingRuntime Remote release checklist
 
-Identity is `livingruntime.remote`. Current public release version: `0.4.10`.
+Identity is `livingruntime.remote`. Current public release version: `0.4.11`.
 
 ## Capability and runtime
 
@@ -21,7 +21,7 @@ Identity is `livingruntime.remote`. Current public release version: `0.4.10`.
 - [x] offline devices are detected before enqueue.
 - [x] unclaimed timed-out work is cancelled.
 
-## Connector 0.4.10
+## Connector 0.4.11
 
 - [x] standalone Connector CLI.
 - [x] no Python requirement for release binaries.
@@ -43,7 +43,7 @@ Identity is `livingruntime.remote`. Current public release version: `0.4.10`.
 - [x] POSIX installer syntax check.
 - [x] local PyInstaller Linux single-file build.
 - [x] packaged Connector `--version` and `status` smoke test.
-- [x] GitHub v0.4.10 release assets are available for all five target platforms.
+- [x] GitHub v0.4.11 release assets are available for all five target platforms.
 - [x] production `remote.livingruntime.com` DNS/TLS is active.
 - [ ] Windows Authenticode signing credential configured.
 - [ ] Apple Developer ID/notarization credentials configured.
