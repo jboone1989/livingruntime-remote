@@ -1,6 +1,6 @@
 # LivingRuntime Remote release checklist
 
-Identity is `livingruntime.remote`. Current public release version: `0.4.6`.
+Identity is `livingruntime.remote`. Current public release version: `0.4.7`.
 
 ## Capability and runtime
 
@@ -21,7 +21,7 @@ Identity is `livingruntime.remote`. Current public release version: `0.4.6`.
 - [x] offline devices are detected before enqueue.
 - [x] unclaimed timed-out work is cancelled.
 
-## Connector 0.4.6
+## Connector 0.4.7
 
 - [x] standalone Connector CLI.
 - [x] no Python requirement for release binaries.

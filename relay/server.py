@@ -24,7 +24,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.6"
+VERSION = "0.4.7"
 IDENTITY_SCOPES = ["openid", "email"]
 READ = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", *IDENTITY_SCOPES]}]}
 WRITE = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", "remote:write", *IDENTITY_SCOPES]}]}
@@ -649,7 +649,13 @@ nav a{{margin-right:18px}}
         token = embedded_provider.store.load_access_token(
             authorization.split(" ", 1)[1].strip()
         )
-        if token is None or "openid" not in token.scopes:
+        if token is None:
+            return JSONResponse(
+                {"error": "invalid_token"},
+                status_code=401,
+                headers={"www-authenticate": 'Bearer error="invalid_token"'},
+            )
+        if "openid" not in token.scopes:
             return JSONResponse(
                 {"error": "insufficient_scope"},
                 status_code=403,

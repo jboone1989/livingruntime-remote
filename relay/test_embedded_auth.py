@@ -233,6 +233,11 @@ class EmbeddedOAuthTests(unittest.TestCase):
                 json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
             )
             self.assertEqual(blocked.status_code, 401)
+            revoked_userinfo = client.get(
+                "/userinfo", headers={"authorization": "Bearer " + revoked_access}
+            )
+            self.assertEqual(revoked_userinfo.status_code, 401)
+            self.assertEqual(revoked_userinfo.json()["error"], "invalid_token")
 
     def test_scope_validation_rejects_unknown_scope(self):
         with TestClient(self.app) as client:
