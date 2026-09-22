@@ -19,24 +19,28 @@ The cloud relay stores OAuth subject/device bindings, hashed device tokens, shor
 
 ## OAuth requirements
 
-Use an external OAuth/OIDC provider that supports the ChatGPT plugin OAuth requirements. Configure:
+Production uses the embedded OAuth/OIDC mode:
 
 ```text
-LIVINGRUNTIME_RELAY_ISSUER=https://YOUR-AUTH-ISSUER
+LIVINGRUNTIME_AUTH_MODE=embedded
+LIVINGRUNTIME_RELAY_ISSUER=https://remote.livingruntime.com
 LIVINGRUNTIME_RELAY_AUDIENCE=https://remote.livingruntime.com/mcp
-LIVINGRUNTIME_RELAY_JWKS_URL=https://YOUR-AUTH-ISSUER/.well-known/jwks.json
 LIVINGRUNTIME_RELAY_RESOURCE_URL=https://remote.livingruntime.com/mcp
-LIVINGRUNTIME_RELAY_DOCS_URL=https://livingruntime.com/remote
+LIVINGRUNTIME_RELAY_DOCS_URL=https://remote.livingruntime.com/support
 OPENAI_APPS_CHALLENGE=<domain-verification-token>
 ```
 
-Tokens must include `remote:read`; modifying tools additionally require `remote:write`. The MCP SDK serves protected-resource metadata at:
+The embedded provider supports dynamic public-client registration, authorization code + PKCE, refresh-token rotation, OIDC discovery, UserInfo, and the standard `offline_access` scope used by ChatGPT to maintain long-lived connections. Tokens must include `remote:read`; modifying tools additionally require `remote:write`. `openid` and `email` provide the authenticated identity used by the relay.
+
+Protected-resource metadata is served at:
 
 ```text
 /.well-known/oauth-protected-resource/mcp
 ```
 
-The Python service stays on loopback and enforces a basic per-client `/device/pair` attempt limit. The HTTPS edge should add a second rate-limit layer and terminate TLS.
+The service also supports an external OAuth/OIDC verifier mode when an operator deliberately configures one. SSH credentials never move into either OAuth mode.
+
+The Python service stays on loopback and enforces a basic per-client `/device/pair` attempt limit. The HTTPS edge terminates TLS and should provide an additional abuse/rate-limit layer.
 
 ## Run
 

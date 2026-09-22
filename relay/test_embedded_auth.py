@@ -57,7 +57,7 @@ class EmbeddedOAuthTests(unittest.TestCase):
         self.env.stop()
         self.tmp.cleanup()
 
-    def register(self, client: TestClient, scope: str = "remote:read remote:write openid email") -> dict:
+    def register(self, client: TestClient, scope: str = "remote:read remote:write openid email offline_access") -> dict:
         response = client.post(
             "/register",
             json={
@@ -77,7 +77,7 @@ class EmbeddedOAuthTests(unittest.TestCase):
         client: TestClient,
         client_id: str,
         *,
-        scope: str = "remote:read remote:write openid email",
+        scope: str = "remote:read remote:write openid email offline_access",
     ) -> tuple[str, str]:
         verifier = "pkce-verifier-" + "x" * 48
         response = client.get(
@@ -150,7 +150,7 @@ class EmbeddedOAuthTests(unittest.TestCase):
             self.assertEqual(meta["revocation_endpoint_auth_methods_supported"], ["none"])
             self.assertEqual(
                 set(meta["scopes_supported"]),
-                {"remote:read", "remote:write", "openid", "email"},
+                {"remote:read", "remote:write", "openid", "email", "offline_access"},
             )
             self.assertTrue(meta["userinfo_endpoint"].endswith("/userinfo"))
             oidc = client.get("/.well-known/openid-configuration")
@@ -161,7 +161,7 @@ class EmbeddedOAuthTests(unittest.TestCase):
             self.assertEqual(resource_meta.status_code, 200)
             self.assertEqual(
                 set(resource_meta.json()["scopes_supported"]),
-                {"remote:read", "remote:write", "openid", "email"},
+                {"remote:read", "remote:write", "openid", "email", "offline_access"},
             )
 
             registration = self.register(client)
@@ -175,7 +175,7 @@ class EmbeddedOAuthTests(unittest.TestCase):
             refresh = tokens["refresh_token"]
             self.assertEqual(
                 set(tokens["scope"].split()),
-                {"remote:read", "remote:write", "openid", "email"},
+                {"remote:read", "remote:write", "openid", "email", "offline_access"},
             )
 
             userinfo = client.get(

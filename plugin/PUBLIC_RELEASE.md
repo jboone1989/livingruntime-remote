@@ -17,7 +17,7 @@ ChatGPT
 
 Connector binaries are built by `.github/workflows/release.yml` for Windows x64, Linux x64/ARM64, and macOS Intel/Apple Silicon. Tags use `vX.Y.Z`. The repository is public and release assets are downloadable without repository credentials.
 
-## 0.4.7 release readiness
+## 0.4.8 release readiness
 
 Implemented:
 
@@ -25,7 +25,7 @@ Implemented:
 - Let's Encrypt TLS on the branded hostname
 - OAuth issuer and MCP resource bound to the branded domain
 - OAuth 2.1 authorization-code + PKCE and dynamic client registration
-- `openid` / `email` scopes, OIDC discovery, and UserInfo for workspace-domain restrictions
+- `openid` / `email` scopes, OIDC discovery, UserInfo, and `offline_access` for refreshable ChatGPT sessions
 - branded home/install/support/privacy/terms routes
 - five-platform Connector releases
 - standalone public repository and release workflow

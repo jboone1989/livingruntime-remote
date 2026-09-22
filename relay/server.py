@@ -24,11 +24,12 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.7"
+VERSION = "0.4.8"
 IDENTITY_SCOPES = ["openid", "email"]
+SESSION_SCOPES = ["offline_access"]
 READ = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", *IDENTITY_SCOPES]}]}
 WRITE = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", "remote:write", *IDENTITY_SCOPES]}]}
-SUPPORTED_SCOPES = ["remote:read", "remote:write", *IDENTITY_SCOPES]
+SUPPORTED_SCOPES = ["remote:read", "remote:write", *IDENTITY_SCOPES, *SESSION_SCOPES]
 
 
 class PairRateLimiter:

@@ -1,6 +1,6 @@
 # LivingRuntime Remote release checklist
 
-Identity is `livingruntime.remote`. Current public release version: `0.4.7`.
+Identity is `livingruntime.remote`. Current public release version: `0.4.8`.
 
 ## Capability and runtime
 
@@ -13,7 +13,7 @@ Identity is `livingruntime.remote`. Current public release version: `0.4.7`.
 ## Public auth and pairing
 
 - [x] OAuth + PKCE metadata and token flow.
-- [x] OIDC discovery, `openid` / `email` scopes, and UserInfo with verified email.
+- [x] OIDC discovery, `openid` / `email` scopes, UserInfo with verified email, and `offline_access` for refreshable ChatGPT sessions.
 - [x] protected MCP resource metadata.
 - [x] one-time device pairing and revocation.
 - [x] device tokens are stored hashed server-side.
@@ -21,7 +21,7 @@ Identity is `livingruntime.remote`. Current public release version: `0.4.7`.
 - [x] offline devices are detected before enqueue.
 - [x] unclaimed timed-out work is cancelled.
 
-## Connector 0.4.7
+## Connector 0.4.8
 
 - [x] standalone Connector CLI.
 - [x] no Python requirement for release binaries.
@@ -44,7 +44,7 @@ Identity is `livingruntime.remote`. Current public release version: `0.4.7`.
 - [x] local PyInstaller Linux single-file build.
 - [x] packaged Connector `--version` and `status` smoke test.
 - [ ] GitHub tag build succeeds on all five target runners.
-- [ ] production `remote.livingruntime.com` DNS/TLS is active.
+- [x] production `remote.livingruntime.com` DNS/TLS is active.
 - [ ] Windows Authenticode signing credential configured.
 - [ ] Apple Developer ID/notarization credentials configured.
 - [ ] final ChatGPT marketplace/domain verification completed.
