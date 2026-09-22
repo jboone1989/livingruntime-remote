@@ -17,7 +17,7 @@ ChatGPT
 
 Connector binaries are built by `.github/workflows/release.yml` for Windows x64, Linux x64/ARM64, and macOS Intel/Apple Silicon. Tags use `vX.Y.Z`. The repository is public and release assets are downloadable without repository credentials.
 
-## 0.4.13 release readiness
+## 0.4.14 release readiness
 
 Implemented:
 
@@ -33,8 +33,7 @@ Implemented:
 ## Remaining launch work
 
 - complete the OpenAI portal domain-verification challenge when the portal provides its token
-- provide reviewer-ready demo credentials in the submission portal
-- scan tools in the submission portal and resolve any portal-reported metadata issues
+- scan the production MCP tools in the submission portal and resolve any portal-reported metadata issues
 - submit for ChatGPT/Codex plugin review
 - Windows Authenticode signing credentials
 - Apple Developer ID/notarization credentials

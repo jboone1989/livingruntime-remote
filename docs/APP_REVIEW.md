@@ -13,7 +13,7 @@ LivingRuntime Remote keeps a dedicated review account and Connector so directory
 
 ## Reviewer account
 
-The reviewer username is `reviewer@livingruntime.com`.
+The reviewer username is `openai-review@livingruntime.com`.
 
 The password is intentionally **not** stored in this repository. The production host keeps the current review credential in a root-only operational file and it should be copied into the OpenAI submission form only when submitting or updating the app.
 

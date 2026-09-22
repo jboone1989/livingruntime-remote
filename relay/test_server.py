@@ -39,7 +39,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.13")
+            self.assertEqual(health.json()["version"], "0.4.14")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -85,6 +85,8 @@ class RelayServerTests(unittest.TestCase):
             self.assertEqual(privacy.status_code, 200)
             self.assertIn("Privacy Policy", privacy.text)
             self.assertIn("does not store SSH passwords", privacy.text)
+            self.assertIn("OAuth passwords are stored only as salted scrypt hashes", privacy.text)
+            self.assertIn("stale task records are eligible for cleanup after 24 hours", privacy.text)
 
             terms = client.get("/terms")
             self.assertEqual(terms.status_code, 200)

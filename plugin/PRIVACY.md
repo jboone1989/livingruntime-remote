@@ -1,27 +1,37 @@
 # Privacy policy
 
-LivingRuntime Remote is a private development plugin/app for operating a host you already control.
+LivingRuntime Remote connects ChatGPT-compatible clients to machines and repositories that the user is authorized to control.
 
-## Data the plugin handles
+## Data handled
 
-- Non-secret connection metadata that you configure locally, such as an SSH host alias, workspace roots, systemd unit names, and an optional OpenAI `tunnel_` identifier.
-- Tool inputs and outputs for file, Git, process, service, and log operations on that host.
-- Local audit records written on the machine that runs the MCP server, typically under `~/.livingruntime/remote-audit.jsonl` or the gateway audit log.
+LivingRuntime Remote may process:
 
-## Data the plugin does not handle
+- Account identity needed for OAuth sign-in, including email address and verification state.
+- OAuth client metadata and hashed access/refresh-token values with their scopes and expiration times. Raw bearer and refresh tokens are not stored.
+- Pairing and device metadata such as device ID, connector name, creation time, and last-seen time. Device bearer tokens are stored only as hashes by the relay.
+- Tool inputs and outputs required to perform bounded file, Git, process, service, and log operations.
+- Non-secret connection metadata configured on the Connector machine, such as an SSH host alias, allowed workspace roots, project aliases, and allowlisted systemd unit names.
+- Local audit records written on the user's Connector or target machine.
 
-- SSH passwords
-- SSH private keys
-- OpenAI runtime API keys, which must stay in environment variables such as `CONTROL_PLANE_API_KEY`
-- Payment data, government identifiers, or biometric data
+Successful relay task results are consumed and deleted after delivery to the requesting client. Stale queued, claimed, or completed relay tasks are eligible for cleanup after 24 hours.
+
+## Credentials
+
+LivingRuntime Remote does not store SSH passwords or SSH private keys on the public relay. SSH credentials remain in the user's existing SSH configuration on the Connector machine.
+
+OAuth account passwords are stored only as salted scrypt hashes. Raw OAuth bearer, refresh, and device tokens are not stored in relay databases.
 
 ## Sharing
 
-When you connect the MCP server to ChatGPT through Secure MCP Tunnel or a public HTTPS endpoint, tool arguments and results are sent to OpenAI as part of that product’s normal app/MCP request path. The private MCP server and SSH endpoint stay inside your network. Do not put secrets in tool arguments or file contents that you do not want included in that path.
+When LivingRuntime Remote is used with ChatGPT or another compatible client, tool arguments and results travel through that client's normal MCP request path and through the LivingRuntime Remote relay so the paired Connector can execute the requested bounded operation.
 
-## Retention
+Do not place secrets in tool arguments or file contents that you do not want transmitted through the connected client and relay.
 
-Local configuration and audit logs remain on your machines until you delete them. ChatGPT retention follows your OpenAI account and workspace settings.
+## Retention and control
+
+OAuth account records and paired-device records remain until the account or device is revoked or removed. Expired OAuth authorization state and token hashes are cleaned up by the service. Local configuration and audit logs remain on the user's machines until deleted.
+
+ChatGPT-side retention follows the user's OpenAI account or workspace settings.
 
 ## Contact
 

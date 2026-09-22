@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "livingruntime-remote",
-  "version": "0.4.13",
-  "description": "Bounded SSH-backed remote development tools for LivingRuntime hosts, with local stdio and ChatGPT Secure MCP Tunnel transports.",
+  "version": "0.4.14",
+  "description": "Bounded SSH-backed remote development tools for user-controlled hosts, available through local stdio and a public OAuth-protected MCP endpoint.",
   "author": {
     "name": "LivingRuntime",
     "url": "https://github.com/jboone1989/livingruntime-remote"
@@ -16,8 +16,8 @@
       "apps": "./.app.json",
       "interface": {
         "displayName": "LivingRuntime Remote",
-        "shortDescription": "Operate LivingRuntime hosts over bounded SSH.",
-        "longDescription": "Windows user-level remote development plugin. Call capabilities, then list_projects, connection_status, read_file, apply_patch, git, exec, and logs against named projects such as virtualbrain and ferro. Codex and ChatGPT Desktop Work use local stdio. Public listing is a later track.",
+        "shortDescription": "Bounded remote host tools",
+        "longDescription": "Remote development plugin for user-controlled machines. Verify connectivity, inspect configured projects, read and edit files within allowed roots, run bounded Git and allowlisted development commands, and inspect allowlisted services and logs. Public ChatGPT and Codex access uses the production OAuth-protected MCP service.",
         "developerName": "LivingRuntime",
         "category": "Developer Tools",
         "capabilities": ["Read", "Write", "Remote Development"],
@@ -28,7 +28,7 @@
           "Use LivingRuntime Remote connection_status to verify the host, then show repository status with git.",
           "Read the current service logs with logs and inspect the matching source file with read_file."
         ],
-        "brandColor": "#0B3D2E",
+        "brandColor": "#2F855A",
         "composerIcon": "./assets/logo.png",
         "logo": "./assets/logo.png"
       }

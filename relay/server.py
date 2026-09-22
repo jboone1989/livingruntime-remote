@@ -16,7 +16,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from starlette.routing import Mount, Route
 
 from auth import verifier_from_env
@@ -24,7 +24,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.13"
+VERSION = "0.4.14"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
 READ = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", *IDENTITY_SCOPES]}]}
@@ -300,7 +300,15 @@ def create_mcp(
         """Report paired-device recency and online state without exposing credentials."""
         user = _principal("remote:read")
         device = relay.device_status(user)
-        return {"paired": bool(device), "device": device}
+        if not device:
+            return {"paired": False, "device": None}
+        public_device = {
+            "name": device.get("name"),
+            "last_seen": device.get("last_seen"),
+            "online": device.get("online"),
+            "stale_for_seconds": device.get("stale_for_seconds"),
+        }
+        return {"paired": True, "device": public_device}
 
     @server.tool(name="disconnect_device", title=TOOL_TEXT["disconnect_device"][0],
         description=TOOL_TEXT["disconnect_device"][1], annotations=ToolAnnotations(
@@ -495,7 +503,7 @@ nav a{{margin-right:18px}}
 </style>
 </head>
 <body><main>
-<nav><a href="/install">Install</a><a href="/support">Support</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></nav>
+<nav><a href="/install">Install</a><a href="/demo">Demo</a><a href="/support">Support</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></nav>
 {body_html}
 </main></body></html>"""
         return HTMLResponse(
@@ -513,7 +521,7 @@ nav a{{margin-right:18px}}
             """<h1>LivingRuntime Remote</h1>
 <p>Bounded remote development tools for machines and repositories you control.</p>
 <div class="card"><p><a href="/install">Install the Connector</a></p>
-<p><a href="/support">Support and documentation</a></p></div>""",
+<p><a href="/support">Support and documentation</a></p>\n<p><a href="/demo">Watch the review demo</a></p></div>""",
         )
 
     async def install_page(_: Request):
@@ -538,14 +546,14 @@ nav a{{margin-right:18px}}
         return public_page(
             "Privacy",
             """<h1>Privacy Policy</h1>
-<p>LivingRuntime Remote connects ChatGPT-compatible clients to machines that the user controls.</p>
+<p>LivingRuntime Remote connects ChatGPT-compatible clients to machines and repositories that the user is authorized to control.</p>
 <div class="card"><h2>Data handled</h2>
-<p>The service may process non-secret connection metadata, bounded tool inputs and outputs, pairing/device identifiers, and local audit records required to provide Remote functionality.</p></div>
+<p>The public relay may process OAuth account identity, OAuth client metadata, hashed token values, pairing/device metadata, and the bounded tool inputs and outputs needed to route a request to the paired Connector. The Connector may also maintain non-secret SSH host aliases, allowed roots, project aliases, allowlisted service names, and local audit records.</p></div>
 <div class="card"><h2>Credentials</h2>
-<p>LivingRuntime Remote does not store SSH passwords or SSH private keys. SSH credentials remain in the user's existing SSH configuration on the Connector machine.</p></div>
+<p>LivingRuntime Remote does not store SSH passwords or SSH private keys on the public relay. SSH credentials remain in the user's existing SSH configuration on the Connector machine. OAuth passwords are stored only as salted scrypt hashes, and raw OAuth bearer, refresh, and device tokens are not stored in relay databases.</p></div>
 <div class="card"><h2>Sharing and retention</h2>
-<p>When Remote is used with ChatGPT, tool arguments and results travel through the normal OpenAI app/MCP request path. Local configuration and audit logs remain on the user's machines until deleted. ChatGPT-side retention follows the user's OpenAI account or workspace settings.</p></div>
-<p>Do not place secrets in tool arguments or file contents that you do not want transmitted through the connected client.</p>""",
+<p>When Remote is used with ChatGPT or another compatible client, tool arguments and results travel through that client's MCP request path and the LivingRuntime Remote relay. Successful relay task results are consumed after delivery; stale task records are eligible for cleanup after 24 hours. OAuth account and paired-device records remain until revoked or removed. Local configuration and audit logs remain on the user's machines until deleted.</p></div>
+<p>ChatGPT-side retention follows the user's OpenAI account or workspace settings. Do not place secrets in tool arguments or file contents that you do not want transmitted through the connected client and relay.</p>""",
         )
 
     async def terms_page(_: Request):
@@ -569,6 +577,27 @@ nav a{{margin-right:18px}}
 <p><code>connection_status.ok = true</code> and <code>capabilities.healthy = true</code> with an empty <code>missing</code> list.</p></div>
 <div class="card"><h2>Installation</h2><p><a href="/install">Open the Connector installation page</a>.</p></div>
 <p>LivingRuntime Remote source and issue tracking are published from the LivingRuntime Remote repository.</p>""",
+        )
+
+    async def demo_page(_: Request):
+        return public_page(
+            "Demo",
+            """<h1>LivingRuntime Remote Demo</h1>
+<p>This recorded demo shows the production OAuth connection and the isolated review workflow for connection status, project listing, bounded file access, Git status, and bounded writes.</p>
+<div class="card"><p><a href="/demo.mp4">Open the MP4 recording</a></p></div>""",
+        )
+
+    async def demo_recording(_: Request):
+        demo_path = Path(os.environ.get(
+            "LIVINGRUNTIME_DEMO_RECORDING_PATH",
+            "/var/lib/livingruntime-remote-relay/livingruntime-remote-demo.mp4",
+        ))
+        if not demo_path.exists():
+            return PlainTextResponse("demo recording unavailable", status_code=404)
+        return FileResponse(
+            demo_path,
+            media_type="video/mp4",
+            headers={"cache-control": "public, max-age=3600"},
         )
 
     async def install_ps1(_: Request):
@@ -707,6 +736,8 @@ nav a{{margin-right:18px}}
         Route("/privacy", privacy_page),
         Route("/terms", terms_page),
         Route("/support", support_page),
+        Route("/demo", demo_page),
+        Route("/demo.mp4", demo_recording),
         Route("/.well-known/openai-apps-challenge", challenge),
     ]
     if _auth_mode() == "embedded":

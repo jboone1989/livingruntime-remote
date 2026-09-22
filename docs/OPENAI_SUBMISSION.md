@@ -39,7 +39,7 @@ Supported review scopes include:
 
 Username:
 
-`reviewer@livingruntime.com`
+`openai-review@livingruntime.com`
 
 The current reviewer password is stored only on the production relay in the root-only operational credential file. Do not commit it to this repository.
 
@@ -95,4 +95,4 @@ Before creating or submitting the draft:
 
 ## Release notes text
 
-LivingRuntime Remote 0.4.13 provides bounded remote-development tools for user-controlled machines, with OAuth/OIDC authentication, refreshable ChatGPT sessions, one-time Connector pairing, configured-root and service allowlists, auditable write actions, and cross-platform Connector releases for Windows, Linux, and macOS.
+LivingRuntime Remote 0.4.14 provides bounded remote-development tools for user-controlled machines, with OAuth/OIDC authentication, refreshable ChatGPT sessions, one-time Connector pairing, configured-root and service allowlists, auditable write actions, and cross-platform Connector releases for Windows, Linux, and macOS.
