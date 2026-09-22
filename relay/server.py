@@ -24,7 +24,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.14"
+VERSION = "0.4.15"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
 READ = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", *IDENTITY_SCOPES]}]}
@@ -80,6 +80,33 @@ class Relay:
         self.timeout = timeout
         self.reconnect_grace = max(0.0, reconnect_grace)
         self.device_stale_after = max(1.0, device_stale_after)
+        self._task_events: dict[str, asyncio.Event] = {}
+
+    def _task_event(self, device_id: str) -> asyncio.Event:
+        event = self._task_events.get(device_id)
+        if event is None:
+            event = asyncio.Event()
+            self._task_events[device_id] = event
+        return event
+
+    def notify_task(self, device_id: str) -> None:
+        """Wake a connector poll that is waiting for work on this relay process."""
+        self._task_event(device_id).set()
+
+    def arm_task_wait(self, device_id: str) -> None:
+        """Clear any stale wakeup before checking the durable queue once."""
+        self._task_event(device_id).clear()
+
+    async def wait_for_task(self, device_id: str, timeout: float) -> bool:
+        """Sleep without touching SQLite until work arrives or the long poll expires."""
+        if timeout <= 0:
+            return False
+        event = self._task_event(device_id)
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            return True
+        except TimeoutError:
+            return False
 
     def device_status(self, user_sub: str) -> dict[str, Any] | None:
         device = self.store.device_for_user(user_sub)
@@ -112,6 +139,7 @@ class Relay:
     async def call(self, user_sub: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
         device = await self._wait_for_online_device(user_sub)
         task_id = self.store.enqueue(user_sub, device["device_id"], tool, args)
+        self.notify_task(device["device_id"])
         requested_timeout = 0.0
         try:
             requested_timeout = float(args.get("timeout_seconds") or 0.0)
@@ -639,13 +667,19 @@ nav a{{margin-right:18px}}
         try:
             device = store.authenticate_device(_device_token(request))
             wait = min(25.0, max(0.0, float(request.query_params.get("wait", "20"))))
-            deadline = time.monotonic() + wait
-            while time.monotonic() < deadline:
-                task = store.claim(device["device_id"])
-                if task:
-                    return JSONResponse({"task": task})
-                await asyncio.sleep(0.25)
-            return JSONResponse({"task": None})
+            device_id = device["device_id"]
+
+            relay.arm_task_wait(device_id)
+            task = store.claim(device_id)
+            if task:
+                return JSONResponse({"task": task})
+            if wait <= 0:
+                return JSONResponse({"task": None})
+
+            if not await relay.wait_for_task(device_id, wait):
+                return JSONResponse({"task": None})
+            task = store.claim(device_id)
+            return JSONResponse({"task": task})
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=401)
 

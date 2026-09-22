@@ -42,7 +42,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.14")
+            self.assertEqual(health.json()["version"], "0.4.15")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -143,6 +143,46 @@ class RelayServerTests(unittest.TestCase):
             denied = client.post("/device/poll?wait=0", json={},
                                  headers={"authorization": "Bearer wrong"})
             self.assertEqual(denied.status_code, 401)
+
+    def test_idle_long_poll_does_not_spin_on_sqlite(self):
+        class CountingStore(RelayStore):
+            def __init__(self, path: str) -> None:
+                super().__init__(path)
+                self.claim_calls = 0
+
+            def claim(self, device_id: str):
+                self.claim_calls += 1
+                return super().claim(device_id)
+
+        store = CountingStore(str(Path(self.tmp.name) / "counting.sqlite3"))
+        app = server.create_app(store)
+        code = store.create_pairing_code("user-a")["code"]
+        with TestClient(app) as client:
+            paired = client.post("/device/pair", json={"code": code, "name": "test"}).json()
+            headers = {"authorization": "Bearer " + paired["device_token"]}
+            started = time.monotonic()
+            response = client.post("/device/poll?wait=0.3", json={}, headers=headers)
+            elapsed = time.monotonic() - started
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.json()["task"])
+        self.assertGreaterEqual(elapsed, 0.25)
+        self.assertEqual(store.claim_calls, 1)
+
+    def test_task_notification_wakes_waiter_without_polling(self):
+        relay = server.Relay(self.store)
+
+        async def exercise() -> float:
+            relay.arm_task_wait("device-a")
+            started = time.monotonic()
+            waiter = asyncio.create_task(relay.wait_for_task("device-a", 1.0))
+            await asyncio.sleep(0.05)
+            relay.notify_task("device-a")
+            self.assertTrue(await waiter)
+            return time.monotonic() - started
+
+        elapsed = asyncio.run(exercise())
+        self.assertLess(elapsed, 0.5)
 
     def test_pair_endpoint_rate_limits_repeated_failures(self):
         with TestClient(self.app) as client:
