@@ -40,7 +40,7 @@ DISCOVERY_TOOLS = REMOTE_TOOLS
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 DEFAULT_HTTP_PORT = 8766
 PLUGIN_NAME = "LivingRuntime Remote"
-PLUGIN_VERSION = "0.4.11"
+PLUGIN_VERSION = "0.4.12"
 SECRET_KEYS = (
     "token",
     "password",

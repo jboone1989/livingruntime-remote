@@ -95,4 +95,4 @@ Before creating or submitting the draft:
 
 ## Release notes text
 
-LivingRuntime Remote 0.4.11 provides bounded remote-development tools for user-controlled machines, with OAuth/OIDC authentication, refreshable ChatGPT sessions, one-time Connector pairing, configured-root and service allowlists, auditable write actions, and cross-platform Connector releases for Windows, Linux, and macOS.
+LivingRuntime Remote 0.4.12 provides bounded remote-development tools for user-controlled machines, with OAuth/OIDC authentication, refreshable ChatGPT sessions, one-time Connector pairing, configured-root and service allowlists, auditable write actions, and cross-platform Connector releases for Windows, Linux, and macOS.

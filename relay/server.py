@@ -24,12 +24,30 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.11"
+VERSION = "0.4.12"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
 READ = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", *IDENTITY_SCOPES]}]}
 WRITE = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", "remote:write", *IDENTITY_SCOPES]}]}
 SUPPORTED_SCOPES = ["remote:read", "remote:write", *IDENTITY_SCOPES, *SESSION_SCOPES]
+TOOL_TEXT = {
+    "create_pairing_code": ("Create pairing code", "Create a short-lived one-time code used to pair the user's local LivingRuntime Remote Connector."),
+    "device_status": ("Check paired device", "Check whether the user's paired LivingRuntime Remote Connector is present and recently online."),
+    "disconnect_device": ("Disconnect paired device", "Revoke a paired LivingRuntime Remote Connector and discard its queued or completed relay tasks."),
+    "connection_status": ("Check connection status", "Check SSH, gateway, authentication, configured roots, projects, and paired-device reachability before remote work."),
+    "capabilities": ("List Remote capabilities", "List the bounded Remote tools currently available and report whether the toolset is healthy and complete."),
+    "list_projects": ("List configured projects", "List the named projects and bounded workspaces configured for this LivingRuntime Remote Connector."),
+    "read_file": ("Read remote file", "Read bytes from a file inside an allowed project or configured root. Use this before editing or inspecting source files."),
+    "list_dir": ("List remote directory", "List files and directories inside an allowed project or configured root without modifying them."),
+    "logs": ("Read service logs", "Read recent journal logs for an allowlisted service, optionally scoped through a configured project."),
+    "write_file": ("Write remote file", "Create or replace a file inside an allowed project or configured root, optionally guarded by an expected SHA-256."),
+    "git": ("Run Git command", "Run a bounded Git command inside an allowed repository using explicit arguments."),
+    "exec": ("Execute bounded command", "Run an allowlisted executable with explicit argv inside an allowed workspace. Shell command strings and credential overrides are blocked."),
+    "process": ("Manage remote process", "Perform a permitted process action on the connected host using a PID or bounded process-name match."),
+    "systemd": ("Manage allowlisted service", "Inspect or control an explicitly allowlisted systemd unit on the connected host."),
+    "apply_patch": ("Apply file patch", "Apply a unified diff to a file inside an allowed workspace, optionally guarded by an expected SHA-256."),
+    "diagnostics": ("Run Remote diagnostics", "Collect bounded LivingRuntime Remote diagnostics for connectivity, configuration, and tool-health troubleshooting."),
+}
 
 
 class PairRateLimiter:
@@ -268,13 +286,15 @@ def create_mcp(
                 return PlainTextResponse("authorization request expired", status_code=400)
             return _login_page(request_id)
 
-    @server.tool(name="create_pairing_code", annotations=ToolAnnotations(
+    @server.tool(name="create_pairing_code", title=TOOL_TEXT["create_pairing_code"][0],
+        description=TOOL_TEXT["create_pairing_code"][1], annotations=ToolAnnotations(
         readOnlyHint=False, destructiveHint=False, openWorldHint=False), meta=WRITE)
     def create_pairing_code() -> dict[str, Any]:
         """Create a short-lived one-time code that pairs the user's local connector."""
         return relay.store.create_pairing_code(_principal("remote:write"))
 
-    @server.tool(name="device_status", annotations=ToolAnnotations(
+    @server.tool(name="device_status", title=TOOL_TEXT["device_status"][0],
+        description=TOOL_TEXT["device_status"][1], annotations=ToolAnnotations(
         readOnlyHint=True, destructiveHint=False, openWorldHint=False), meta=READ)
     def device_status() -> dict[str, Any]:
         """Report paired-device recency and online state without exposing credentials."""
@@ -282,7 +302,8 @@ def create_mcp(
         device = relay.device_status(user)
         return {"paired": bool(device), "device": device}
 
-    @server.tool(name="disconnect_device", annotations=ToolAnnotations(
+    @server.tool(name="disconnect_device", title=TOOL_TEXT["disconnect_device"][0],
+        description=TOOL_TEXT["disconnect_device"][1], annotations=ToolAnnotations(
         readOnlyHint=False, destructiveHint=True, openWorldHint=False), meta=WRITE)
     def disconnect_device(device_id: str | None = None) -> dict[str, Any]:
         """Revoke a paired connector and discard its queued or completed relay tasks."""
@@ -296,7 +317,14 @@ def create_mcp(
             destructiveHint=destructive,
             idempotentHint=False if destructive else None,
         )
-        return server.tool(name=name, annotations=annotations, meta=meta)
+        title, description = TOOL_TEXT[name]
+        return server.tool(
+            name=name,
+            title=title,
+            description=description,
+            annotations=annotations,
+            meta=meta,
+        )
 
     @expose("connection_status", True, False, False)
     async def connection_status() -> dict[str, Any]:
