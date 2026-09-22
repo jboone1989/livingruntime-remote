@@ -24,7 +24,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.12"
+VERSION = "0.4.13"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
 READ = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", *IDENTITY_SCOPES]}]}
@@ -341,45 +341,45 @@ def create_mcp(
     @expose("read_file", True, False, False)
     async def read_file(path: str, project: str | None = None, offset: int = 0,
                         max_bytes: int = 131072) -> dict[str, Any]:
-        return await relay.call(_principal("remote:read"), "read_file", locals())
+        return await relay.call(_principal("remote:read"), "read_file", {"path": path, "project": project, "offset": offset, "max_bytes": max_bytes})
 
     @expose("list_dir", True, False, False)
     async def list_dir(path: str | None = None, project: str | None = None,
                        max_entries: int = 200) -> dict[str, Any]:
-        return await relay.call(_principal("remote:read"), "list_dir", locals())
+        return await relay.call(_principal("remote:read"), "list_dir", {"path": path, "project": project, "max_entries": max_entries})
 
     @expose("logs", True, False, False)
     async def logs(unit: str | None = None, project: str | None = None, lines: int = 200,
                    since_minutes: int = 60) -> dict[str, Any]:
-        return await relay.call(_principal("remote:read"), "logs", locals())
+        return await relay.call(_principal("remote:read"), "logs", {"unit": unit, "project": project, "lines": lines, "since_minutes": since_minutes})
 
     @expose("write_file", False, False, True)
     async def write_file(path: str, content: str, project: str | None = None,
                          mode: str = "replace", expected_sha256: str | None = None) -> dict[str, Any]:
-        return await relay.call(_principal("remote:write"), "write_file", locals())
+        return await relay.call(_principal("remote:write"), "write_file", {"path": path, "content": content, "project": project, "mode": mode, "expected_sha256": expected_sha256})
 
     @expose("git", False, True, True)
     async def git(args: list[str], repo_path: str | None = None, project: str | None = None,
                   timeout_seconds: int = 30) -> dict[str, Any]:
-        return await relay.call(_principal("remote:write"), "git", locals())
+        return await relay.call(_principal("remote:write"), "git", {"args": args, "repo_path": repo_path, "project": project, "timeout_seconds": timeout_seconds})
 
     @expose("exec", False, True, True)
     async def exec(argv: list[str], cwd: str | None = None, project: str | None = None,
                    timeout_seconds: int = 30) -> dict[str, Any]:
-        return await relay.call(_principal("remote:write"), "exec", locals())
+        return await relay.call(_principal("remote:write"), "exec", {"argv": argv, "cwd": cwd, "project": project, "timeout_seconds": timeout_seconds})
 
     @expose("process", False, False, True)
     async def process(action: str, pid: int | None = None, contains: str | None = None) -> dict[str, Any]:
-        return await relay.call(_principal("remote:write"), "process", locals())
+        return await relay.call(_principal("remote:write"), "process", {"action": action, "pid": pid, "contains": contains})
 
     @expose("systemd", False, False, True)
     async def systemd(action: str, unit: str | None = None, project: str | None = None) -> dict[str, Any]:
-        return await relay.call(_principal("remote:write"), "systemd", locals())
+        return await relay.call(_principal("remote:write"), "systemd", {"action": action, "unit": unit, "project": project})
 
     @expose("apply_patch", False, False, True)
     async def apply_patch(path: str, patch: str, expected_sha256: str | None = None,
                           project: str | None = None) -> dict[str, Any]:
-        return await relay.call(_principal("remote:write"), "apply_patch", locals())
+        return await relay.call(_principal("remote:write"), "apply_patch", {"path": path, "patch": patch, "expected_sha256": expected_sha256, "project": project})
 
     @expose("diagnostics", True, False, False)
     async def diagnostics() -> dict[str, Any]:

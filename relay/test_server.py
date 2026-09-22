@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import sys
 import tempfile
@@ -38,7 +39,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.12")
+            self.assertEqual(health.json()["version"], "0.4.13")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -168,6 +169,10 @@ class RelayServerTests(unittest.TestCase):
         with self.store.db() as db:
             count = db.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"]
         self.assertEqual(count, 0)
+
+    def test_public_tools_do_not_forward_function_locals(self):
+        source = inspect.getsource(server.create_mcp)
+        self.assertNotIn("locals()", source)
 
     def test_public_mcp_declares_expected_tools_and_security(self):
         mcp = server.create_mcp(server.Relay(self.store))

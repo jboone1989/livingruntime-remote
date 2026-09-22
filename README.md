@@ -28,7 +28,7 @@ pi-remote is a separate private product built above this foundation. Its persist
 
 ## Current release
 
-Version: 0.4.12
+Version: 0.4.13
 
 The repository is private during development. Before public launch it will be made public and given an explicit open-source license.
 
