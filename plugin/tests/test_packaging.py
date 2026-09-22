@@ -20,7 +20,7 @@ class PackagingTests(unittest.TestCase):
         openai = plugin["extensions"]["com.openai"]
         self.assertEqual(plugin["name"], "livingruntime-remote")
         self.assertEqual(plugin["version"], PLUGIN_VERSION)
-        self.assertEqual(PLUGIN_VERSION, "0.4.9")
+        self.assertEqual(PLUGIN_VERSION, "0.4.10")
         self.assertEqual(REMOTE_IDENTITY, "livingruntime.remote")
         self.assertEqual(openai["apps"], "./.app.json")
         self.assertEqual(openai["interface"]["displayName"], "LivingRuntime Remote")

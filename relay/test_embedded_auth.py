@@ -121,6 +121,7 @@ class EmbeddedOAuthTests(unittest.TestCase):
                          "https://client.example.test/callback")
         query = parse_qs(callback.query)
         self.assertEqual(query["state"], ["state-123"])
+        self.assertEqual(query["iss"], [self.issuer])
         return query["code"][0], verifier
 
     def exchange(self, client: TestClient, client_id: str, code: str, verifier: str) -> dict:

@@ -24,7 +24,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.9"
+VERSION = "0.4.10"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
 READ = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", *IDENTITY_SCOPES]}]}
@@ -258,7 +258,7 @@ def create_mcp(
                 return RedirectResponse(
                     _append_query(
                         str(code.redirect_uri),
-                        {"code": code.code, "state": state},
+                        {"code": code.code, "state": state, "iss": embedded_provider.public_base},
                     ),
                     status_code=303,
                     headers={"cache-control": "no-store"},
