@@ -258,7 +258,7 @@ def create_mcp(
                 return RedirectResponse(
                     _append_query(
                         str(code.redirect_uri),
-                        {"code": code.code, "state": state, "iss": embedded_provider.public_base},
+                        {"code": code.code, "state": state},
                     ),
                     status_code=303,
                     headers={"cache-control": "no-store"},
