@@ -38,7 +38,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.5")
+            self.assertEqual(health.json()["version"], "0.4.6")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -178,9 +178,13 @@ class RelayServerTests(unittest.TestCase):
         self.assertFalse(tools["write_file"].annotations.read_only_hint)
         self.assertTrue(tools["git"].annotations.open_world_hint)
         self.assertTrue(tools["systemd"].annotations.destructive_hint)
-        self.assertEqual(tools["read_file"].meta["securitySchemes"][0]["scopes"], ["remote:read"])
         self.assertEqual(
-            tools["git"].meta["securitySchemes"][0]["scopes"], ["remote:read", "remote:write"]
+            tools["read_file"].meta["securitySchemes"][0]["scopes"],
+            ["remote:read", "openid", "email"],
+        )
+        self.assertEqual(
+            tools["git"].meta["securitySchemes"][0]["scopes"],
+            ["remote:read", "remote:write", "openid", "email"],
         )
 
 

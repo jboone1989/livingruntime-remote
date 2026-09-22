@@ -57,7 +57,7 @@ class EmbeddedOAuthTests(unittest.TestCase):
         self.env.stop()
         self.tmp.cleanup()
 
-    def register(self, client: TestClient, scope: str = "remote:read remote:write") -> dict:
+    def register(self, client: TestClient, scope: str = "remote:read remote:write openid email") -> dict:
         response = client.post(
             "/register",
             json={
@@ -77,7 +77,7 @@ class EmbeddedOAuthTests(unittest.TestCase):
         client: TestClient,
         client_id: str,
         *,
-        scope: str = "remote:read remote:write",
+        scope: str = "remote:read remote:write openid email",
     ) -> tuple[str, str]:
         verifier = "pkce-verifier-" + "x" * 48
         response = client.get(
@@ -148,13 +148,20 @@ class EmbeddedOAuthTests(unittest.TestCase):
             self.assertTrue(meta["revocation_endpoint"].endswith("/revoke"))
             self.assertEqual(meta["token_endpoint_auth_methods_supported"], ["none"])
             self.assertEqual(meta["revocation_endpoint_auth_methods_supported"], ["none"])
-            self.assertEqual(set(meta["scopes_supported"]), {"remote:read", "remote:write"})
+            self.assertEqual(
+                set(meta["scopes_supported"]),
+                {"remote:read", "remote:write", "openid", "email"},
+            )
+            self.assertTrue(meta["userinfo_endpoint"].endswith("/userinfo"))
+            oidc = client.get("/.well-known/openid-configuration")
+            self.assertEqual(oidc.status_code, 200)
+            self.assertEqual(oidc.json()["issuer"], self.issuer)
 
             resource_meta = client.get("/.well-known/oauth-protected-resource/mcp")
             self.assertEqual(resource_meta.status_code, 200)
             self.assertEqual(
                 set(resource_meta.json()["scopes_supported"]),
-                {"remote:read", "remote:write"},
+                {"remote:read", "remote:write", "openid", "email"},
             )
 
             registration = self.register(client)
@@ -166,7 +173,18 @@ class EmbeddedOAuthTests(unittest.TestCase):
             tokens = self.exchange(client, client_id, code, verifier)
             access = tokens["access_token"]
             refresh = tokens["refresh_token"]
-            self.assertEqual(set(tokens["scope"].split()), {"remote:read", "remote:write"})
+            self.assertEqual(
+                set(tokens["scope"].split()),
+                {"remote:read", "remote:write", "openid", "email"},
+            )
+
+            userinfo = client.get(
+                "/userinfo", headers={"authorization": "Bearer " + access}
+            )
+            self.assertEqual(userinfo.status_code, 200, userinfo.text)
+            self.assertEqual(userinfo.json()["email"], self.email)
+            self.assertTrue(userinfo.json()["email_verified"])
+            self.assertTrue(str(userinfo.json()["sub"]).startswith("usr_"))
 
             tools = client.post(
                 "/mcp",

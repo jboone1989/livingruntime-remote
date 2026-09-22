@@ -1,6 +1,6 @@
 # LivingRuntime Remote release checklist
 
-Identity is `livingruntime.remote`. Current public release version: `0.4.5`.
+Identity is `livingruntime.remote`. Current public release version: `0.4.6`.
 
 ## Capability and runtime
 
@@ -13,6 +13,7 @@ Identity is `livingruntime.remote`. Current public release version: `0.4.5`.
 ## Public auth and pairing
 
 - [x] OAuth + PKCE metadata and token flow.
+- [x] OIDC discovery, `openid` / `email` scopes, and UserInfo with verified email.
 - [x] protected MCP resource metadata.
 - [x] one-time device pairing and revocation.
 - [x] device tokens are stored hashed server-side.
@@ -20,7 +21,7 @@ Identity is `livingruntime.remote`. Current public release version: `0.4.5`.
 - [x] offline devices are detected before enqueue.
 - [x] unclaimed timed-out work is cancelled.
 
-## Connector 0.4.5
+## Connector 0.4.6
 
 - [x] standalone Connector CLI.
 - [x] no Python requirement for release binaries.

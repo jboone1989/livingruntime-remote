@@ -4,7 +4,7 @@ LivingRuntime Remote is released from this repository alone.
 
 ## Public architecture
 
-```
+```text
 ChatGPT
   -> LivingRuntime Remote
   -> OAuth-protected HTTPS relay
@@ -15,32 +15,27 @@ ChatGPT
 
 ## Distribution
 
-Connector binaries are built by `.github/workflows/release.yml` for:
+Connector binaries are built by `.github/workflows/release.yml` for Windows x64, Linux x64/ARM64, and macOS Intel/Apple Silicon. Tags use `vX.Y.Z`. The repository is public and release assets are downloadable without repository credentials.
 
-- Windows x64
-- Linux x64
-- Linux ARM64
-- macOS Intel
-- macOS Apple Silicon
-
-Tags use the normal repository form `vX.Y.Z`.
-
-When this repository becomes public, `remote.livingruntime.com/install` can point directly to the repository's public GitHub Releases.
-
-## 0.4.5 release readiness
+## 0.4.6 release readiness
 
 Implemented:
 
+- production domain `https://remote.livingruntime.com`
+- Let's Encrypt TLS on the branded hostname
+- OAuth issuer and MCP resource bound to the branded domain
+- OAuth 2.1 authorization-code + PKCE and dynamic client registration
+- `openid` / `email` scopes, OIDC discovery, and UserInfo for workspace-domain restrictions
 - branded home/install/support/privacy/terms routes
-- plugin metadata points to `remote.livingruntime.com`
-- standalone repository and release workflow
-- production relay can run 0.4.5 behind the existing hostname before the DNS cutover
+- five-platform Connector releases
+- standalone public repository and release workflow
 
 ## Remaining launch work
 
-- add DNS `remote.livingruntime.com -> 207.246.99.253` and issue TLS
-- switch the production OAuth issuer/resource/docs URLs to `remote.livingruntime.com`
-- ChatGPT domain/developer verification and marketplace review
+- complete the OpenAI portal domain-verification challenge when the portal provides its token
+- provide reviewer-ready demo credentials in the submission portal
+- scan tools in the submission portal and resolve any portal-reported metadata issues
+- submit for ChatGPT/Codex plugin review
 - Windows Authenticode signing credentials
 - Apple Developer ID/notarization credentials
 

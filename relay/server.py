@@ -24,10 +24,11 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.5"
-READ = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read"]}]}
-WRITE = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", "remote:write"]}]}
-SUPPORTED_SCOPES = ["remote:read", "remote:write"]
+VERSION = "0.4.6"
+IDENTITY_SCOPES = ["openid", "email"]
+READ = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", *IDENTITY_SCOPES]}]}
+WRITE = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", "remote:write", *IDENTITY_SCOPES]}]}
+SUPPORTED_SCOPES = ["remote:read", "remote:write", *IDENTITY_SCOPES]
 
 
 class PairRateLimiter:
@@ -607,12 +608,14 @@ nav a{{margin-right:18px}}
             "token_endpoint": issuer + "/token",
             "registration_endpoint": issuer + "/register",
             "revocation_endpoint": issuer + "/revoke",
+            "userinfo_endpoint": issuer + "/userinfo",
             "scopes_supported": SUPPORTED_SCOPES,
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
             "token_endpoint_auth_methods_supported": ["none"],
             "revocation_endpoint_auth_methods_supported": ["none"],
             "code_challenge_methods_supported": ["S256"],
+            "subject_types_supported": ["public"],
         }
         docs = os.environ.get("LIVINGRUNTIME_RELAY_DOCS_URL")
         if docs:
@@ -625,7 +628,39 @@ nav a{{margin-right:18px}}
             "authorization_servers": [os.environ["LIVINGRUNTIME_RELAY_ISSUER"].rstrip("/")],
             "scopes_supported": SUPPORTED_SCOPES,
             "bearer_methods_supported": ["header"],
+            "resource_documentation": os.environ.get(
+                "LIVINGRUNTIME_RELAY_DOCS_URL",
+                os.environ["LIVINGRUNTIME_RELAY_ISSUER"].rstrip("/") + "/support",
+            ),
+            "resource_policy_uri": os.environ["LIVINGRUNTIME_RELAY_ISSUER"].rstrip("/") + "/privacy",
+            "resource_tos_uri": os.environ["LIVINGRUNTIME_RELAY_ISSUER"].rstrip("/") + "/terms",
         }, headers={"cache-control": "no-store"})
+
+    async def embedded_userinfo(request: Request):
+        authorization = request.headers.get("authorization", "")
+        if not authorization.lower().startswith("bearer "):
+            return JSONResponse(
+                {"error": "invalid_token"},
+                status_code=401,
+                headers={"www-authenticate": 'Bearer error="invalid_token"'},
+            )
+        if embedded_provider is None:
+            return JSONResponse({"error": "server_error"}, status_code=500)
+        token = embedded_provider.store.load_access_token(
+            authorization.split(" ", 1)[1].strip()
+        )
+        if token is None or "openid" not in token.scopes:
+            return JSONResponse(
+                {"error": "insufficient_scope"},
+                status_code=403,
+                headers={"www-authenticate": 'Bearer error="insufficient_scope", scope="openid email"'},
+            )
+        info = embedded_provider.store.userinfo(token.subject)
+        if info is None:
+            return JSONResponse({"error": "invalid_token"}, status_code=401)
+        if "email" not in token.scopes:
+            info = {"sub": info["sub"]}
+        return JSONResponse(info, headers={"cache-control": "no-store"})
 
     routes = [
         Route("/", home),
@@ -643,7 +678,9 @@ nav a{{margin-right:18px}}
         resource_path = urlsplit(os.environ["LIVINGRUNTIME_RELAY_RESOURCE_URL"]).path or ""
         routes.extend([
             Route("/.well-known/oauth-authorization-server", embedded_oauth_metadata),
+            Route("/.well-known/openid-configuration", embedded_oauth_metadata),
             Route("/.well-known/oauth-protected-resource" + resource_path, embedded_resource_metadata),
+            Route("/userinfo", embedded_userinfo),
         ])
     routes.extend([
         Route("/device/pair", pair, methods=["POST"]),
