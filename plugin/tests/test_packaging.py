@@ -51,19 +51,28 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(overlay["mcpServers"], "./.mcp.json")
         self.assertEqual(overlay["version"], PLUGIN_VERSION)
 
-    def test_submission_covers_remote_tools(self) -> None:
+    def test_submission_covers_public_tools_and_review_case_contract(self) -> None:
         submission = json.loads((self.root / "chatgpt-app-submission.json").read_text(encoding="utf-8"))
-        for name in REMOTE_TOOLS:
-            self.assertIn(name, submission["tools"])
+        expected_tools = set(REMOTE_TOOLS) | {
+            "create_pairing_code",
+            "device_status",
+            "disconnect_device",
+        }
+        self.assertEqual(set(submission["tools"]), expected_tools)
+        for name in expected_tools:
             hints = submission["tools"][name]["annotations"]
             self.assertIn("readOnlyHint", hints)
             self.assertIn("openWorldHint", hints)
             self.assertIn("destructiveHint", hints)
+
         positives = [case["tools_triggered"] for case in submission["test_cases"]]
-        for name in ("connection_status", "capabilities", "diagnostics", "apply_patch", "read_file", "git", "logs"):
-            self.assertIn(name, positives)
-        self.assertGreaterEqual(len(submission["test_cases"]), 6)
+        self.assertEqual(len(positives), 5)
+        self.assertEqual(
+            positives,
+            ["connection_status", "list_projects", "read_file", "git", "write_file"],
+        )
         self.assertEqual(len(submission["negative_test_cases"]), 3)
+        self.assertTrue(all(case["tools_triggered"] is None for case in submission["negative_test_cases"]))
 
     def test_windows_tunnel_launchers_exist(self) -> None:
         self.assertTrue((self.root / "scripts" / "start-tunnel.cmd").exists())

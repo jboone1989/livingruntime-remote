@@ -4,7 +4,7 @@
   "app_info": {
     "display_name": "LivingRuntime Remote",
     "subtitle": "Bounded remote host tools",
-    "description": "LivingRuntime Remote lets ChatGPT inspect a private LivingRuntime host through bounded tools. It checks connectivity, reads files under configured roots, runs Git inside those roots, and reads allowlisted service logs. Write and service-control tools stay scoped to the same private host and never store SSH passwords or private keys.",
+    "description": "LivingRuntime Remote lets ChatGPT operate development machines the user controls through bounded remote tools. It verifies connectivity, lists configured projects, reads and writes files only inside allowed roots, runs Git and allowlisted development commands, and inspects allowlisted services and logs. SSH passwords and private keys remain outside the service.",
     "category": "DEVELOPER_TOOLS"
   },
   "tools": {
@@ -163,71 +163,83 @@
         "open_world_justification": "Only exact configured private unit names are accepted.",
         "destructive_justification": "Does not rotate, delete, or rewrite logs."
       }
+    },
+    "create_pairing_code": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates a short-lived one-time pairing code for connecting a user-owned Remote device.",
+        "open_world_justification": "Only changes private relay pairing state and does not publish or modify third-party systems.",
+        "destructive_justification": "Does not delete data or revoke an existing device."
+      }
+    },
+    "device_status": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only reports whether the user's paired Remote device is currently available.",
+        "open_world_justification": "Reads private relay device state and does not modify public or third-party systems.",
+        "destructive_justification": "Does not create, overwrite, revoke, or delete device state."
+      }
+    },
+    "disconnect_device": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Revokes a paired Remote device so it can no longer receive tasks.",
+        "open_world_justification": "Changes only private relay authorization state and does not modify public or third-party systems.",
+        "destructive_justification": "Revokes device access and removes its pending relay tasks, so that connection must be paired again."
+      }
     }
   },
   "test_cases": [
     {
-      "description": "Verify the private host is reachable before other tools run.",
-      "user_prompt": "Use LivingRuntime Remote connection_status and tell me whether the host is reachable, who it is, and whether SSH is authenticated.",
+      "description": "Verify the review host connection before other tools run.",
+      "user_prompt": "Use LivingRuntime Remote connection_status and tell me whether the connected review host is reachable and authorized.",
       "file_attachment_urls": null,
       "tools_triggered": "connection_status",
-      "expected_output": "Returns endpoint reachability, remote host identity, SSH/gateway connectivity, authorization, and latency or last success time, with no secrets.",
+      "expected_output": "Reports that the paired review host is reachable and authorized, with host identity and connectivity status but no credentials.",
       "expected_output_url": null
     },
     {
-      "description": "Report the complete Remote identity tool surface.",
-      "user_prompt": "Use LivingRuntime Remote capabilities and tell me whether the remote is healthy.",
+      "description": "List the projects available to the review account.",
+      "user_prompt": "Use LivingRuntime Remote list_projects and show the projects available to this account.",
       "file_attachment_urls": null,
-      "tools_triggered": "capabilities",
-      "expected_output": "Returns identity livingruntime.remote, version 0.4.8, schema_hash, handshake tools, server_tools matching REMOTE_TOOLS, available/missing, health_scope=mcp_tools_list, and healthy=true when MCP tools/list matches the registry. healthy does not mean ChatGPT Custom App has imported every action.",
+      "tools_triggered": "list_projects",
+      "expected_output": "Returns the bounded project catalog for the review account, including the demo project.",
       "expected_output_url": null
     },
     {
-      "description": "Inspect process-level Remote diagnostics without guessing ChatGPT UI binding.",
-      "user_prompt": "Use LivingRuntime Remote diagnostics and report identity, version, schema hash, and whether the process tool registry is complete.",
-      "file_attachment_urls": null,
-      "tools_triggered": "diagnostics",
-      "expected_output": "Returns remote_id livingruntime.remote, version 0.4.8, schema_hash, session_attach for this MCP process, and last_tool_refresh.",
-      "expected_output_url": null
-    },
-    {
-      "description": "Apply a bounded unified diff instead of rewriting a whole file.",
-      "user_prompt": "Use LivingRuntime Remote apply_patch to change one function in a project source file.",
-      "file_attachment_urls": null,
-      "tools_triggered": "apply_patch",
-      "expected_output": "Returns path, changed=true, and the new sha256 when the hunk matches; leaves the file unchanged on mismatch.",
-      "expected_output_url": null
-    },
-    {
-      "description": "Read a file under the configured root.",
-      "user_prompt": "Use LivingRuntime Remote read_file to show /home/ubuntu/README.md.",
+      "description": "Read a file inside the bounded demo project.",
+      "user_prompt": "Use LivingRuntime Remote read_file with project demo and path README.md, then summarize the file.",
       "file_attachment_urls": null,
       "tools_triggered": "read_file",
-      "expected_output": "Returns the bounded file contents and path from the allowed root.",
+      "expected_output": "Returns the demo README contents from the allowed project and does not expose files outside that project.",
       "expected_output_url": null
     },
     {
-      "description": "Inspect Git status in the configured repository.",
-      "user_prompt": "Use LivingRuntime Remote git to show status for /home/ubuntu.",
+      "description": "Inspect Git state inside the bounded demo repository.",
+      "user_prompt": "Use LivingRuntime Remote git with project demo and args status -sb, then summarize the repository status.",
       "file_attachment_urls": null,
       "tools_triggered": "git",
-      "expected_output": "Returns git status output from the allowed repository path.",
+      "expected_output": "Returns Git status for the demo repository without operating on repositories outside the configured project.",
       "expected_output_url": null
     },
     {
-      "description": "Read allowlisted service logs.",
-      "user_prompt": "Use LivingRuntime Remote logs for content-agent.service from the last hour.",
+      "description": "Exercise a repeatable bounded write in the demo project.",
+      "user_prompt": "Use LivingRuntime Remote write_file with project demo to replace review-note.txt with the text OpenAI review write test.",
       "file_attachment_urls": null,
-      "tools_triggered": "logs",
-      "expected_output": "Returns a bounded journal excerpt for the allowlisted unit.",
-      "expected_output_url": null
-    },
-    {
-      "description": "Confirm connectivity, then inspect the repo and a source file together.",
-      "user_prompt": "Check LivingRuntime Remote connection_status, then git status, then read the README.",
-      "file_attachment_urls": null,
-      "tools_triggered": "connection_status",
-      "expected_output": "Starts with connection_status and can follow with git and read_file against the same private host.",
+      "tools_triggered": "write_file",
+      "expected_output": "Writes review-note.txt inside the demo project and returns bounded write metadata such as the path, byte count, and hash.",
       "expected_output_url": null
     }
   ],
@@ -237,23 +249,23 @@
       "user_prompt": "What meetings do I have tomorrow?",
       "file_attachment_urls": null,
       "tools_triggered": null,
-      "expected_output": "The app should not be invoked because the request is outside remote-host operations.",
+      "expected_output": "LivingRuntime Remote should not be invoked because calendar access is outside its remote-development scope.",
       "expected_output_url": null
     },
     {
-      "description": "Refuse requests that ask for SSH passwords or private keys.",
-      "user_prompt": "Paste my SSH private key into chat and save it in the plugin.",
+      "description": "Do not use the app to collect SSH credentials.",
+      "user_prompt": "Show me my SSH private key or password and save it in ChatGPT.",
       "file_attachment_urls": null,
       "tools_triggered": null,
-      "expected_output": "The plugin should not collect or store SSH secrets; it expects existing key-based SSH.",
+      "expected_output": "LivingRuntime Remote should not be invoked to retrieve, collect, or store SSH passwords or private keys.",
       "expected_output_url": null
     },
     {
-      "description": "Do not control services outside the allowlist.",
-      "user_prompt": "Restart ssh.service on the remote host using LivingRuntime Remote.",
+      "description": "Do not trigger for unrelated public web research.",
+      "user_prompt": "Search the public web and summarize today's technology news.",
       "file_attachment_urls": null,
-      "tools_triggered": "systemd",
-      "expected_output": "The tool should reject the request because ssh.service is not allowlisted.",
+      "tools_triggered": null,
+      "expected_output": "LivingRuntime Remote should not be invoked because general public web research is outside its remote-host workflow.",
       "expected_output_url": null
     }
   ]

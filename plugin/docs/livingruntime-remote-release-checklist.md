@@ -43,11 +43,13 @@ Identity is `livingruntime.remote`. Current public release version: `0.4.8`.
 - [x] POSIX installer syntax check.
 - [x] local PyInstaller Linux single-file build.
 - [x] packaged Connector `--version` and `status` smoke test.
-- [ ] GitHub tag build succeeds on all five target runners.
+- [x] GitHub v0.4.8 release assets are available for all five target platforms.
 - [x] production `remote.livingruntime.com` DNS/TLS is active.
 - [ ] Windows Authenticode signing credential configured.
 - [ ] Apple Developer ID/notarization credentials configured.
-- [ ] final ChatGPT marketplace/domain verification completed.
+- [x] isolated App Directory reviewer account + demo Connector validated.
+- [x] submission import has exactly 5 positive + 3 negative cases and covers all public tool annotations.
+- [ ] final ChatGPT marketplace/domain verification and submission completed.
 
 ## User flow
 
