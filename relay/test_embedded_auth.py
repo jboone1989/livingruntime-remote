@@ -239,6 +239,41 @@ class EmbeddedOAuthTests(unittest.TestCase):
             self.assertEqual(revoked_userinfo.status_code, 401)
             self.assertEqual(revoked_userinfo.json()["error"], "invalid_token")
 
+    def test_dcr_without_scope_uses_supported_defaults(self):
+        with TestClient(self.app) as client:
+            response = client.post(
+                "/register",
+                json={
+                    "client_name": "ChatGPT no-scope DCR",
+                    "redirect_uris": ["https://client.example.test/callback"],
+                    "token_endpoint_auth_method": "none",
+                    "grant_types": ["authorization_code", "refresh_token"],
+                    "response_types": ["code"],
+                },
+            )
+            self.assertEqual(response.status_code, 201, response.text)
+            registration = response.json()
+            self.assertEqual(
+                set(registration["scope"].split()),
+                {"remote:read", "remote:write", "openid", "email", "offline_access"},
+            )
+            auth = client.get(
+                "/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": registration["client_id"],
+                    "redirect_uri": "https://client.example.test/callback",
+                    "scope": "openid email offline_access remote:read remote:write",
+                    "state": "chatgpt-state",
+                    "code_challenge": _challenge("pkce-verifier-" + "x" * 48),
+                    "code_challenge_method": "S256",
+                    "resource": self.resource,
+                },
+                follow_redirects=False,
+            )
+            self.assertEqual(auth.status_code, 302, auth.text)
+            self.assertEqual(urlsplit(auth.headers["location"]).path, "/oauth/login")
+
     def test_scope_validation_rejects_unknown_scope(self):
         with TestClient(self.app) as client:
             response = client.post(

@@ -24,7 +24,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.8"
+VERSION = "0.4.9"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
 READ = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", *IDENTITY_SCOPES]}]}
@@ -207,7 +207,7 @@ def create_mcp(
             ClientRegistrationOptions(
                 enabled=True,
                 valid_scopes=SUPPORTED_SCOPES,
-                default_scopes=["remote:read"],
+                default_scopes=SUPPORTED_SCOPES,
             )
             if mode == "embedded"
             else None
