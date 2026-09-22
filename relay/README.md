@@ -89,6 +89,6 @@ The connector accepts only the explicit LivingRuntime Remote tool allowlist and 
 
 ## Production notes
 
-SQLite is sufficient for one relay process and the initial reviewed beta. Idle connector long polls are event-driven inside the relay process: they do not repeatedly query SQLite while waiting for work. Before horizontal scaling, replace the in-process wakeup plus SQLite task queue with a shared broker/database while preserving the same user/device ownership checks. Do not put sticky SSH credentials in the relay to avoid building a second secret-management plane.
+SQLite is sufficient for one relay process and the initial reviewed beta. Idle connector long polls and in-flight MCP result waits are event-driven inside the relay process: they do not repeatedly query SQLite while waiting for work or completion. Before horizontal scaling, replace the in-process wakeups plus SQLite task queue with a shared broker/database while preserving the same user/device ownership checks. Do not put sticky SSH credentials in the relay to avoid building a second secret-management plane.
 
 The public edge must provide HTTPS, request/body limits, a second pairing-rate-limit layer, normal abuse controls, and durable service monitoring. A reviewer account should be paired to a dedicated low-privilege review host rather than a production machine.

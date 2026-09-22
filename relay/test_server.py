@@ -184,6 +184,45 @@ class RelayServerTests(unittest.TestCase):
         elapsed = asyncio.run(exercise())
         self.assertLess(elapsed, 0.5)
 
+    def test_result_wait_does_not_poll_sqlite(self):
+        class CountingStore(RelayStore):
+            def __init__(self, path: str) -> None:
+                super().__init__(path)
+                self.result_calls = 0
+
+            def result(self, user_sub: str, task_id: str, consume: bool = False):
+                self.result_calls += 1
+                return super().result(user_sub, task_id, consume=consume)
+
+        store = CountingStore(str(Path(self.tmp.name) / "result-counting.sqlite3"))
+        paired = store.pair_device(
+            store.create_pairing_code("user-a")["code"], "test"
+        )
+        relay = server.Relay(
+            store, timeout=1.0, reconnect_grace=0, device_stale_after=30
+        )
+
+        async def exercise():
+            call = asyncio.create_task(
+                relay.call("user-a", "connection_status", {})
+            )
+            await asyncio.sleep(0.05)
+            task = store.claim(paired["device_id"])
+            self.assertIsNotNone(task)
+            await asyncio.sleep(0.35)
+            self.assertEqual(store.result_calls, 1)
+            store.complete(
+                paired["device_id"],
+                task["task_id"],
+                {"ok": True, "result": {"ok": True}},
+            )
+            relay.notify_result(task["task_id"])
+            return await call
+
+        result = asyncio.run(exercise())
+        self.assertTrue(result["ok"])
+        self.assertEqual(store.result_calls, 2)
+
     def test_pair_endpoint_rate_limits_repeated_failures(self):
         with TestClient(self.app) as client:
             headers = {"x-forwarded-for": "203.0.113.10"}

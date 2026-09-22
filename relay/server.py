@@ -81,6 +81,7 @@ class Relay:
         self.reconnect_grace = max(0.0, reconnect_grace)
         self.device_stale_after = max(1.0, device_stale_after)
         self._task_events: dict[str, asyncio.Event] = {}
+        self._result_events: dict[str, asyncio.Event] = {}
 
     def _task_event(self, device_id: str) -> asyncio.Event:
         event = self._task_events.get(device_id)
@@ -107,6 +108,19 @@ class Relay:
             return True
         except TimeoutError:
             return False
+
+    def _result_event(self, task_id: str) -> asyncio.Event:
+        event = self._result_events.get(task_id)
+        if event is None:
+            event = asyncio.Event()
+            self._result_events[task_id] = event
+        return event
+
+    def notify_result(self, task_id: str) -> None:
+        """Wake an MCP request that is waiting for this task result."""
+        event = self._result_events.get(task_id)
+        if event is not None:
+            event.set()
 
     def device_status(self, user_sub: str) -> dict[str, Any] | None:
         device = self.store.device_for_user(user_sub)
@@ -139,6 +153,7 @@ class Relay:
     async def call(self, user_sub: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
         device = await self._wait_for_online_device(user_sub)
         task_id = self.store.enqueue(user_sub, device["device_id"], tool, args)
+        result_event = self._result_event(task_id)
         self.notify_task(device["device_id"])
         requested_timeout = 0.0
         try:
@@ -146,22 +161,28 @@ class Relay:
         except (TypeError, ValueError):
             requested_timeout = 0.0
         wait_timeout = max(self.timeout, min(120.0, max(0.0, requested_timeout)) + 30.0)
-        deadline = time.monotonic() + wait_timeout
-        while time.monotonic() < deadline:
+        try:
             result = self.store.result(user_sub, task_id, consume=True)
+            if result is None:
+                try:
+                    await asyncio.wait_for(result_event.wait(), timeout=wait_timeout)
+                except TimeoutError:
+                    pass
+                result = self.store.result(user_sub, task_id, consume=True)
             if result is not None:
                 if not result.get("ok"):
                     raise RuntimeError(str(result.get("error") or "remote device call failed"))
                 value = result.get("result")
                 return value if isinstance(value, dict) else {"result": value}
-            await asyncio.sleep(0.15)
-        if self.store.cancel_if_queued(user_sub, task_id):
+            if self.store.cancel_if_queued(user_sub, task_id):
+                raise TimeoutError(
+                    "paired device did not claim task before relay timeout; queued task was cancelled"
+                )
             raise TimeoutError(
-                "paired device did not claim task before relay timeout; queued task was cancelled"
+                "paired device claimed task but did not complete before relay timeout"
             )
-        raise TimeoutError(
-            "paired device claimed task but did not complete before relay timeout"
-        )
+        finally:
+            self._result_events.pop(task_id, None)
 
 
 def _principal(scope: str) -> str:
@@ -687,7 +708,9 @@ nav a{{margin-right:18px}}
         try:
             device = store.authenticate_device(_device_token(request))
             body = await request.json()
-            store.complete(device["device_id"], str(body["task_id"]), dict(body["result"]))
+            task_id = str(body["task_id"])
+            store.complete(device["device_id"], task_id, dict(body["result"]))
+            relay.notify_result(task_id)
             return JSONResponse({"ok": True})
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
