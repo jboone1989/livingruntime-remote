@@ -38,7 +38,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.4")
+            self.assertEqual(health.json()["version"], "0.4.5")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -70,6 +70,30 @@ class RelayServerTests(unittest.TestCase):
             ))
             missing = client.get("/download/plan9-amd64")
             self.assertEqual(missing.status_code, 404)
+
+    def test_public_home_legal_and_support_pages(self):
+        with TestClient(self.app) as client:
+            home = client.get("/")
+            self.assertEqual(home.status_code, 200)
+            self.assertIn("LivingRuntime Remote", home.text)
+            self.assertIn("/privacy", home.text)
+            self.assertIn("/terms", home.text)
+            self.assertIn("/support", home.text)
+
+            privacy = client.get("/privacy")
+            self.assertEqual(privacy.status_code, 200)
+            self.assertIn("Privacy Policy", privacy.text)
+            self.assertIn("does not store SSH passwords", privacy.text)
+
+            terms = client.get("/terms")
+            self.assertEqual(terms.status_code, 200)
+            self.assertIn("Terms of Service", terms.text)
+            self.assertIn("authorized to access", terms.text)
+
+            support = client.get("/support")
+            self.assertEqual(support.status_code, 200)
+            self.assertIn("connection_status", support.text)
+            self.assertIn("capabilities", support.text)
 
     def test_unauthenticated_mcp_returns_oauth_resource_challenge(self):
         with TestClient(self.app) as client:

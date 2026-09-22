@@ -12,4 +12,4 @@ By using the plugin or app you agree that:
 
 The software is offered without warranty. See the repository license for copyright terms.
 
-Support: https://github.com/jboone1989/livingruntime-remote/issues
+Support: https://remote.livingruntime.com/support

@@ -1,13 +1,13 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "livingruntime-remote",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "Bounded SSH-backed remote development tools for LivingRuntime hosts, with local stdio and ChatGPT Secure MCP Tunnel transports.",
   "author": {
     "name": "LivingRuntime",
     "url": "https://github.com/jboone1989/livingruntime-remote"
   },
-  "homepage": "https://github.com/jboone1989/livingruntime-remote",
+  "homepage": "https://remote.livingruntime.com/",
   "repository": "https://github.com/jboone1989/livingruntime-remote",
   "license": "MIT",
   "keywords": ["ssh", "remote-development", "livingruntime", "mcp", "chatgpt"],
@@ -21,9 +21,9 @@
         "developerName": "LivingRuntime",
         "category": "Developer Tools",
         "capabilities": ["Read", "Write", "Remote Development"],
-        "websiteURL": "https://github.com/jboone1989/livingruntime-remote",
-        "privacyPolicyURL": "https://github.com/jboone1989/livingruntime-remote/blob/main/plugin/PRIVACY.md",
-        "termsOfServiceURL": "https://github.com/jboone1989/livingruntime-remote/blob/main/plugin/TERMS.md",
+        "websiteURL": "https://remote.livingruntime.com/",
+        "privacyPolicyURL": "https://remote.livingruntime.com/privacy",
+        "termsOfServiceURL": "https://remote.livingruntime.com/terms",
         "defaultPrompt": [
           "Use LivingRuntime Remote connection_status to verify the host, then show repository status with git.",
           "Read the current service logs with logs and inspect the matching source file with read_file."

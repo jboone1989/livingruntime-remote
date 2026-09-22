@@ -25,4 +25,4 @@ Local configuration and audit logs remain on your machines until you delete them
 
 ## Contact
 
-https://github.com/jboone1989/livingruntime-remote/issues
+https://remote.livingruntime.com/support

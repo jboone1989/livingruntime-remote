@@ -179,7 +179,7 @@
       "user_prompt": "Use LivingRuntime Remote capabilities and tell me whether the remote is healthy.",
       "file_attachment_urls": null,
       "tools_triggered": "capabilities",
-      "expected_output": "Returns identity livingruntime.remote, version 0.4.4, schema_hash, handshake tools, server_tools matching REMOTE_TOOLS, available/missing, health_scope=mcp_tools_list, and healthy=true when MCP tools/list matches the registry. healthy does not mean ChatGPT Custom App has imported every action.",
+      "expected_output": "Returns identity livingruntime.remote, version 0.4.5, schema_hash, handshake tools, server_tools matching REMOTE_TOOLS, available/missing, health_scope=mcp_tools_list, and healthy=true when MCP tools/list matches the registry. healthy does not mean ChatGPT Custom App has imported every action.",
       "expected_output_url": null
     },
     {
@@ -187,7 +187,7 @@
       "user_prompt": "Use LivingRuntime Remote diagnostics and report identity, version, schema hash, and whether the process tool registry is complete.",
       "file_attachment_urls": null,
       "tools_triggered": "diagnostics",
-      "expected_output": "Returns remote_id livingruntime.remote, version 0.4.4, schema_hash, session_attach for this MCP process, and last_tool_refresh.",
+      "expected_output": "Returns remote_id livingruntime.remote, version 0.4.5, schema_hash, session_attach for this MCP process, and last_tool_refresh.",
       "expected_output_url": null
     },
     {

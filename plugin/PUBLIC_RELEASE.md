@@ -27,10 +27,19 @@ Tags use the normal repository form `vX.Y.Z`.
 
 When this repository becomes public, `remote.livingruntime.com/install` can point directly to the repository's public GitHub Releases.
 
+## 0.4.5 release readiness
+
+Implemented:
+
+- branded home/install/support/privacy/terms routes
+- plugin metadata points to `remote.livingruntime.com`
+- standalone repository and release workflow
+- production relay can run 0.4.5 behind the existing hostname before the DNS cutover
+
 ## Remaining launch work
 
-- final branded DNS/TLS for `remote.livingruntime.com`
-- public support/privacy/terms pages
+- add DNS `remote.livingruntime.com -> 207.246.99.253` and issue TLS
+- switch the production OAuth issuer/resource/docs URLs to `remote.livingruntime.com`
 - ChatGPT domain/developer verification and marketplace review
 - Windows Authenticode signing credentials
 - Apple Developer ID/notarization credentials

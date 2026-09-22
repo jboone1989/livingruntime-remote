@@ -24,7 +24,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.4"
+VERSION = "0.4.5"
 READ = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read"]}]}
 WRITE = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", "remote:write"]}]}
 SUPPORTED_SCOPES = ["remote:read", "remote:write"]
@@ -445,14 +445,13 @@ def create_app(store: RelayStore | None = None) -> Starlette:
     async def challenge(_: Request):
         return PlainTextResponse(os.environ.get("OPENAI_APPS_CHALLENGE", ""))
 
-    async def install_page(_: Request):
-        origin = html.escape(public_origin)
+    def public_page(title: str, body_html: str) -> HTMLResponse:
         body = f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Install LivingRuntime Remote</title>
+<title>{html.escape(title)} · LivingRuntime Remote</title>
 <style>
 body{{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#111;color:#eee;margin:0}}
 main{{max-width:760px;margin:7vh auto;padding:28px}}
@@ -461,10 +460,37 @@ code,pre{{background:#0d0d0d;border-radius:8px;padding:10px;overflow:auto}}
 pre{{white-space:pre-wrap}}
 p,li{{color:#bbb;line-height:1.55}}
 a{{color:#b9ccff}}
+nav{{margin-bottom:28px}}
+nav a{{margin-right:18px}}
 </style>
 </head>
 <body><main>
-<h1>LivingRuntime Remote Connector</h1>
+<nav><a href="/install">Install</a><a href="/support">Support</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></nav>
+{body_html}
+</main></body></html>"""
+        return HTMLResponse(
+            body,
+            headers={
+                "cache-control": "public, max-age=300",
+                "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+                "x-content-type-options": "nosniff",
+            },
+        )
+
+    async def home(_: Request):
+        return public_page(
+            "LivingRuntime Remote",
+            """<h1>LivingRuntime Remote</h1>
+<p>Bounded remote development tools for machines and repositories you control.</p>
+<div class="card"><p><a href="/install">Install the Connector</a></p>
+<p><a href="/support">Support and documentation</a></p></div>""",
+        )
+
+    async def install_page(_: Request):
+        origin = html.escape(public_origin)
+        return public_page(
+            "Install",
+            f"""<h1>LivingRuntime Remote Connector</h1>
 <p>Install the small connector on a computer that already has key-based SSH access to your Linux host. Python is not required.</p>
 <div class="card">
 <h2>Windows</h2>
@@ -475,14 +501,44 @@ a{{color:#b9ccff}}
 <pre>curl -fsSL {origin}/install.sh | sh</pre>
 </div>
 <p>The installer asks for the pairing code shown in ChatGPT, your SSH host, and the workspace root ChatGPT may access. It verifies SSH before consuming the pairing code.</p>
-</main></body></html>"""
-        return HTMLResponse(
-            body,
-            headers={
-                "cache-control": "no-store",
-                "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
-                "x-content-type-options": "nosniff",
-            },
+""",
+        )
+
+    async def privacy_page(_: Request):
+        return public_page(
+            "Privacy",
+            """<h1>Privacy Policy</h1>
+<p>LivingRuntime Remote connects ChatGPT-compatible clients to machines that the user controls.</p>
+<div class="card"><h2>Data handled</h2>
+<p>The service may process non-secret connection metadata, bounded tool inputs and outputs, pairing/device identifiers, and local audit records required to provide Remote functionality.</p></div>
+<div class="card"><h2>Credentials</h2>
+<p>LivingRuntime Remote does not store SSH passwords or SSH private keys. SSH credentials remain in the user's existing SSH configuration on the Connector machine.</p></div>
+<div class="card"><h2>Sharing and retention</h2>
+<p>When Remote is used with ChatGPT, tool arguments and results travel through the normal OpenAI app/MCP request path. Local configuration and audit logs remain on the user's machines until deleted. ChatGPT-side retention follows the user's OpenAI account or workspace settings.</p></div>
+<p>Do not place secrets in tool arguments or file contents that you do not want transmitted through the connected client.</p>""",
+        )
+
+    async def terms_page(_: Request):
+        return public_page(
+            "Terms",
+            """<h1>Terms of Service</h1>
+<p>LivingRuntime Remote is provided for operating machines, repositories, and services that you are authorized to access.</p>
+<ol><li>Use Remote only with systems you are authorized to administer.</li>
+<li>Remote is a bounded development execution channel, not a hostile-code sandbox.</li>
+<li>Do not expose loopback MCP ports directly to the public internet.</li>
+<li>ChatGPT plan, developer-mode, and marketplace permissions are controlled by OpenAI.</li></ol>
+<p>The software is provided as-is, without warranty, subject to the repository license.</p>""",
+        )
+
+    async def support_page(_: Request):
+        return public_page(
+            "Support",
+            """<h1>Support</h1>
+<p>For setup problems, start by checking the paired Connector and calling <code>connection_status</code> and <code>capabilities</code> in ChatGPT.</p>
+<div class="card"><h2>Expected healthy state</h2>
+<p><code>connection_status.ok = true</code> and <code>capabilities.healthy = true</code> with an empty <code>missing</code> list.</p></div>
+<div class="card"><h2>Installation</h2><p><a href="/install">Open the Connector installation page</a>.</p></div>
+<p>LivingRuntime Remote source and issue tracking are published from the LivingRuntime Remote repository.</p>""",
         )
 
     async def install_ps1(_: Request):
@@ -572,11 +628,15 @@ a{{color:#b9ccff}}
         }, headers={"cache-control": "no-store"})
 
     routes = [
+        Route("/", home),
         Route("/healthz", health),
         Route("/install", install_page),
         Route("/install.ps1", install_ps1),
         Route("/install.sh", install_sh),
         Route("/download/{target}", download_connector),
+        Route("/privacy", privacy_page),
+        Route("/terms", terms_page),
+        Route("/support", support_page),
         Route("/.well-known/openai-apps-challenge", challenge),
     ]
     if _auth_mode() == "embedded":
