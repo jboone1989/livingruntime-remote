@@ -10,7 +10,13 @@
   "homepage": "https://remote.livingruntime.com/",
   "repository": "https://github.com/jboone1989/livingruntime-remote",
   "license": "MIT",
-  "keywords": ["ssh", "remote-development", "livingruntime", "mcp", "chatgpt"],
+  "keywords": [
+    "ssh",
+    "remote-development",
+    "livingruntime",
+    "mcp",
+    "chatgpt"
+  ],
   "extensions": {
     "com.openai": {
       "apps": "./.app.json",
@@ -20,7 +26,11 @@
         "longDescription": "Remote development plugin for user-controlled machines. Verify connectivity, inspect configured projects, read and edit files within allowed roots, run bounded Git and allowlisted development commands, and inspect allowlisted services and logs. Public ChatGPT and Codex access uses the production OAuth-protected MCP service.",
         "developerName": "LivingRuntime",
         "category": "Developer Tools",
-        "capabilities": ["Read", "Write", "Remote Development"],
+        "capabilities": [
+          "Read",
+          "Write",
+          "Remote Development"
+        ],
         "websiteURL": "https://remote.livingruntime.com/",
         "privacyPolicyURL": "https://remote.livingruntime.com/privacy",
         "termsOfServiceURL": "https://remote.livingruntime.com/terms",
@@ -30,7 +40,8 @@
         ],
         "brandColor": "#2F855A",
         "composerIcon": "./assets/logo.png",
-        "logo": "./assets/logo.png"
+        "logo": "./assets/logo.png",
+        "supportURL": "https://remote.livingruntime.com/support"
       }
     }
   }

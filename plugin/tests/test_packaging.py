@@ -24,6 +24,7 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(REMOTE_IDENTITY, "livingruntime.remote")
         self.assertEqual(openai["apps"], "./.app.json")
         self.assertEqual(openai["interface"]["displayName"], "LivingRuntime Remote")
+        self.assertEqual(openai["interface"]["supportURL"], "https://remote.livingruntime.com/support")
         self.assertTrue((self.root / "assets" / "logo.png").exists())
 
     def test_openai_listing_fields_meet_directory_limits(self) -> None:
