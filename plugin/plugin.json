@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "livingruntime-remote",
-  "version": "0.4.21",
+  "version": "0.4.22",
   "description": "Bounded SSH-backed remote development tools for user-controlled hosts, available through local stdio and a public OAuth-protected MCP endpoint.",
   "author": {
     "name": "LivingRuntime",

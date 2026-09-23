@@ -25,7 +25,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.21"
+VERSION = "0.4.22"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v1.html"
 CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v1.html"
 PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
@@ -66,6 +66,7 @@ TOOL_TEXT = {
     "systemd": ("Manage allowlisted service", "Inspect or control an explicitly allowlisted systemd unit on the connected host."),
     "apply_patch": ("Apply file patch", "Apply a unified diff to a file inside an allowed workspace, optionally guarded by an expected SHA-256."),
     "diagnostics": ("Run Remote diagnostics", "Collect bounded LivingRuntime Remote diagnostics for connectivity, configuration, and tool-health troubleshooting."),
+    "start_pi_step": ("Start detached Pi step", "Run a bounded batch of structured Pi file/search/edit actions in an external-controller session, persist it as a durable job, and attach the Pi watcher. Pi does not call an LLM."),
 }
 
 PI_JOB_WIDGET_HTML = r"""<!doctype html>
@@ -132,12 +133,23 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
     return result?.structuredContent || result?.structured_content || result || null;
   }
 
-  async function sendFollowUp(jobId, state) {
+  async function sendFollowUp(jobId, state, runtimeJobId, runtimeGoalStatus) {
     const completionStatus = state?.status || "UNKNOWN";
-    const prompt =
-      "Pi Remote job " + jobId + " completed with status " + completionStatus +
-      ". Continue this same development task now. Inspect the durable Pi job/session result, " +
-      "review the changes and tests, and proceed to the next required step without asking me to say continue.";
+    const prompt = runtimeJobId
+      ? (
+          "Pi Remote step " + jobId + " completed with status " + completionStatus +
+          ". Durable LivingRuntime goal " + runtimeJobId + " is now " + (runtimeGoalStatus || "UNKNOWN") +
+          ". Continue this same goal now: inspect the Pi session evidence and current repository state, " +
+          "then either call start_pi_step again with runtime_job_id=" + runtimeJobId +
+          " for the next bounded external-controller step, use the normal Remote permission layer for commands/tests, " +
+          "or mark the durable goal SUCCEEDED with checkpoint_job only if its acceptance evidence is satisfied. " +
+          "Do not ask me to say continue."
+        )
+      : (
+          "Pi Remote job " + jobId + " completed with status " + completionStatus +
+          ". Continue this same development task now. Inspect the durable Pi job/session result, " +
+          "review the changes and tests, and proceed to the next required step without asking me to say continue."
+        );
     try {
       await request("ui/message", {
         role: "user",
@@ -156,6 +168,7 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
 
   async function watch(output) {
     const jobId = output?.jobId;
+    const runtimeJobId = output?.runtimeJobId || null;
     const piRemoteDir = output?.piRemoteDir;
     const jobRoot = output?.jobRoot || null;
     if (!connected || !jobId || activeJob === jobId || stopped) return;
@@ -180,20 +193,26 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
         const data = toolResultData(result);
         if (data?.terminal) {
           const state = data.state || {};
+          const durableId = data.runtimeJobId || runtimeJobId;
+          const durableStatus = data.runtimeGoalStatus || output?.runtimeGoalStatus || null;
           setStatus(
             "Pi finished: " + (state.status || "terminal"),
-            "Sending a follow-up into this ChatGPT conversation…"
+            durableId
+              ? "Durable goal " + durableId + " · " + (durableStatus || "awaiting controller")
+              : "Sending a follow-up into this ChatGPT conversation…"
           );
           await request("ui/update-model-context", {
             structuredContent: {
               piRemoteCompletion: {
                 jobId,
+                runtimeJobId: durableId,
                 status: state.status || null,
+                runtimeGoalStatus: durableStatus,
                 finishedAt: state.finishedAt || null
               }
             }
           }).catch(() => {});
-          await sendFollowUp(jobId, state);
+          await sendFollowUp(jobId, state, durableId, durableStatus);
           setStatus("Follow-up sent", "ChatGPT can continue from the completed Pi job.");
           stopped = true;
           return;
@@ -699,6 +718,38 @@ def create_mcp(
     @apps.tool(
         resource_uri=PI_JOB_WIDGET_URI,
         visibility=["model", "app"],
+        name="start_pi_step",
+        title=TOOL_TEXT["start_pi_step"][0],
+        description=TOOL_TEXT["start_pi_step"][1],
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=True,
+            openWorldHint=False,
+        ),
+        meta=WRITE,
+    )
+    async def start_pi_step(
+        goal: str,
+        project: str,
+        actions: list[dict[str, Any]],
+        session_file: str | None = None,
+        runtime_job_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "start_pi_step",
+            {
+                "goal": goal,
+                "project": project,
+                "actions": actions,
+                "session_file": session_file,
+                "runtime_job_id": runtime_job_id,
+            },
+        )
+
+    @apps.tool(
+        resource_uri=PI_JOB_WIDGET_URI,
+        visibility=["model", "app"],
         name="watch_pi_job",
         title="Watch Pi Remote job",
         description=(
@@ -718,22 +769,15 @@ def create_mcp(
         pi_remote_dir: str = "/home/ubuntu/src/pi-remote",
         job_root: str | None = None,
     ) -> dict[str, Any]:
-        user_sub = _principal("remote:read")
-        state = await pi_job_command(
-            user_sub,
-            "job-status",
-            job_id,
-            pi_remote_dir,
-            job_root,
-            timeout_seconds=15,
+        return await relay.call(
+            _principal("remote:read"),
+            "watch_pi_job",
+            {
+                "job_id": job_id,
+                "pi_remote_dir": pi_remote_dir,
+                "job_root": job_root,
+            },
         )
-        return {
-            "jobId": job_id,
-            "piRemoteDir": pi_remote_dir,
-            "jobRoot": job_root,
-            "state": state,
-            "terminal": state.get("status") in {"SUCCEEDED", "FAILED", "CANCELLED"},
-        }
 
     @apps.tool(
         resource_uri=CONTROL_PLANE_WIDGET_URI,
@@ -876,13 +920,15 @@ def create_mcp(
         job_root: str | None = None,
         timeout_seconds: int = 90,
     ) -> dict[str, Any]:
-        return await pi_job_command(
+        return await relay.call(
             _principal("remote:read"),
-            "job-wait",
-            job_id,
-            pi_remote_dir,
-            job_root,
-            timeout_seconds=timeout_seconds,
+            "wait_pi_job_completion",
+            {
+                "job_id": job_id,
+                "pi_remote_dir": pi_remote_dir,
+                "job_root": job_root,
+                "timeout_seconds": timeout_seconds,
+            },
         )
 
     @server.tool(

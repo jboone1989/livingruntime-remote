@@ -2,7 +2,7 @@
 
 Identity: `livingruntime.remote`
 
-Current version: `0.4.21`
+Current version: `0.4.22`
 
 This directory contains the ChatGPT/Codex-facing MCP runtime and the local Connector implementation.
 
@@ -36,6 +36,7 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 - logs
 - apply_patch
 - diagnostics
+- start_pi_step
 - watch_pi_job
 - wait_pi_job_completion
 - bind_openai_pi_continuation
@@ -60,6 +61,10 @@ Secrets are added only on the owned machine with `python scripts/credentialctl.p
 Long tasks can be represented independently of a model turn with `create_job`. The durable record stores the goal, project/device routing, optional Pi backend, current step, next action, bounded checkpoints, and terminal status. `checkpoint_job` persists resumable progress; `get_job` and `list_jobs` recover it in later turns or sessions. Existing Pi/OpenAI continuation bindings automatically adopt a durable job and checkpoint its terminal backend status.
 
 Job state is private local control-plane data under `~/.livingruntime/jobs` by default and is written owner-only.
+
+`start_pi_step` is the preferred external-controller path for long development work. ChatGPT supplies a bounded batch of structured Pi actions; Pi executes the batch in a detached worker while making zero model calls. The first step creates a durable Goal and an external-controller Pi session. Later steps pass the same `runtime_job_id`; the Goal reuses the same Pi session while each child Pi job is replaceable.
+
+A child Pi step reaching `SUCCEEDED` moves the durable Goal to `WAITING`, not `SUCCEEDED`. A failed or cancelled child moves the Goal to `BLOCKED`. Only the controller may terminalize the overall Goal through `checkpoint_job` after acceptance evidence is satisfied. Detached `external-actions` reject Pi `bash`; commands and tests continue through the normal Remote `exec` permission layer.
 
 ### Dynamic exec approvals
 

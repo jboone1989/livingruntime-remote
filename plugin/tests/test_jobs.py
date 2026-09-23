@@ -91,6 +91,32 @@ class JobStoreTests(unittest.TestCase):
         self.assertTrue(completed["terminal"])
         self.assertEqual(completed["checkpoints"][-1]["source"], "backend")
 
+    def test_attach_backend_reuses_nonterminal_goal_and_preserves_session_metadata(self) -> None:
+        created = jobs.create(goal="Multi-step goal", project="ferro", device="main")
+        attached = jobs.attach_backend(
+            created["job_id"],
+            {
+                "type": "pi-step",
+                "job_id": "step-1",
+                "pi_remote_dir": "/home/ubuntu/src/pi-remote-runtime",
+                "job_root": "/home/ubuntu/.livingruntime/pi-jobs",
+                "session_file": "/home/ubuntu/.livingruntime/pi-sessions/session.jsonl",
+                "session_id": "session-1",
+                "controller_mode": "external",
+            },
+        )
+        self.assertEqual(attached["job_id"], created["job_id"])
+        self.assertEqual(attached["status"], "RUNNING")
+        self.assertFalse(attached["terminal"])
+        self.assertEqual(attached["backend"]["type"], "pi-step")
+        self.assertEqual(attached["backend"]["session_id"], "session-1")
+        jobs.checkpoint(created["job_id"], summary="done", status="SUCCEEDED")
+        with self.assertRaisesRegex(RuntimeError, "terminal"):
+            jobs.attach_backend(
+                created["job_id"],
+                {"type": "pi-step", "job_id": "step-2"},
+            )
+
     def test_job_files_are_owner_only(self) -> None:
         created = jobs.create(goal="Private task")
         path = self.root / f"{created['job_id']}.json"

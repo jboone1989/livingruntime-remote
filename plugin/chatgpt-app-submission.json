@@ -4,7 +4,7 @@
   "app_info": {
     "display_name": "LivingRuntime Remote",
     "subtitle": "Bounded remote host tools",
-    "description": "LivingRuntime Remote lets ChatGPT operate development machines the user controls through bounded remote tools. It verifies connectivity, discovers configured hosts and resources, persists long-running jobs across model turns, provides a read-only control-plane overview, exposes credential handles through scoped short-lived leases with dedicated secret-consuming capabilities, and turns additional commands into durable operator approval requests. SSH passwords and private keys remain outside the service.",
+    "description": "LivingRuntime Remote lets ChatGPT operate development machines the user controls through bounded remote tools. It discovers managed hosts, persists long-running jobs, runs detached Pi external-controller steps without Pi model calls, provides a read-only control plane, exposes credential handles through scoped leases, and keeps commands behind explicit permission boundaries. SSH passwords and private keys remain outside the service.",
     "category": "DEVELOPER_TOOLS"
   },
   "tools": {
@@ -426,6 +426,18 @@
         "read_only_justification": "Consumes an already-issued scoped lease internally to verify the GitHub account identity; the credential itself is never returned.",
         "open_world_justification": "Makes one fixed HTTPS request to https://api.github.com/user with redirects disabled. The destination is not user-selectable.",
         "destructive_justification": "Does not create, modify, or delete GitHub resources or local credential material."
+      }
+    },
+    "start_pi_step": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Creates or reuses a Pi external-controller session, starts a detached structured action batch, and persists a durable job.",
+        "open_world_justification": "The detached batch is restricted to local Pi file/search/edit tools; Pi bash is rejected and commands remain behind LivingRuntime Remote exec permissions.",
+        "destructive_justification": "Coder actions may edit or write files in the selected configured project, so the tool is explicitly marked destructive."
       }
     }
   },

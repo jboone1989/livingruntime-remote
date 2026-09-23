@@ -223,6 +223,25 @@ def ensure_backend_job(
     )
 
 
+def attach_backend(
+    job_id: str,
+    backend: dict[str, Any],
+    *,
+    status: str = "RUNNING",
+) -> dict[str, Any]:
+    value = _load(job_id)
+    if value.get("status") in TERMINAL_STATUSES:
+        raise RuntimeError("terminal job cannot attach a new backend")
+    if status not in STATUSES or status in TERMINAL_STATUSES:
+        raise ValueError("attached backend status must be non-terminal")
+    value["backend"] = _normalize_backend(backend)
+    value["status"] = status
+    value["terminal"] = False
+    value["updated_at"] = time.time()
+    _save(value)
+    return dict(value)
+
+
 def sync_backend_status(
     job_id: str,
     *,
@@ -272,7 +291,13 @@ def _normalize_backend(backend: dict[str, Any] | None) -> dict[str, Any] | None:
         "type": backend_type,
         "job_id": backend_job_id,
     }
-    for key in ("pi_remote_dir", "job_root"):
+    for key in (
+        "pi_remote_dir",
+        "job_root",
+        "session_file",
+        "session_id",
+        "controller_mode",
+    ):
         if key in backend and backend[key] is not None:
             normalized[key] = _bounded(
                 str(backend[key]), field=f"backend.{key}", maximum=4096

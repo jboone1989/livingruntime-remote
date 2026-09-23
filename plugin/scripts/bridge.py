@@ -44,9 +44,11 @@ from credentials import (
     revoke_lease as revoke_credential_lease_runtime,
 )
 from jobs import (
+    attach_backend as attach_runtime_backend,
     checkpoint as checkpoint_runtime_job,
     create as create_runtime_job,
     ensure_backend_job,
+    find_by_backend,
     get as get_runtime_job,
     list_jobs as runtime_jobs_snapshot,
     sync_backend_status,
@@ -1435,6 +1437,69 @@ def _clear_openai_continuation(session_id: str) -> None:
         pass
 
 
+def _pi_runtime_settings() -> tuple[str, str, str, str]:
+    cfg = _config()
+    device_id = os.environ.get("LIVINGRUNTIME_PI_RUNTIME_DEVICE", cfg["default_host"]).strip()
+    host = host_for(cfg, host_id=device_id)
+    runtime_dir = os.environ.get(
+        "LIVINGRUNTIME_PI_RUNTIME_DIR",
+        "/home/ubuntu/src/pi-remote-runtime",
+    ).strip()
+    session_root = os.environ.get(
+        "LIVINGRUNTIME_PI_SESSION_ROOT",
+        "/home/ubuntu/.livingruntime/pi-sessions",
+    ).strip()
+    job_root = os.environ.get(
+        "LIVINGRUNTIME_PI_JOB_ROOT",
+        "/home/ubuntu/.livingruntime/pi-jobs",
+    ).strip()
+    for name, value in (
+        ("runtime_dir", runtime_dir),
+        ("session_root", session_root),
+        ("job_root", job_root),
+    ):
+        if not value or len(value) > 4096:
+            raise RuntimeError(f"invalid Pi runtime {name}")
+        normalized = os.path.normpath(value)
+        if not any(
+            os.path.commonpath([normalized, os.path.normpath(root)]) == os.path.normpath(root)
+            for root in host["roots"]
+        ):
+            raise RuntimeError(f"Pi runtime {name} is outside configured roots")
+    return device_id, runtime_dir, session_root, job_root
+
+
+def _pi_control_command(
+    command: str,
+    payload: dict[str, Any],
+    *,
+    timeout_seconds: int = 30,
+) -> dict[str, Any]:
+    if command not in {"create", "state", "job-start"}:
+        raise ValueError("unsupported Pi control command")
+    device_id, runtime_dir, _session_root, _job_root = _pi_runtime_settings()
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > MAX_OUTPUT_BYTES:
+        raise ValueError("Pi control payload exceeds maximum size")
+    result = _ssh(
+        ["node", runtime_dir.rstrip("/") + "/cli.js", command, encoded],
+        timeout=min(120, max(1, int(timeout_seconds))),
+        device=device_id,
+    )
+    if int(result.get("returncode", 1)) != 0:
+        raise RuntimeError(str(result.get("stderr") or "Pi Remote control command failed"))
+    stdout = result.get("stdout")
+    if not isinstance(stdout, str) or not stdout.strip():
+        raise RuntimeError("Pi Remote control command returned no JSON")
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError:
+        raise RuntimeError("Pi Remote control command returned invalid JSON") from None
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Pi Remote control command returned non-object JSON")
+    return parsed
+
+
 def _pi_job_command(
     command: str,
     job_id: str,
@@ -1480,6 +1545,170 @@ def _pi_job_command(
 
 
 @server.tool(
+    name="start_pi_step",
+    annotations=ToolAnnotations(
+        title="Start detached Pi external-controller step",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+def start_pi_step(
+    goal: str,
+    project: str,
+    actions: list[dict[str, Any]],
+    session_file: str | None = None,
+    runtime_job_id: str | None = None,
+) -> dict[str, Any]:
+    """Start a detached Pi action batch without allowing Pi to call an LLM.
+
+    The batch is limited to structured Pi file/search/edit tools. Shell commands
+    are intentionally excluded and must continue through Remote exec permissions.
+    """
+    goal = str(goal).strip()
+    project = str(project).strip()
+    if not goal or len(goal.encode("utf-8")) > 8000:
+        raise ValueError("goal must be a bounded non-empty string")
+    if not project or len(project) > 256:
+        raise ValueError("project must be a bounded non-empty project alias")
+    if not isinstance(actions, list) or not actions or len(actions) > 64:
+        raise ValueError("actions must contain between 1 and 64 items")
+    if _contains_secret(actions):
+        raise PermissionError("Pi step actions contain secret-like fields")
+    encoded_actions = json.dumps(actions, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded_actions.encode("utf-8")) > 256 * 1024:
+        raise ValueError("Pi step actions exceed maximum size")
+
+    cfg = _config()
+    selected = host_for(cfg, project=project)
+    runtime_device, runtime_dir, session_root, job_root = _pi_runtime_settings()
+    if selected["id"] != runtime_device:
+        raise RuntimeError(
+            f"Pi runtime is configured on device {runtime_device}, but project {project} is on {selected['id']}"
+        )
+    repo_path = resolve_path(cfg, None, project=project)
+
+    runtime_job: dict[str, Any] | None = None
+    if runtime_job_id is not None:
+        runtime_job = get_runtime_job(runtime_job_id)
+        if runtime_job.get("terminal"):
+            raise RuntimeError("terminal durable goal cannot start another Pi step")
+        if runtime_job.get("goal") != goal:
+            raise ValueError("goal does not match the durable job")
+        if runtime_job.get("project") != project:
+            raise ValueError("project does not match the durable job")
+        if runtime_job.get("device") not in {None, runtime_device}:
+            raise ValueError("device does not match the durable job")
+        previous_backend = runtime_job.get("backend")
+        if session_file is None and isinstance(previous_backend, dict):
+            session_file = previous_backend.get("session_file")
+
+    if session_file is None:
+        session = _pi_control_command(
+            "create",
+            {
+                "repoPath": repo_path,
+                "sessionDir": session_root,
+                "controllerMode": "external",
+            },
+            timeout_seconds=30,
+        )
+        session_file = str(session.get("sessionFile") or "")
+    else:
+        raw_session = Path(str(session_file)).expanduser()
+        resolved_session = raw_session.resolve(strict=True)
+        resolved_root = Path(session_root).expanduser().resolve(strict=False)
+        try:
+            resolved_session.relative_to(resolved_root)
+        except ValueError:
+            raise PermissionError("session_file is outside the configured Pi session root") from None
+        session_file = str(resolved_session)
+        session = _pi_control_command(
+            "state",
+            {"sessionFile": session_file},
+            timeout_seconds=15,
+        )
+
+    if not session_file:
+        raise RuntimeError("Pi session creation returned no session file")
+    if session.get("controllerMode") != "external":
+        raise RuntimeError("Pi step requires an external-controller session")
+    if os.path.realpath(str(session.get("cwd") or "")) != os.path.realpath(repo_path):
+        raise RuntimeError("Pi session workspace does not match the requested project")
+
+    launched = _pi_control_command(
+        "job-start",
+        {
+            "kind": "external-actions",
+            "sessionFile": session_file,
+            "actions": actions,
+            "jobRoot": job_root,
+        },
+        timeout_seconds=30,
+    )
+    state = launched.get("job")
+    if not isinstance(state, dict):
+        raise RuntimeError("Pi job-start returned no job state")
+    pi_job_id = str(state.get("id") or "")
+    if not pi_job_id:
+        raise RuntimeError("Pi job-start returned no job id")
+
+    backend = {
+        "type": "pi-step",
+        "job_id": pi_job_id,
+        "pi_remote_dir": runtime_dir,
+        "job_root": job_root,
+        "session_file": session_file,
+        "session_id": session.get("sessionId"),
+        "controller_mode": "external",
+    }
+    if runtime_job is None:
+        runtime_job = create_runtime_job(
+            goal=goal,
+            project=project,
+            device=runtime_device,
+            backend=backend,
+            status="RUNNING",
+        )
+    else:
+        runtime_job = attach_runtime_backend(
+            runtime_job["job_id"],
+            backend,
+            status="RUNNING",
+        )
+    runtime_job = checkpoint_runtime_job(
+        runtime_job["job_id"],
+        summary=f"Detached external-controller Pi step started with {len(actions)} actions.",
+        current_step=f"Pi external-actions batch ({len(actions)} actions)",
+        next_action="Await detached Pi completion, then inspect evidence and choose the next step.",
+        status="RUNNING",
+        source="runtime",
+    )
+    _audit("start_pi_step", True, {
+        "runtime_job_id": runtime_job["job_id"],
+        "pi_job_id": pi_job_id,
+        "project": project,
+        "device": runtime_device,
+        "action_count": len(actions),
+        "session_id": session.get("sessionId"),
+        "continued_goal": runtime_job_id is not None,
+    })
+    return {
+        "runtimeJobId": runtime_job["job_id"],
+        "jobId": pi_job_id,
+        "piRemoteDir": runtime_dir,
+        "jobRoot": job_root,
+        "sessionFile": session_file,
+        "sessionId": session.get("sessionId"),
+        "state": state,
+        "terminal": state.get("status") in {"SUCCEEDED", "FAILED", "CANCELLED"},
+        "controllerMode": "external",
+        "piLlmCallsExpectedDelta": 0,
+    }
+
+
+@server.tool(
     name="watch_pi_job",
     annotations=ToolAnnotations(
         title="Watch Pi Remote job",
@@ -1495,8 +1724,11 @@ def watch_pi_job(
 ) -> dict[str, Any]:
     """Inspect an existing Pi Remote detached job before arming OpenAI continuation."""
     state = _pi_job_command("job-status", job_id, pi_remote_dir, job_root, timeout_seconds=15)
+    runtime_job = find_by_backend("pi-step", job_id) or find_by_backend("pi", job_id)
     return {
         "jobId": job_id,
+        "runtimeJobId": None if runtime_job is None else runtime_job["job_id"],
+        "runtimeGoalStatus": None if runtime_job is None else runtime_job.get("status"),
         "piRemoteDir": pi_remote_dir,
         "jobRoot": job_root,
         "state": state,
@@ -1520,9 +1752,56 @@ def wait_pi_job_completion(
     timeout_seconds: int = 90,
 ) -> dict[str, Any]:
     """Event-driven bounded wait for an existing Pi Remote detached job."""
-    return _pi_job_command(
+    result = _pi_job_command(
         "job-wait", job_id, pi_remote_dir, job_root, timeout_seconds=timeout_seconds
     )
+    state = result.get("state") if isinstance(result.get("state"), dict) else {}
+    runtime_job = find_by_backend("pi-step", job_id) or find_by_backend("pi", job_id)
+    if runtime_job is not None and (
+        bool(result.get("terminal"))
+        or state.get("status") in {"SUCCEEDED", "FAILED", "CANCELLED"}
+    ):
+        backend_status = str(state.get("status") or "")
+        backend = runtime_job.get("backend")
+        backend_type = backend.get("type") if isinstance(backend, dict) else None
+        if backend_type == "pi-step" and not runtime_job.get("terminal"):
+            if backend_status == "SUCCEEDED" and runtime_job.get("status") == "RUNNING":
+                runtime_job = checkpoint_runtime_job(
+                    runtime_job["job_id"],
+                    summary=f"Detached Pi step {job_id} completed successfully.",
+                    current_step="Detached Pi step completed",
+                    next_action=(
+                        "Inspect Pi session evidence and decide the next bounded step. "
+                        "Start another Pi step on this durable goal, or mark the goal SUCCEEDED "
+                        "only after acceptance evidence is satisfied."
+                    ),
+                    status="WAITING",
+                    source="backend",
+                )
+            elif backend_status in {"FAILED", "CANCELLED"} and runtime_job.get("status") == "RUNNING":
+                runtime_job = checkpoint_runtime_job(
+                    runtime_job["job_id"],
+                    summary=f"Detached Pi step {job_id} ended with status {backend_status}.",
+                    current_step=f"Detached Pi step {backend_status.lower()}",
+                    next_action=(
+                        "Inspect the Pi job/session evidence, then retry a bounded step, "
+                        "change the plan, or explicitly terminate the durable goal."
+                    ),
+                    status="BLOCKED",
+                    source="backend",
+                )
+        elif backend_type == "pi" and not runtime_job.get("terminal") and backend_status:
+            runtime_job = sync_backend_status(
+                runtime_job["job_id"],
+                backend_status=backend_status,
+                summary=f"Detached Pi job {job_id} completed with status {backend_status}.",
+            )
+    return {
+        **result,
+        "runtimeJobId": None if runtime_job is None else runtime_job["job_id"],
+        "runtimeGoalStatus": None if runtime_job is None else runtime_job.get("status"),
+        "runtimeGoalTerminal": None if runtime_job is None else bool(runtime_job.get("terminal")),
+    }
 
 
 @server.tool(

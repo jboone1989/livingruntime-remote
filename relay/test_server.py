@@ -42,7 +42,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.21")
+            self.assertEqual(health.json()["version"], "0.4.22")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -310,6 +310,16 @@ class RelayServerTests(unittest.TestCase):
             ["model", "app"],
         )
         self.assertEqual(
+            tools["start_pi_step"].meta["ui"]["resourceUri"],
+            server.PI_JOB_WIDGET_URI,
+        )
+        self.assertEqual(
+            tools["start_pi_step"].meta["ui"]["visibility"],
+            ["model", "app"],
+        )
+        self.assertTrue(tools["start_pi_step"].annotations.destructive_hint)
+        self.assertFalse(tools["start_pi_step"].annotations.open_world_hint)
+        self.assertEqual(
             tools["wait_pi_job_completion"].meta["ui"]["visibility"],
             ["app"],
         )
@@ -367,6 +377,8 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn('"ui/message"', html)
         self.assertIn('"ui/update-model-context"', html)
         self.assertIn('"ui/initialize"', html)
+        self.assertIn("runtime_job_id=", html)
+        self.assertIn("Durable LivingRuntime goal", html)
         self.assertIn("Remote connection lost", html)
         self.assertNotIn("setInterval(", html)
         self.assertNotIn("job-status", html)

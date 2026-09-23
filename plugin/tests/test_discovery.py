@@ -20,6 +20,7 @@ os.environ.setdefault(
 from contract import HANDSHAKE_TOOLS, PLUGIN_VERSION, REMOTE_IDENTITY, REMOTE_TOOLS, schema_hash  # noqa: E402
 import bridge  # noqa: E402
 import credentials  # noqa: E402
+import jobs  # noqa: E402
 
 
 def _write_config(directory: Path) -> Path:
@@ -111,6 +112,7 @@ class DiscoveryTests(unittest.TestCase):
             "get_job": (True, False, False),
             "list_jobs": (True, False, False),
             "checkpoint_job": (False, False, False),
+            "start_pi_step": (False, True, False),
             "watch_pi_job": (True, False, False),
             "wait_pi_job_completion": (True, False, False),
             "bind_openai_pi_continuation": (False, False, False),
@@ -272,6 +274,198 @@ class SchemaAndToolTests(unittest.TestCase):
         self.assertEqual(checkpointed["status"], "RUNNING")
         self.assertEqual(recovered["next_action"], "apply patch")
         self.assertEqual(listed["jobs"][0]["job_id"], created["job_id"])
+
+    def test_start_pi_step_creates_external_session_and_durable_backend_job(self) -> None:
+        jobs_root = Path(self.tmp.name) / "jobs"
+        session_root = Path(self.tmp.name) / "pi-sessions"
+        job_root = Path(self.tmp.name) / "pi-jobs"
+        session_file = session_root / "session.jsonl"
+        calls = []
+
+        def fake_pi(command, payload, timeout_seconds=30):
+            calls.append((command, payload))
+            if command == "create":
+                session_root.mkdir(parents=True, exist_ok=True)
+                session_file.write_text("{}\n", encoding="utf-8")
+                return {
+                    "sessionId": "session-1",
+                    "sessionFile": str(session_file),
+                    "cwd": "/home/ubuntu/wechat-traffic-agent",
+                    "controllerMode": "external",
+                    "piLlmCalls": 0,
+                }
+            if command == "job-start":
+                return {
+                    "job": {
+                        "id": "11111111-1111-4111-8111-111111111111",
+                        "status": "QUEUED",
+                        "kind": "external-actions",
+                    },
+                    "launch": {"detached": True, "pid": 12345},
+                }
+            raise AssertionError(command)
+
+        with patch.dict(
+            os.environ,
+            {"LIVINGRUNTIME_REMOTE_JOBS": str(jobs_root)},
+        ), patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(
+            bridge,
+            "_pi_runtime_settings",
+            return_value=("main", "/home/ubuntu/src/pi-remote-runtime", str(session_root), str(job_root)),
+        ), patch.object(
+            bridge, "_pi_control_command", side_effect=fake_pi
+        ), patch.object(
+            bridge, "_audit"
+        ):
+            result = bridge.start_pi_step(
+                "Inspect one file",
+                "ferro",
+                [{"role": "planner", "tool": "read", "params": {"path": "README.md"}}],
+            )
+            self.assertEqual(result["controllerMode"], "external")
+            self.assertEqual(result["piLlmCallsExpectedDelta"], 0)
+            self.assertEqual(result["jobId"], "11111111-1111-4111-8111-111111111111")
+            self.assertTrue(result["runtimeJobId"].startswith("lrjob_"))
+            durable = bridge.get_job(result["runtimeJobId"])
+            self.assertEqual(durable["status"], "RUNNING")
+            self.assertEqual(durable["backend"]["type"], "pi-step")
+            self.assertEqual(durable["backend"]["job_id"], result["jobId"])
+            self.assertEqual(durable["backend"]["session_file"], str(session_file))
+            self.assertEqual(durable["backend"]["session_id"], "session-1")
+            self.assertEqual([call[0] for call in calls], ["create", "job-start"])
+
+    def test_pi_step_completion_waits_for_controller_instead_of_finishing_goal(self) -> None:
+        jobs_root = Path(self.tmp.name) / "jobs"
+        with patch.dict(
+            os.environ,
+            {"LIVINGRUNTIME_REMOTE_JOBS": str(jobs_root)},
+        ), patch.object(bridge, "_audit"):
+            goal = jobs.create(goal="Multi-step goal", project="ferro", device="main")
+            jobs.attach_backend(
+                goal["job_id"],
+                {
+                    "type": "pi-step",
+                    "job_id": "22222222-2222-4222-8222-222222222222",
+                    "pi_remote_dir": "/home/ubuntu/src/pi-remote-runtime",
+                    "job_root": "/home/ubuntu/.livingruntime/pi-jobs",
+                    "session_file": "/home/ubuntu/.livingruntime/pi-sessions/session.jsonl",
+                    "session_id": "session-2",
+                    "controller_mode": "external",
+                },
+            )
+            with patch.object(
+                bridge,
+                "_pi_job_command",
+                return_value={
+                    "terminal": True,
+                    "timedOut": False,
+                    "state": {
+                        "status": "SUCCEEDED",
+                        "piLlmCallsDelta": 0,
+                    },
+                },
+            ):
+                waited = bridge.wait_pi_job_completion(
+                    "22222222-2222-4222-8222-222222222222",
+                    "/home/ubuntu/src/pi-remote-runtime",
+                    "/home/ubuntu/.livingruntime/pi-jobs",
+                    timeout_seconds=5,
+                )
+            durable = bridge.get_job(goal["job_id"])
+
+        self.assertEqual(waited["runtimeJobId"], goal["job_id"])
+        self.assertEqual(waited["runtimeGoalStatus"], "WAITING")
+        self.assertFalse(waited["runtimeGoalTerminal"])
+        self.assertEqual(durable["status"], "WAITING")
+        self.assertFalse(durable["terminal"])
+        self.assertIn("next bounded step", durable["next_action"])
+
+    def test_start_pi_step_continues_same_goal_and_reuses_external_session(self) -> None:
+        jobs_root = Path(self.tmp.name) / "jobs"
+        session_root = Path(self.tmp.name) / "pi-sessions"
+        job_root = Path(self.tmp.name) / "pi-jobs"
+        session_root.mkdir(parents=True)
+        session_file = session_root / "session.jsonl"
+        session_file.write_text("{}\n", encoding="utf-8")
+        calls = []
+        job_ids = iter([
+            "33333333-3333-4333-8333-333333333333",
+            "44444444-4444-4444-8444-444444444444",
+        ])
+
+        def fake_pi(command, payload, timeout_seconds=30):
+            calls.append((command, payload))
+            if command == "create":
+                return {
+                    "sessionId": "session-reuse",
+                    "sessionFile": str(session_file),
+                    "cwd": "/home/ubuntu/wechat-traffic-agent",
+                    "controllerMode": "external",
+                    "piLlmCalls": 0,
+                }
+            if command == "state":
+                return {
+                    "sessionId": "session-reuse",
+                    "sessionFile": str(session_file),
+                    "cwd": "/home/ubuntu/wechat-traffic-agent",
+                    "controllerMode": "external",
+                    "piLlmCalls": 0,
+                }
+            if command == "job-start":
+                job_id = next(job_ids)
+                return {
+                    "job": {"id": job_id, "status": "QUEUED", "kind": "external-actions"},
+                    "launch": {"detached": True, "pid": 12345},
+                }
+            raise AssertionError(command)
+
+        with patch.dict(
+            os.environ,
+            {"LIVINGRUNTIME_REMOTE_JOBS": str(jobs_root)},
+        ), patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(
+            bridge,
+            "_pi_runtime_settings",
+            return_value=("main", "/home/ubuntu/src/pi-remote-runtime", str(session_root), str(job_root)),
+        ), patch.object(
+            bridge, "_pi_control_command", side_effect=fake_pi
+        ), patch.object(bridge, "_audit"):
+            first = bridge.start_pi_step(
+                "Multi-step goal",
+                "ferro",
+                [{"role": "planner", "tool": "read", "params": {"path": "README.md"}}],
+            )
+            bridge.checkpoint_job(
+                first["runtimeJobId"],
+                "First step settled.",
+                status="WAITING",
+            )
+            second = bridge.start_pi_step(
+                "Multi-step goal",
+                "ferro",
+                [{"role": "planner", "tool": "read", "params": {"path": "pyproject.toml"}}],
+                runtime_job_id=first["runtimeJobId"],
+            )
+            durable = bridge.get_job(first["runtimeJobId"])
+
+        self.assertEqual(second["runtimeJobId"], first["runtimeJobId"])
+        self.assertEqual(second["sessionId"], first["sessionId"])
+        self.assertEqual(durable["backend"]["job_id"], second["jobId"])
+        self.assertEqual(durable["backend"]["session_file"], str(session_file))
+        self.assertEqual([call[0] for call in calls], ["create", "job-start", "state", "job-start"])
+
+    def test_start_pi_step_rejects_secret_fields_before_launch(self) -> None:
+        with patch.object(bridge, "_pi_control_command") as control:
+            with self.assertRaises(PermissionError):
+                bridge.start_pi_step(
+                    "Unsafe",
+                    "ferro",
+                    [{"role": "coder", "tool": "write", "params": {"api_key": "nope"}}],
+                )
+        control.assert_not_called()
 
     def test_credential_broker_exposes_only_handles_and_leases(self) -> None:
         root = Path(self.tmp.name) / "credentials"
