@@ -31,12 +31,14 @@ def permission_path() -> Path:
     return Path.home() / ".livingruntime" / "remote-exec-permissions.json"
 
 
-def classify(argv: list[str]) -> str:
+def classify(argv: list[str], *, detached: bool = False) -> str:
     if not argv:
         raise ValueError("argv is required")
     executable = os.path.basename(str(argv[0]))
     if executable in HARD_DENY_EXECUTABLES:
         return "hard_deny"
+    if detached:
+        return "explicit_host_approval"
     if executable in READ_ONLY_DIAGNOSTICS:
         return "read_only_diagnostic"
     return "explicit_host_approval"
@@ -48,12 +50,14 @@ def request_digest(
     project: str | None,
     cwd: str,
     argv: list[str],
+    detached: bool = False,
 ) -> str:
     payload = {
         "host_id": host_id,
         "project": project,
         "cwd": cwd,
         "argv": [str(x) for x in argv],
+        "detached": bool(detached),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -65,14 +69,17 @@ def ensure_request(
     project: str | None,
     cwd: str,
     argv: list[str],
+    detached: bool = False,
 ) -> dict[str, Any]:
-    risk = classify(argv)
+    risk = classify(argv, detached=detached)
     if risk == "hard_deny":
         raise PermissionError(
             f"executable is hard-denied from dynamic exec authorization: {os.path.basename(str(argv[0]))}"
         )
     store = _load()
-    digest = request_digest(host_id=host_id, project=project, cwd=cwd, argv=argv)
+    digest = request_digest(
+        host_id=host_id, project=project, cwd=cwd, argv=argv, detached=detached
+    )
     for item in store["requests"]:
         if item.get("digest") == digest and item.get("status") == "PENDING":
             return dict(item)
@@ -88,6 +95,7 @@ def ensure_request(
         "project": project,
         "cwd": cwd,
         "argv": [str(x) for x in argv],
+        "detached": bool(detached),
         "executable": os.path.basename(str(argv[0])),
         "risk": risk,
         "digest": digest,
@@ -103,8 +111,9 @@ def is_granted(
     project: str | None,
     cwd: str,
     argv: list[str],
+    detached: bool = False,
 ) -> dict[str, Any] | None:
-    risk = classify(argv)
+    risk = classify(argv, detached=detached)
     if risk == "hard_deny":
         return None
     store = _load()
@@ -122,6 +131,8 @@ def is_granted(
             if risk != "read_only_diagnostic":
                 continue
         elif grant.get("argv") != normalized:
+            continue
+        elif bool(grant.get("detached", False)) != bool(detached):
             continue
         if grant.get("risk") != "read_only_diagnostic":
             if grant.get("project") != project:
@@ -178,6 +189,7 @@ def approve(
         "project": request.get("project") if grant_mode == "exact" else None,
         "cwd": request.get("cwd") if grant_mode == "exact" else None,
         "argv": list(request.get("argv") or []) if grant_mode == "exact" else None,
+        "detached": bool(request.get("detached", False)) if grant_mode == "exact" else False,
         "risk": risk,
         "revoked_at": None,
     }

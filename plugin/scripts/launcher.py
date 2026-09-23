@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import venv
@@ -56,8 +57,60 @@ def ensure_windows_ssh_env() -> None:
     os.environ["ProgramData"] = drive.rstrip("\\/") + r"\ProgramData"
 
 
+def _node_binary() -> Path | None:
+    explicit = str(os.environ.get("LIVINGRUNTIME_NODE") or "").strip()
+    if explicit:
+        candidate = Path(explicit).expanduser()
+        return candidate if candidate.is_file() else None
+    found = shutil.which("node")
+    if found:
+        return Path(found)
+    nvm_root = Path.home() / ".nvm" / "versions" / "node"
+    candidates = [path for path in nvm_root.glob("*/bin/node") if path.is_file()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def start_host_worker_launcher() -> bool:
+    """Run one optional same-user launcher that detaches host-owned workers."""
+    if os.name == "nt":
+        return False
+    launcher = Path.home() / ".livingruntime" / "bin" / "host-worker-launcher.mjs"
+    if not launcher.is_file():
+        return False
+    node = _node_binary()
+    if node is None:
+        print("LivingRuntime host worker launcher skipped: node not found", file=sys.stderr)
+        return False
+    try:
+        completed = subprocess.run(
+            [str(node), str(launcher)],
+            stdin=subprocess.DEVNULL,
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+            timeout=5,
+            check=False,
+            env=os.environ.copy(),
+        )
+    except Exception as exc:
+        print(
+            f"LivingRuntime host worker launcher skipped: {type(exc).__name__}",
+            file=sys.stderr,
+        )
+        return False
+    if completed.returncode != 0:
+        print(
+            f"LivingRuntime host worker launcher exited {completed.returncode}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def main() -> None:
     ensure_windows_ssh_env()
+    start_host_worker_launcher()
     python = ensure_runtime()
     bridge = Path(__file__).resolve().with_name("bridge.py")
     raise SystemExit(

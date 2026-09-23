@@ -112,11 +112,48 @@ def digest(p):
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+def detached_receipt_path(execution_id):
+    value = str(execution_id or "")
+    if not value.startswith("dex_") or not value[4:].isalnum() or len(value) > 64:
+        raise ValueError("invalid detached execution id")
+    directory = roots[0] / ".livingruntime" / "detached-exec"
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return directory / (value + ".json")
+def save_detached_receipt(payload):
+    target = detached_receipt_path(payload["execution_id"])
+    temp = target.with_suffix(".tmp")
+    temp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        temp.chmod(0o600)
+    except OSError:
+        pass
+    temp.replace(target)
 op = req["op"]
 if op == "exec":
     cwd = inside(req["cwd"])
     if not cwd.is_dir():
         raise ValueError("cwd must be a directory")
+    if req.get("detached"):
+        execution_id = str(req.get("execution_id") or "")
+        detached_receipt_path(execution_id)
+        p = subprocess.Popen(
+            req["argv"], cwd=str(cwd), stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True, close_fds=True,
+        )
+        result = {
+            "returncode": None,
+            "stdout": "",
+            "stderr": "",
+            "cwd": str(cwd),
+            "detached": True,
+            "status": "STARTED",
+            "pid": p.pid,
+            "execution_id": execution_id,
+        }
+        save_detached_receipt(result)
+        print(json.dumps(result))
+        raise SystemExit(0)
     p = subprocess.run(
         req["argv"], cwd=str(cwd), stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -129,6 +166,15 @@ if op == "exec":
         "stderr": p.stderr[:limit].decode("utf-8", errors="replace"),
         "cwd": str(cwd),
     }))
+elif op == "exec_receipt":
+    execution_id = str(req.get("execution_id") or "")
+    target = detached_receipt_path(execution_id)
+    if not target.is_file():
+        print(json.dumps({"found": False, "execution_id": execution_id}))
+    else:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        payload["found"] = True
+        print(json.dumps(payload))
 elif op == "read_file":
     p = inside(req["path"])
     if not p.is_file():
@@ -398,6 +444,29 @@ def _remote(
     if result["returncode"] != 0:
         raise RuntimeError(result["stderr"] or result["stdout"] or "remote operation failed")
     return json.loads(result["stdout"])
+
+
+def _detached_execution_id(
+    *,
+    host_id: str,
+    project: str | None,
+    cwd: str,
+    argv: list[str],
+) -> str:
+    seed = json.dumps(
+        {
+            "host_id": host_id,
+            "project": project,
+            "cwd": cwd,
+            "argv": [str(x) for x in argv],
+            "pid": os.getpid(),
+            "time_ns": time.time_ns(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return "dex_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
 
 
 def _validate_exec(argv: list[str]) -> None:
@@ -947,12 +1016,14 @@ def exec(
     project: str | None = None,
     device: str | None = None,
     timeout_seconds: int = DEFAULT_TIMEOUT,
+    detached: bool = False,
 ) -> dict[str, Any]:
     """Run a bounded command or return a durable operator approval request.
 
     Built-in development executables remain immediately available. Other commands
     require a persisted grant. Grants are host-scoped by default; only read-only
-    diagnostics can be approved across all owned hosts.
+    diagnostics can be approved across all owned hosts. Detached execution always
+    requires an exact host-scoped approval and returns after the child is spawned.
     """
     _validate_exec(argv)
     timeout = min(120, max(1, int(timeout_seconds)))
@@ -961,12 +1032,13 @@ def exec(
     host_id = selected_host["id"]
     workdir = resolve_path(cfg, cwd, project=project) if (cwd or project) else _roots(project, device)[0]
     executable = os.path.basename(str(argv[0]))
-    if executable not in _ALLOWED_EXECUTABLES:
+    if detached or executable not in _ALLOWED_EXECUTABLES:
         grant = dynamic_exec_grant(
             host_id=host_id,
             project=project,
             cwd=workdir,
             argv=argv,
+            detached=detached,
         )
         if grant is None:
             request = ensure_dynamic_exec_request(
@@ -974,6 +1046,7 @@ def exec(
                 project=project,
                 cwd=workdir,
                 argv=argv,
+                detached=detached,
             )
             _audit("exec_permission_request", True, {
                 "request_id": request["request_id"],
@@ -991,6 +1064,7 @@ def exec(
                     "project": project,
                     "cwd": workdir,
                     "argv": list(argv),
+                    "detached": bool(detached),
                     "risk": request["risk"],
                     "allowed_scopes": (
                         ["host", "all_owned_hosts"]
@@ -1004,11 +1078,54 @@ def exec(
                     ),
                 },
             }
-    result = _remote("exec", {
-        "argv": argv, "cwd": workdir,
-        "timeout": timeout, "max_output": MAX_OUTPUT_BYTES,
-    }, timeout=timeout + 2, project=project, device=device)
-    _audit("exec", True, {"argv": argv, "cwd": result.get("cwd"), "project": project, "device": device, "returncode": result.get("returncode")})
+    execution_id = (
+        _detached_execution_id(
+            host_id=host_id, project=project, cwd=workdir, argv=argv
+        )
+        if detached
+        else None
+    )
+    try:
+        result = _remote("exec", {
+            "argv": argv, "cwd": workdir,
+            "timeout": timeout, "max_output": MAX_OUTPUT_BYTES,
+            "detached": bool(detached),
+            "execution_id": execution_id,
+        }, timeout=timeout + 2, project=project, device=device)
+    except Exception as exc:
+        if not detached or execution_id is None:
+            raise
+        try:
+            receipt = _remote(
+                "exec_receipt",
+                {"execution_id": execution_id},
+                timeout=5,
+                project=project,
+                device=device,
+            )
+        except Exception:
+            _audit("exec_detached_ambiguous", False, {
+                "execution_id": execution_id,
+                "argv": argv,
+                "project": project,
+                "device": device,
+                "error_type": type(exc).__name__,
+            })
+            raise exc
+        if not receipt.get("found"):
+            raise exc
+        result = dict(receipt)
+        result.pop("found", None)
+        result["recovered_after_transport_error"] = True
+    _audit("exec", True, {
+        "argv": argv, "cwd": result.get("cwd"), "project": project,
+        "device": device, "returncode": result.get("returncode"),
+        "detached": bool(detached), "pid": result.get("pid"),
+        "execution_id": result.get("execution_id"),
+        "recovered_after_transport_error": bool(
+            result.get("recovered_after_transport_error")
+        ),
+    })
     return result
 
 

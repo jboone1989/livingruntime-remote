@@ -89,6 +89,23 @@ class MultiDeviceTests(unittest.TestCase):
         if stdin:
             payload = json.loads(stdin.decode("utf-8"))
             if payload["op"] == "exec":
+                if payload.get("detached"):
+                    return {
+                        "returncode": 0,
+                        "stdout": json.dumps(
+                            {
+                                "returncode": None,
+                                "stdout": "",
+                                "stderr": "",
+                                "cwd": payload["cwd"],
+                                "detached": True,
+                                "status": "STARTED",
+                                "pid": 4321,
+                            }
+                        ),
+                        "stderr": "",
+                        "duration_ms": 4.0,
+                    }
                 return {
                     "returncode": 0,
                     "stdout": json.dumps(
@@ -201,6 +218,105 @@ class MultiDeviceTests(unittest.TestCase):
         self.assertTrue(project_result["approval_required"])
         self.assertEqual(project_result["request"]["project"], "ferro")
 
+    def test_detached_exec_requires_separate_exact_approval(self) -> None:
+        env = {"LIVINGRUNTIME_REMOTE_PERMISSIONS": str(self.permission_store)}
+        with patch.dict(os.environ, env), patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(bridge, "_ssh", self.fake_ssh):
+            foreground = bridge.exec(["curl", "https://example.com"], device="main")
+            bridge.approve_exec_permission(foreground["request"]["request_id"])
+            allowed_foreground = bridge.exec(["curl", "https://example.com"], device="main")
+
+            detached = bridge.exec(
+                ["curl", "https://example.com"],
+                device="main",
+                detached=True,
+            )
+            self.assertTrue(detached["approval_required"])
+            self.assertTrue(detached["request"]["detached"])
+            self.assertEqual(detached["request"]["risk"], "explicit_host_approval")
+            self.assertNotEqual(
+                foreground["request"]["request_id"],
+                detached["request"]["request_id"],
+            )
+
+            grant = bridge.approve_exec_permission(detached["request"]["request_id"])
+            self.assertTrue(grant["detached"])
+            started = bridge.exec(
+                ["curl", "https://example.com"],
+                device="main",
+                detached=True,
+            )
+
+        self.assertEqual(allowed_foreground["stdout"], "main\n")
+        self.assertTrue(started["detached"])
+        self.assertEqual(started["status"], "STARTED")
+        self.assertEqual(started["pid"], 4321)
+
+    def test_builtin_node_detached_still_requires_operator_approval(self) -> None:
+        env = {"LIVINGRUNTIME_REMOTE_PERMISSIONS": str(self.permission_store)}
+        with patch.dict(os.environ, env), patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(bridge, "_ssh", self.fake_ssh):
+            request = bridge.exec(["node", "worker.js"], device="main", detached=True)
+
+        self.assertTrue(request["approval_required"])
+        self.assertTrue(request["request"]["detached"])
+        self.assertEqual(request["request"]["risk"], "explicit_host_approval")
+
+    def test_detached_exec_recovers_from_transport_loss_using_receipt(self) -> None:
+        env = {"LIVINGRUNTIME_REMOTE_PERMISSIONS": str(self.permission_store)}
+        execution_id = "dex_deadbeef"
+
+        def flaky_ssh(remote_argv, *, stdin=None, timeout=30, project=None, device=None):
+            if not stdin:
+                raise AssertionError(f"unexpected SSH call: {remote_argv!r}")
+            payload = json.loads(stdin.decode("utf-8"))
+            if payload["op"] == "exec":
+                self.assertTrue(payload["detached"])
+                self.assertEqual(payload["execution_id"], execution_id)
+                return {
+                    "returncode": 255,
+                    "stdout": "",
+                    "stderr": "connection closed after remote spawn",
+                    "duration_ms": 10.0,
+                }
+            if payload["op"] == "exec_receipt":
+                self.assertEqual(payload["execution_id"], execution_id)
+                return {
+                    "returncode": 0,
+                    "stdout": json.dumps(
+                        {
+                            "found": True,
+                            "returncode": None,
+                            "stdout": "",
+                            "stderr": "",
+                            "cwd": "/home/ubuntu",
+                            "detached": True,
+                            "status": "STARTED",
+                            "pid": 9876,
+                            "execution_id": execution_id,
+                        }
+                    ),
+                    "stderr": "",
+                    "duration_ms": 4.0,
+                }
+            raise AssertionError(f"unexpected payload: {payload!r}")
+
+        with patch.dict(os.environ, env), patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(bridge, "_ssh", flaky_ssh), patch.object(
+            bridge, "_detached_execution_id", return_value=execution_id
+        ):
+            request = bridge.exec(["node", "worker.js"], device="main", detached=True)
+            bridge.approve_exec_permission(request["request"]["request_id"])
+            result = bridge.exec(["node", "worker.js"], device="main", detached=True)
+
+        self.assertEqual(result["status"], "STARTED")
+        self.assertEqual(result["pid"], 9876)
+        self.assertTrue(result["recovered_after_transport_error"])
+        self.assertEqual(result["execution_id"], execution_id)
+
     def test_hard_denied_exec_cannot_create_approval_request(self) -> None:
         env = {"LIVINGRUNTIME_REMOTE_PERMISSIONS": str(self.permission_store)}
         with patch.dict(os.environ, env), patch.object(
@@ -238,6 +354,8 @@ class MultiDeviceTests(unittest.TestCase):
         }:
             schema = tools[name].inputSchema or {}
             self.assertIn("device", schema.get("properties", {}), name)
+        exec_schema = tools["exec"].inputSchema or {}
+        self.assertIn("detached", exec_schema.get("properties", {}))
 
 
 if __name__ == "__main__":

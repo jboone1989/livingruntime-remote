@@ -1102,8 +1102,19 @@ def create_mcp(
 
     @expose("exec", False, True, True)
     async def exec(argv: list[str], cwd: str | None = None, project: str | None = None, device: str | None = None,
-                   timeout_seconds: int = 30) -> dict[str, Any]:
-        return await relay.call(_principal("remote:write"), "exec", {"argv": argv, "cwd": cwd, "project": project, "device": device, "timeout_seconds": timeout_seconds})
+                   timeout_seconds: int = 30, detached: bool = False) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "exec",
+            {
+                "argv": argv,
+                "cwd": cwd,
+                "project": project,
+                "device": device,
+                "timeout_seconds": timeout_seconds,
+                "detached": detached,
+            },
+        )
 
     @expose("list_credentials", True, False, False)
     async def list_credentials() -> dict[str, Any]:
