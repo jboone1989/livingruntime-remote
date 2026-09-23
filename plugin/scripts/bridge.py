@@ -95,16 +95,20 @@ _BLOCKED_INLINE = {
 _BLOCKED_GIT = {"credential", "daemon", "shell"}
 
 _DEFERRED_RESTART_WORKER = r"""
-import json, pathlib, subprocess, sys, time
+import json, os, pathlib, subprocess, sys, time
 
 receipt_path = pathlib.Path(sys.argv[1])
 unit = sys.argv[2]
+receipt_stat = receipt_path.stat()
+receipt_uid = receipt_stat.st_uid
+receipt_gid = receipt_stat.st_gid
 
 def save(payload):
     temp = receipt_path.with_suffix(".tmp")
     temp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
     try:
         temp.chmod(0o600)
+        os.chown(temp, receipt_uid, receipt_gid)
     except OSError:
         pass
     temp.replace(receipt_path)
