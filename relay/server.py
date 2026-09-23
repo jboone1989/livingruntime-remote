@@ -25,7 +25,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.19"
+VERSION = "0.4.20"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v1.html"
 PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
 IDENTITY_SCOPES = ["openid", "email"]
@@ -47,6 +47,14 @@ TOOL_TEXT = {
     "write_file": ("Write remote file", "Create or replace a file inside an allowed project or configured root, optionally guarded by an expected SHA-256."),
     "git": ("Run Git command", "Run a bounded Git command inside an allowed repository using explicit arguments."),
     "exec": ("Execute bounded command", "Run a built-in development command or an exact command previously approved by the operator. Unapproved commands return a durable approval request."),
+    "list_credentials": ("List credential handles", "List local credential handles and scopes without returning secret values."),
+    "lease_credential": ("Lease credential handle", "Issue a short-lived opaque credential lease scoped to one capability, project, and device."),
+    "list_credential_leases": ("List credential leases", "List opaque credential leases without returning credential values."),
+    "revoke_credential_lease": ("Revoke credential lease", "Revoke one opaque credential lease without deleting the underlying credential."),
+    "create_job": ("Create durable job", "Create a durable LivingRuntime Remote job for a long-running goal, optionally linked to an existing Pi job."),
+    "get_job": ("Get durable job", "Read one durable Remote job including progress, backend, next action, and checkpoints."),
+    "list_jobs": ("List durable jobs", "List recent durable Remote jobs, optionally filtered by status."),
+    "checkpoint_job": ("Checkpoint durable job", "Persist bounded progress, current step, next action, and status for a durable Remote job."),
     "list_exec_permissions": ("List command permissions", "List pending dynamic command requests plus active and revoked persisted grants."),
     "approve_exec_permission": ("Approve command permission", "Approve a pending exact command request. Host scope is the default; all-host or diagnostic-class grants are limited to read-only diagnostics."),
     "deny_exec_permission": ("Deny command permission", "Deny a pending dynamic command request without executing it."),
@@ -149,7 +157,11 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
     const jobRoot = output?.jobRoot || null;
     if (!connected || !jobId || activeJob === jobId || stopped) return;
     activeJob = jobId;
-    setStatus("Pi is working…", "Job " + jobId);
+    const initialStatus = output?.state?.status || "UNKNOWN";
+    setStatus(
+      output?.terminal ? "Pi already finished: " + initialStatus : "Pi is working…",
+      "Job " + jobId + " · state " + initialStatus + " · Remote watcher attached"
+    );
 
     try {
       while (!stopped) {
@@ -159,7 +171,7 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
             job_id: jobId,
             pi_remote_dir: piRemoteDir,
             job_root: jobRoot,
-            timeout_seconds: 90
+            timeout_seconds: 30
           }
         });
         const data = toolResultData(result);
@@ -186,10 +198,27 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
         if (!data?.timedOut) {
           throw new Error("Pi job wait returned without terminal state or timeout");
         }
-        setStatus("Pi is still working…", "No ChatGPT status polling; watcher remains attached.");
+        setStatus(
+          "Pi is still working…",
+          "Job " + jobId + " · Remote connected · watcher heartbeat received"
+        );
       }
     } catch (error) {
-      setStatus("Watcher stopped", String(error?.message || error));
+      const message = String(error?.message || error);
+      const disconnected = /offline|device|connect|timeout/i.test(message);
+      setStatus(
+        disconnected ? "Remote connection lost" : "Watcher stopped",
+        message
+      );
+      const prompt =
+        "LivingRuntime Remote watcher for Pi job " + jobId + " stopped: " + message +
+        ". Check device_status and the durable Pi job state before assuming Pi is still running.";
+      try {
+        await request("ui/message", {
+          role: "user",
+          content: [{ type: "text", text: prompt }]
+        });
+      } catch (_) {}
     }
   }
 
@@ -783,11 +812,19 @@ def create_mcp(
         if binding is None:
             return {"continue": True}
 
-        result = await wait_pi_job_until_terminal(user_sub, binding, timeout_seconds)
-        state = result.get("state") if isinstance(result.get("state"), dict) else {}
-        terminal = bool(result.get("terminal")) or state.get("status") in {
-            "SUCCEEDED", "FAILED", "CANCELLED"
-        }
+        # The public ChatGPT app already has an Apps SDK widget that waits for
+        # terminal state and sends a same-conversation follow-up. Do not duplicate
+        # that wait inside the Stop hook: a 540s MCP call makes the UI look hung
+        # and, on a serial Connector, can monopolize the device.
+        state = await pi_job_command(
+            user_sub,
+            "job-status",
+            str(binding["job_id"]),
+            str(binding["pi_remote_dir"]),
+            binding.get("job_root"),
+            timeout_seconds=15,
+        )
+        terminal = state.get("status") in {"SUCCEEDED", "FAILED", "CANCELLED"}
         if terminal:
             relay.store.clear_continuation(user_sub, session_id)
             status = str(state.get("status") or "terminal")
@@ -802,11 +839,13 @@ def create_mcp(
             }
 
         return {
-            "decision": "block",
-            "reason": (
-                f"Pi Remote job {binding['job_id']} is still running after the bounded wait. "
-                "Do not poll it from the model. End this continuation so the OpenAI Stop hook "
-                "can resume waiting event-driven on the next stop."
+            "continue": True,
+            "job_id": binding["job_id"],
+            "status": state.get("status"),
+            "watch_mode": "apps_sdk_widget",
+            "message": (
+                "Pi is still running. The Apps SDK watcher owns the long wait and "
+                "will send a same-conversation follow-up on completion or watcher failure."
             ),
         }
 
@@ -872,6 +911,104 @@ def create_mcp(
     async def exec(argv: list[str], cwd: str | None = None, project: str | None = None, device: str | None = None,
                    timeout_seconds: int = 30) -> dict[str, Any]:
         return await relay.call(_principal("remote:write"), "exec", {"argv": argv, "cwd": cwd, "project": project, "device": device, "timeout_seconds": timeout_seconds})
+
+    @expose("list_credentials", True, False, False)
+    async def list_credentials() -> dict[str, Any]:
+        return await relay.call(_principal("remote:read"), "list_credentials", {})
+
+    @expose("lease_credential", False, False, False)
+    async def lease_credential(
+        handle: str,
+        capability: str,
+        project: str | None = None,
+        device: str | None = None,
+        ttl_seconds: int = 300,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "lease_credential",
+            {
+                "handle": handle,
+                "capability": capability,
+                "project": project,
+                "device": device,
+                "ttl_seconds": ttl_seconds,
+            },
+        )
+
+    @expose("list_credential_leases", True, False, False)
+    async def list_credential_leases(active_only: bool = True) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:read"),
+            "list_credential_leases",
+            {"active_only": active_only},
+        )
+
+    @expose("revoke_credential_lease", False, False, True)
+    async def revoke_credential_lease(lease_id: str) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "revoke_credential_lease",
+            {"lease_id": lease_id},
+        )
+
+    @expose("create_job", False, False, False)
+    async def create_job(
+        goal: str,
+        project: str | None = None,
+        device: str | None = None,
+        pi_job_id: str | None = None,
+        pi_remote_dir: str = "/home/ubuntu/src/pi-remote",
+        pi_job_root: str | None = None,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "create_job",
+            {
+                "goal": goal,
+                "project": project,
+                "device": device,
+                "pi_job_id": pi_job_id,
+                "pi_remote_dir": pi_remote_dir,
+                "pi_job_root": pi_job_root,
+            },
+        )
+
+    @expose("get_job", True, False, False)
+    async def get_job(job_id: str) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:read"),
+            "get_job",
+            {"job_id": job_id},
+        )
+
+    @expose("list_jobs", True, False, False)
+    async def list_jobs(status: str | None = None, limit: int = 50) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:read"),
+            "list_jobs",
+            {"status": status, "limit": limit},
+        )
+
+    @expose("checkpoint_job", False, False, False)
+    async def checkpoint_job(
+        job_id: str,
+        summary: str,
+        current_step: str | None = None,
+        next_action: str | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "checkpoint_job",
+            {
+                "job_id": job_id,
+                "summary": summary,
+                "current_step": current_step,
+                "next_action": next_action,
+                "status": status,
+            },
+        )
 
     @expose("list_exec_permissions", True, False, False)
     async def list_exec_permissions() -> dict[str, Any]:

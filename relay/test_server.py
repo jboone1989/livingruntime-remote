@@ -42,7 +42,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.19")
+            self.assertEqual(health.json()["version"], "0.4.20")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -337,18 +337,21 @@ class RelayServerTests(unittest.TestCase):
         html = server.PI_JOB_WIDGET_HTML
         self.assertIn('"tools/call"', html)
         self.assertIn('"wait_pi_job_completion"', html)
+        self.assertIn("timeout_seconds: 30", html)
         self.assertIn('"ui/message"', html)
         self.assertIn('"ui/update-model-context"', html)
         self.assertIn('"ui/initialize"', html)
+        self.assertIn("Remote connection lost", html)
         self.assertNotIn("setInterval(", html)
         self.assertNotIn("job-status", html)
 
-    def test_openai_headless_continuation_is_durable_and_bounded(self):
+    def test_public_openai_continuation_does_not_duplicate_widget_wait(self):
         source = inspect.getsource(server.create_mcp)
         self.assertIn("bind_openai_pi_continuation", source)
         self.assertIn("continue_openai_pi_job", source)
-        self.assertIn("wait_pi_job_until_terminal", source)
-        self.assertIn("min(540", source)
+        self.assertIn('"job-status"', source)
+        self.assertIn('"watch_mode": "apps_sdk_widget"', source)
+        self.assertIn('"continue": True', source)
         self.assertIn('"decision": "block"', source)
         self.assertIn("clear_continuation", source)
 

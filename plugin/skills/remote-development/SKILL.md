@@ -3,7 +3,7 @@ name: remote-development
 description: Safely develop, inspect, test, and operate the user's LivingRuntime remote host through the livingruntime_remote MCP tools.
 ---
 
-Identity is `livingruntime.remote`, version `0.4.19`. Use `capabilities` then `list_devices` / `connection_status` before the first remote write in a session. Pass `device` when a specific configured host is intended; omitting it preserves the configured default, while project aliases continue to route to their bound host. A conflicting `project` + `device` selection fails closed. Those names are stable; do not guess `gateway_status` unless an older gateway client only exposes the compatibility alias. `capabilities.healthy` and `server_tools` are the MCP process registry (`tools/list`). ChatGPT may cache an older Custom App action list independently of that snapshot.
+Identity is `livingruntime.remote`, version `0.4.20`. Use `capabilities` then `list_devices` / `connection_status` before the first remote write in a session. Pass `device` when a specific configured host is intended; omitting it preserves the configured default, while project aliases continue to route to their bound host. A conflicting `project` + `device` selection fails closed. Those names are stable; do not guess `gateway_status` unless an older gateway client only exposes the compatibility alias. `capabilities.healthy` and `server_tools` are the MCP process registry (`tools/list`). ChatGPT may cache an older Custom App action list independently of that snapshot.
 
 When the user names a repo such as VirtualBrain, Ferro, agent-runtime, or trading, call `list_projects` first and then pass `project=` to the other tools. Do not ask the user for `/home/ubuntu/...` paths when a project alias exists.
 
@@ -16,6 +16,14 @@ Prefer the narrow tool that matches the task:
 - `systemd` only for allowlisted service lifecycle actions.
 - `exec` for tests, builds, diagnostics, and other development commands that do not have a narrower tool. If it returns `approval_required`, show the exact host/argv/risk to the user; do not call `approve_exec_permission` unless the user explicitly approves that request. Host scope is the default; only read-only diagnostics may use `all_owned_hosts` or `diagnostic_class`.
 - `list_exec_permissions` to review pending/active/revoked dynamic grants; use `revoke_exec_permission` when the user asks to remove one.
+
+Long-running work must not be represented by one model-visible MCP call that waits for completion. If work can outlive a short tool call, run it as a detached Pi/Remote job, persist it with the durable Job tools, and attach `watch_pi_job`. The Apps SDK watcher owns the long wait and sends the same conversation a follow-up when the job reaches terminal state. Keep synchronous waits bounded and diagnostic only.
+
+Do not treat the ChatGPT/Codex "thinking" indicator as evidence that Pi is alive. Distinguish these states explicitly:
+- Remote online + non-terminal Pi state: work is still running.
+- Remote offline/stale: connection health is unknown or lost; inspect `device_status` / `connection_status` before assuming the job is running.
+- Remote online + terminal Pi state: the job finished; inspect its durable result/checkpoint.
+- No detached Pi job: a long assistant turn means the model is still making synchronous tool calls, not that Pi is running in the background.
 
 Absolute `path` / `repo_path` / `unit` arguments remain valid for compatibility.
 

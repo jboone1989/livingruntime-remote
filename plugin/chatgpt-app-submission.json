@@ -4,7 +4,7 @@
   "app_info": {
     "display_name": "LivingRuntime Remote",
     "subtitle": "Bounded remote host tools",
-    "description": "LivingRuntime Remote lets ChatGPT operate development machines the user controls through bounded remote tools. It verifies connectivity, lists configured projects, reads and writes files only inside allowed roots, runs Git and built-in development commands, and turns additional commands into durable operator approval requests with host-scoped grants and revocation. SSH passwords and private keys remain outside the service.",
+    "description": "LivingRuntime Remote lets ChatGPT operate development machines the user controls through bounded remote tools. It verifies connectivity, lists configured projects, reads and writes files only inside allowed roots, runs Git and development commands, persists long-running job checkpoints across model turns, exposes credential handles through scoped short-lived leases without returning secret values, and turns additional commands into durable operator approval requests with host-scoped grants and revocation. SSH passwords and private keys remain outside the service.",
     "category": "DEVELOPER_TOOLS"
   },
   "tools": {
@@ -306,6 +306,102 @@
         "read_only_justification": "Revokes an existing persisted dynamic command grant.",
         "open_world_justification": "Changes only the private Remote authorization store.",
         "destructive_justification": "Removes a previously granted authorization so future matching commands require approval again."
+      }
+    },
+    "create_job": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates private durable control-plane state for a long-running Remote goal and may link it to an existing Pi job.",
+        "open_world_justification": "Writes only local LivingRuntime job metadata and does not publish data or contact arbitrary external services.",
+        "destructive_justification": "Does not delete repository data, stop processes, or overwrite development files."
+      }
+    },
+    "get_job": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads one private durable job record including goal, progress, next action, backend reference, and checkpoints.",
+        "open_world_justification": "Reads only the local LivingRuntime job store.",
+        "destructive_justification": "Does not modify job or development state."
+      }
+    },
+    "list_jobs": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists recent private durable Remote jobs and optional status filtering.",
+        "open_world_justification": "Reads only the local LivingRuntime job store.",
+        "destructive_justification": "Does not modify jobs, files, processes, or services."
+      }
+    },
+    "checkpoint_job": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Persists bounded progress, current step, next action, and status so a later model turn can resume the same goal.",
+        "open_world_justification": "Writes only local LivingRuntime job metadata.",
+        "destructive_justification": "Does not delete repository data, stop processes, or overwrite development files."
+      }
+    },
+    "list_credentials": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists local credential handles, providers, allowed scopes, and whether owner-only secret material is present; secret values are never returned.",
+        "open_world_justification": "Reads only the private local LivingRuntime credential metadata store.",
+        "destructive_justification": "Does not create, reveal, modify, or delete credential secret material."
+      }
+    },
+    "lease_credential": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates a short-lived opaque lease for an existing credential handle after capability and project/device scope checks.",
+        "open_world_justification": "Changes only private local lease metadata and does not send the underlying credential to external services.",
+        "destructive_justification": "Does not reveal, overwrite, or delete the underlying credential."
+      }
+    },
+    "list_credential_leases": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists opaque credential lease metadata without returning any secret values.",
+        "open_world_justification": "Reads only the private local LivingRuntime credential lease store.",
+        "destructive_justification": "Does not issue, revoke, or consume credential leases."
+      }
+    },
+    "revoke_credential_lease": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Revokes an existing opaque credential lease so it cannot be consumed again.",
+        "open_world_justification": "Changes only private local LivingRuntime lease metadata.",
+        "destructive_justification": "Irreversibly invalidates that lease, while leaving the underlying credential intact."
       }
     }
   },

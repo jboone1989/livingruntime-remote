@@ -19,6 +19,7 @@ os.environ.setdefault(
 
 from contract import HANDSHAKE_TOOLS, PLUGIN_VERSION, REMOTE_IDENTITY, REMOTE_TOOLS, schema_hash  # noqa: E402
 import bridge  # noqa: E402
+import credentials  # noqa: E402
 
 
 def _write_config(directory: Path) -> Path:
@@ -100,6 +101,14 @@ class DiscoveryTests(unittest.TestCase):
             "apply_patch": (False, True, False),
             "git": (False, True, True),
             "logs": (True, False, False),
+            "list_credentials": (True, False, False),
+            "lease_credential": (False, False, False),
+            "list_credential_leases": (True, False, False),
+            "revoke_credential_lease": (False, True, False),
+            "create_job": (False, False, False),
+            "get_job": (True, False, False),
+            "list_jobs": (True, False, False),
+            "checkpoint_job": (False, False, False),
             "watch_pi_job": (True, False, False),
             "wait_pi_job_completion": (True, False, False),
             "bind_openai_pi_continuation": (False, False, False),
@@ -238,6 +247,62 @@ class SchemaAndToolTests(unittest.TestCase):
         self.assertEqual(bridge._HTTP_BIND, "127.0.0.1:8766")
         self.assertFalse(bridge._transport_endpoint()["public_ingress"])
 
+    def test_durable_job_survives_model_turn_boundaries(self) -> None:
+        jobs_root = Path(self.tmp.name) / "jobs"
+        with patch.dict(
+            os.environ,
+            {"LIVINGRUNTIME_REMOTE_JOBS": str(jobs_root)},
+        ), patch.object(bridge, "_config_path", return_value=str(self.config)):
+            created = bridge.create_job(
+                "Repair Ferro and verify tests",
+                project="ferro",
+            )
+            checkpointed = bridge.checkpoint_job(
+                created["job_id"],
+                "Logs inspected; patch is next.",
+                current_step="inspect logs",
+                next_action="apply patch",
+                status="RUNNING",
+            )
+            recovered = bridge.get_job(created["job_id"])
+            listed = bridge.list_jobs(status="RUNNING")
+
+        self.assertEqual(checkpointed["status"], "RUNNING")
+        self.assertEqual(recovered["next_action"], "apply patch")
+        self.assertEqual(listed["jobs"][0]["job_id"], created["job_id"])
+
+    def test_credential_broker_exposes_only_handles_and_leases(self) -> None:
+        root = Path(self.tmp.name) / "credentials"
+        with patch.dict(
+            os.environ,
+            {"LIVINGRUNTIME_REMOTE_CREDENTIALS": str(root)},
+        ), patch.object(bridge, "_config_path", return_value=str(self.config)):
+            credentials.set_local_secret(
+                "github.production",
+                "never-return-this-value",
+                provider="github",
+                capabilities=["git_push"],
+                projects=["ferro"],
+                devices=["main"],
+            )
+            listed = bridge.list_credentials()
+            lease = bridge.lease_credential(
+                "github.production",
+                "git_push",
+                project="ferro",
+                ttl_seconds=60,
+            )
+            leases = bridge.list_credential_leases()
+            revoked = bridge.revoke_credential_lease(lease["lease_id"])
+
+        public_blob = json.dumps(
+            {"listed": listed, "lease": lease, "leases": leases, "revoked": revoked}
+        )
+        self.assertNotIn("never-return-this-value", public_blob)
+        self.assertEqual(lease["device"], "main")
+        self.assertEqual(lease["project"], "ferro")
+        self.assertFalse(revoked["active"])
+
     def test_openai_continuation_binding_and_terminal_resume(self) -> None:
         with patch.object(bridge.Path, "home", return_value=Path(self.tmp.name)):
             bound = bridge.bind_openai_pi_continuation(
@@ -246,6 +311,8 @@ class SchemaAndToolTests(unittest.TestCase):
             self.assertEqual(
                 bound["hookSpecificOutput"]["hookEventName"], "PostToolUse"
             )
+            runtime_job_id = bound["runtimeJobId"]
+            self.assertEqual(bridge.get_job(runtime_job_id)["status"], "RUNNING")
             with patch.object(
                 bridge,
                 "_pi_job_command",
@@ -259,6 +326,7 @@ class SchemaAndToolTests(unittest.TestCase):
             self.assertEqual(decision["decision"], "block")
             self.assertIn("job-a", decision["reason"])
             self.assertIn("SUCCEEDED", decision["reason"])
+            self.assertEqual(bridge.get_job(runtime_job_id)["status"], "SUCCEEDED")
             self.assertEqual(
                 bridge.continue_openai_pi_job("session-a", timeout_seconds=1),
                 {"continue": True},

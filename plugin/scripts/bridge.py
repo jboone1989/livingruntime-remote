@@ -34,6 +34,20 @@ from configmodel import (
     resolve_path,
     resolve_unit,
 )
+from credentials import (
+    create_lease as create_credential_lease,
+    list_handles as credential_snapshot,
+    list_leases as credential_lease_snapshot,
+    revoke_lease as revoke_credential_lease_runtime,
+)
+from jobs import (
+    checkpoint as checkpoint_runtime_job,
+    create as create_runtime_job,
+    ensure_backend_job,
+    get as get_runtime_job,
+    list_jobs as runtime_jobs_snapshot,
+    sync_backend_status,
+)
 from permissions import (
     approve as approve_dynamic_exec,
     classify as classify_dynamic_exec,
@@ -182,6 +196,102 @@ elif op == "process":
         raise ValueError("action must be list or terminate")
 else:
     raise ValueError("unknown operation")
+"""
+
+_HOST_INVENTORY_AGENT = r"""
+import json, os, pathlib, shutil, socket, subprocess, sys
+
+req = json.load(sys.stdin)
+
+def read_meminfo():
+    values = {}
+    try:
+        for line in pathlib.Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            if ":" not in line:
+                continue
+            key, raw = line.split(":", 1)
+            parts = raw.strip().split()
+            if not parts:
+                continue
+            value = int(parts[0])
+            if len(parts) > 1 and parts[1].lower() == "kb":
+                value *= 1024
+            values[key] = value
+    except (OSError, ValueError):
+        pass
+    return values
+
+def read_uptime():
+    try:
+        return float(pathlib.Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+memory = read_meminfo()
+try:
+    load = list(os.getloadavg())
+except (AttributeError, OSError):
+    load = []
+
+disks = []
+for raw in req.get("roots") or []:
+    path = pathlib.Path(raw)
+    try:
+        usage = shutil.disk_usage(path)
+        disks.append({
+            "path": str(path),
+            "total_bytes": usage.total,
+            "used_bytes": usage.used,
+            "free_bytes": usage.free,
+        })
+    except OSError as exc:
+        disks.append({"path": str(path), "error": str(exc)[:200]})
+
+projects = []
+for item in req.get("projects") or []:
+    path = pathlib.Path(item["path"])
+    projects.append({
+        "name": item["name"],
+        "path": item["path"],
+        "exists": path.exists(),
+        "is_directory": path.is_dir(),
+        "git_repo": (path / ".git").exists(),
+        "units": list(item.get("units") or []),
+    })
+
+services = []
+for unit in req.get("units") or []:
+    try:
+        proc = subprocess.run(
+            ["systemctl", "is-active", unit],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        state = proc.stdout.decode("utf-8", errors="replace").strip()
+        services.append({
+            "unit": unit,
+            "state": state or "unknown",
+            "active": proc.returncode == 0 and state == "active",
+        })
+    except (OSError, subprocess.TimeoutExpired):
+        services.append({"unit": unit, "state": "unknown", "active": False})
+
+print(json.dumps({
+    "hostname": socket.gethostname(),
+    "cpu_count": os.cpu_count(),
+    "load_average": load,
+    "uptime_seconds": read_uptime(),
+    "memory": {
+        "total_bytes": memory.get("MemTotal"),
+        "available_bytes": memory.get("MemAvailable"),
+    },
+    "disks": disks,
+    "projects": projects,
+    "services": services,
+}))
 """
 
 
@@ -468,6 +578,44 @@ def _transport_endpoint() -> dict[str, Any]:
     }
 
 
+def _inventory_for_device(cfg: dict[str, Any], device_id: str) -> dict[str, Any]:
+    host = host_for(cfg, host_id=device_id)
+    projects = [
+        {
+            "name": project["name"],
+            "path": project["path"],
+            "units": list(project["units"]),
+        }
+        for project in catalog_projects(cfg)
+        if project["host"] == device_id
+    ]
+    request = {
+        "roots": list(host["roots"]),
+        "projects": projects,
+        "units": sorted(all_units(cfg, host_id=device_id)),
+    }
+    result = _ssh(
+        ["python3", "-c", _HOST_INVENTORY_AGENT],
+        stdin=json.dumps(request, ensure_ascii=False).encode("utf-8"),
+        timeout=20,
+        device=device_id,
+    )
+    if result["returncode"] != 0:
+        return {
+            "ok": False,
+            "error": _sanitized_error(result["stderr"] or result["stdout"] or "inventory probe failed"),
+        }
+    try:
+        payload = json.loads(result["stdout"])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {"ok": False, "error": "inventory probe returned invalid JSON"}
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "inventory probe returned invalid payload"}
+    if _contains_secret(payload):
+        return {"ok": False, "error": "inventory probe returned disallowed fields"}
+    return {"ok": True, **payload}
+
+
 @server.tool(
     name="capabilities",
     annotations=ToolAnnotations(
@@ -592,8 +740,8 @@ def connection_status(device: str | None = None) -> dict[str, Any]:
         openWorldHint=False,
     ),
 )
-def list_devices() -> dict[str, Any]:
-    """List configured remote hosts and probe whether each one is currently reachable."""
+def list_devices(include_resources: bool = False) -> dict[str, Any]:
+    """List configured remote hosts and optionally collect live resource/service inventory."""
     cfg = _config()
     rows: list[dict[str, Any]] = []
     identity_argv = [
@@ -611,7 +759,7 @@ def list_devices() -> dict[str, Any]:
                 online = False
             if online:
                 _DEVICE_LAST_SUCCESS_UNIX[device_id] = time.time()
-        rows.append({
+        row = {
             "device_id": device_id,
             "name": device_id,
             "default": device_id == cfg["default_host"],
@@ -631,13 +779,21 @@ def list_devices() -> dict[str, Any]:
             "error": None if online else _sanitized_error(
                 probe["stderr"] or probe["stdout"] or "SSH connection failed"
             ),
-        })
+        }
+        if include_resources:
+            row["inventory"] = (
+                _inventory_for_device(cfg, device_id)
+                if online
+                else {"ok": False, "error": "device is offline"}
+            )
+        rows.append(row)
     result = {"default_device": cfg["default_host"], "devices": rows}
     if _contains_secret(result):
         raise RuntimeError("list_devices refused to return secret-bearing fields")
     _audit("list_devices", True, {
         "count": len(rows),
         "online": sum(1 for row in rows if row["online"]),
+        "include_resources": include_resources,
     })
     return result
 
@@ -851,6 +1007,216 @@ def revoke_exec_permission(permission_id: str) -> dict[str, Any]:
     return grant
 
 
+@server.tool(
+    name="list_credentials",
+    annotations=ToolAnnotations(
+        title="List credential handles",
+        readOnlyHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def list_credentials() -> dict[str, Any]:
+    """List local credential handles and scopes without reading or returning secret values."""
+    rows = credential_snapshot()
+    _audit("list_credentials", True, {"count": len(rows)})
+    return {"credentials": rows}
+
+
+@server.tool(
+    name="lease_credential",
+    annotations=ToolAnnotations(
+        title="Lease scoped credential handle",
+        readOnlyHint=False,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def lease_credential(
+    handle: str,
+    capability: str,
+    project: str | None = None,
+    device: str | None = None,
+    ttl_seconds: int = 300,
+) -> dict[str, Any]:
+    """Issue a short-lived opaque lease for a credential handle.
+
+    The secret itself is never returned. A later dedicated capability may consume
+    the lease internally after checking the same capability/project/device scope.
+    """
+    cfg = _config()
+    resolved_device = device
+    if project is not None or device is not None:
+        selected = host_for(cfg, project=project, host_id=device)
+        resolved_device = selected["id"]
+    lease = create_credential_lease(
+        handle,
+        capability=capability,
+        project=project,
+        device=resolved_device,
+        ttl_seconds=ttl_seconds,
+        issued_to="mcp_model",
+    )
+    _audit("lease_credential", True, {
+        "lease_id": lease["lease_id"],
+        "handle": lease["handle"],
+        "capability": lease["capability"],
+        "project": lease.get("project"),
+        "device": lease.get("device"),
+        "expires_at": lease["expires_at"],
+    })
+    return lease
+
+
+@server.tool(
+    name="list_credential_leases",
+    annotations=ToolAnnotations(
+        title="List credential leases",
+        readOnlyHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def list_credential_leases(active_only: bool = True) -> dict[str, Any]:
+    """List opaque credential leases; never returns credential values."""
+    rows = credential_lease_snapshot(active_only=active_only)
+    _audit("list_credential_leases", True, {
+        "active_only": active_only,
+        "count": len(rows),
+    })
+    return {"leases": rows}
+
+
+@server.tool(
+    name="revoke_credential_lease",
+    annotations=ToolAnnotations(
+        title="Revoke credential lease",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def revoke_credential_lease(lease_id: str) -> dict[str, Any]:
+    """Revoke one opaque credential lease without deleting the underlying credential."""
+    result = revoke_credential_lease_runtime(lease_id, operator="mcp_operator")
+    _audit("revoke_credential_lease", True, {
+        "lease_id": lease_id,
+        "handle": result.get("handle"),
+        "capability": result.get("capability"),
+    })
+    return result
+
+
+@server.tool(
+    name="create_job",
+    annotations=ToolAnnotations(
+        title="Create durable Remote job",
+        readOnlyHint=False,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def create_job(
+    goal: str,
+    project: str | None = None,
+    device: str | None = None,
+    pi_job_id: str | None = None,
+    pi_remote_dir: str = "/home/ubuntu/src/pi-remote",
+    pi_job_root: str | None = None,
+) -> dict[str, Any]:
+    """Create a durable LivingRuntime job, optionally linked to an existing Pi job."""
+    cfg = _config()
+    if project is not None or device is not None:
+        host_for(cfg, project=project, host_id=device)
+    backend = None
+    if pi_job_id is not None:
+        backend = {
+            "type": "pi",
+            "job_id": pi_job_id,
+            "pi_remote_dir": pi_remote_dir,
+            "job_root": pi_job_root,
+        }
+    result = create_runtime_job(
+        goal=goal,
+        project=project,
+        device=device,
+        backend=backend,
+    )
+    _audit("create_job", True, {
+        "job_id": result["job_id"],
+        "project": project,
+        "device": device,
+        "backend_type": None if backend is None else backend["type"],
+    })
+    return result
+
+
+@server.tool(
+    name="get_job",
+    annotations=ToolAnnotations(
+        title="Get durable Remote job",
+        readOnlyHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def get_job(job_id: str) -> dict[str, Any]:
+    """Read one durable job including goal, current step, next action and checkpoints."""
+    result = get_runtime_job(job_id)
+    _audit("get_job", True, {"job_id": job_id, "status": result.get("status")})
+    return result
+
+
+@server.tool(
+    name="list_jobs",
+    annotations=ToolAnnotations(
+        title="List durable Remote jobs",
+        readOnlyHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def list_jobs(status: str | None = None, limit: int = 50) -> dict[str, Any]:
+    """List the most recently updated durable jobs, optionally filtered by status."""
+    rows = runtime_jobs_snapshot(status=status, limit=limit)
+    _audit("list_jobs", True, {"status": status, "count": len(rows)})
+    return {"jobs": rows}
+
+
+@server.tool(
+    name="checkpoint_job",
+    annotations=ToolAnnotations(
+        title="Checkpoint durable Remote job",
+        readOnlyHint=False,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def checkpoint_job(
+    job_id: str,
+    summary: str,
+    current_step: str | None = None,
+    next_action: str | None = None,
+    status: str | None = None,
+) -> dict[str, Any]:
+    """Persist progress so another model turn or session can resume the same goal."""
+    result = checkpoint_runtime_job(
+        job_id,
+        summary=summary,
+        current_step=current_step,
+        next_action=next_action,
+        status=status,
+        source="model",
+    )
+    _audit("checkpoint_job", True, {
+        "job_id": job_id,
+        "status": result.get("status"),
+        "checkpoint_count": len(result.get("checkpoints") or []),
+    })
+    return result
+
+
 def _openai_continuation_path(session_id: str) -> Path:
     session_id = str(session_id).strip()
     if not session_id or len(session_id) > 256:
@@ -994,6 +1360,9 @@ def bind_openai_pi_continuation(
     job_id: str,
     pi_remote_dir: str = "/home/ubuntu/src/pi-remote",
     job_root: str | None = None,
+    goal: str | None = None,
+    project: str | None = None,
+    device: str | None = None,
 ) -> dict[str, Any]:
     """Bind a watched Pi job to a Codex/Work session for the plugin Stop hook."""
     session_id = str(session_id).strip()
@@ -1005,9 +1374,23 @@ def bind_openai_pi_continuation(
         raise ValueError("pi_remote_dir must be a bounded non-empty path")
     if job_root is not None and len(job_root) > 4096:
         raise ValueError("job_root path is too long")
+    if project is not None or device is not None:
+        host_for(_config(), project=project, host_id=device)
+    runtime_job = ensure_backend_job(
+        backend_type="pi",
+        backend_job_id=job_id,
+        goal=goal,
+        project=project,
+        device=device,
+        backend_details={
+            "pi_remote_dir": pi_remote_dir,
+            "job_root": job_root,
+        },
+    )
     _save_openai_continuation(session_id, {
         "session_id": session_id,
         "job_id": job_id,
+        "runtime_job_id": runtime_job["job_id"],
         "pi_remote_dir": pi_remote_dir,
         "job_root": job_root,
         "updated_at": time.time(),
@@ -1015,8 +1398,12 @@ def bind_openai_pi_continuation(
     return {
         "hookSpecificOutput": {
             "hookEventName": "PostToolUse",
-            "additionalContext": "Pi Remote continuation is armed for this OpenAI session.",
-        }
+            "additionalContext": (
+                "Pi Remote continuation is armed for this OpenAI session. "
+                f"Durable LivingRuntime job: {runtime_job['job_id']}."
+            ),
+        },
+        "runtimeJobId": runtime_job["job_id"],
     }
 
 
@@ -1058,10 +1445,24 @@ def continue_openai_pi_job(
         if terminal:
             _clear_openai_continuation(session_id)
             status = str(state.get("status") or "terminal")
+            runtime_job_id = binding.get("runtime_job_id")
+            if runtime_job_id:
+                sync_backend_status(
+                    str(runtime_job_id),
+                    backend_status=status,
+                    summary=(
+                        f"Pi Remote job {binding['job_id']} completed with status {status}."
+                    ),
+                )
             return {
                 "decision": "block",
                 "reason": (
                     f"Pi Remote job {binding['job_id']} completed with status {status}. "
+                    + (
+                        f"Durable LivingRuntime job {runtime_job_id} is checkpointed. "
+                        if runtime_job_id else ""
+                    )
+                    +
                     "Continue this same development task now: inspect the durable Pi job/session "
                     "result, review changes and tests, then proceed to the next required step "
                     "without asking the user to say continue."

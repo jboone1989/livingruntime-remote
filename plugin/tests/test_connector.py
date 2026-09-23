@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -11,6 +12,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import connector  # noqa: E402
+import relay_agent  # noqa: E402
 
 
 class ConnectorTests(unittest.TestCase):
@@ -112,6 +114,59 @@ class ConnectorTests(unittest.TestCase):
                 self.assertEqual(result["device_id"], "device-1")
                 self.assertNotIn("device_token", result)
                 self.assertNotIn("super-secret", json.dumps(result))
+
+    def test_relay_agent_dispatches_claimed_tasks_concurrently(self):
+        cfg = {
+            "url": "https://remote.example",
+            "device_token": "token",
+        }
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_started = threading.Event()
+        overlapped = {"value": False}
+        results: list[str] = []
+        poll_count = {"value": 0}
+        lock = threading.Lock()
+
+        def fake_dispatch(task):
+            task_id = task["task_id"]
+            if task_id == "task-1":
+                first_started.set()
+                self.assertTrue(release_first.wait(2))
+            elif task_id == "task-2":
+                overlapped["value"] = first_started.is_set() and not release_first.is_set()
+                second_started.set()
+                release_first.set()
+            return {"ok": True, "result": {"task_id": task_id}}
+
+        def fake_request(base, path, body, token=None, timeout=35):
+            if path.startswith("/device/poll"):
+                with lock:
+                    poll_count["value"] += 1
+                    index = poll_count["value"]
+                    done = len(results)
+                if index == 1:
+                    return {"task": {"task_id": "task-1", "tool": "diagnostics", "args": {}}}
+                if index == 2:
+                    self.assertTrue(first_started.wait(2))
+                    return {"task": {"task_id": "task-2", "tool": "diagnostics", "args": {}}}
+                if done >= 2:
+                    raise KeyboardInterrupt
+                return {"task": None}
+            if path == "/device/result":
+                with lock:
+                    results.append(body["task_id"])
+                return {}
+            raise AssertionError(path)
+
+        with patch.object(relay_agent, "_load", return_value=cfg), patch.object(
+            relay_agent, "_dispatch", side_effect=fake_dispatch
+        ), patch.object(relay_agent, "_request", side_effect=fake_request):
+            relay_agent.serve(Path("/unused"))
+
+        self.assertTrue(second_started.is_set())
+        self.assertTrue(overlapped["value"])
+        self.assertEqual(set(results), {"task-1", "task-2"})
 
 
 if __name__ == "__main__":

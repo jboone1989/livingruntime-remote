@@ -2,7 +2,7 @@
 
 Identity: `livingruntime.remote`
 
-Current version: `0.4.19`
+Current version: `0.4.20`
 
 This directory contains the ChatGPT/Codex-facing MCP runtime and the local Connector implementation.
 
@@ -17,6 +17,14 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 - list_dir
 - git
 - exec
+- list_credentials
+- lease_credential
+- list_credential_leases
+- revoke_credential_lease
+- create_job
+- get_job
+- list_jobs
+- checkpoint_job
 - list_exec_permissions
 - approve_exec_permission
 - deny_exec_permission
@@ -28,6 +36,16 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 - diagnostics
 
 The canonical registry is `scripts/contract.py`.
+
+### Credential broker
+
+Secrets are added only on the owned machine with `python scripts/credentialctl.py set ...`; there is intentionally no MCP tool that accepts or returns a secret value. ChatGPT sees only handles and declared capability/project/device scopes. `lease_credential` creates a short-lived opaque lease (30-900 seconds), and `revoke_credential_lease` invalidates it without deleting the underlying credential. Generic `exec_with_secret` is intentionally not provided; dedicated capabilities must consume leases internally so arbitrary commands cannot print or exfiltrate credentials.
+
+### Durable long-running jobs
+
+Long tasks can be represented independently of a model turn with `create_job`. The durable record stores the goal, project/device routing, optional Pi backend, current step, next action, bounded checkpoints, and terminal status. `checkpoint_job` persists resumable progress; `get_job` and `list_jobs` recover it in later turns or sessions. Existing Pi/OpenAI continuation bindings automatically adopt a durable job and checkpoint its terminal backend status.
+
+Job state is private local control-plane data under `~/.livingruntime/jobs` by default and is written owner-only.
 
 ### Dynamic exec approvals
 

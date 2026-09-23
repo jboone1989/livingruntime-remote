@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import socket
@@ -90,27 +91,56 @@ def _dispatch(task: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:1000]}
 
 
+def _handle_claimed_task(cfg: dict[str, Any], task: dict[str, Any]) -> None:
+    result = _dispatch(task)
+    _request(
+        cfg["url"],
+        "/device/result",
+        {"task_id": task["task_id"], "result": result},
+        cfg["device_token"],
+        timeout=30,
+    )
+
+
 def serve(config_path: Path, once: bool = False) -> None:
     cfg = _load(config_path)
-    while True:
-        try:
-            response = _request(cfg["url"], "/device/poll?wait=20", {},
-                                cfg["device_token"], timeout=30)
-            task = response.get("task")
-            if task:
-                result = _dispatch(task)
-                _request(cfg["url"], "/device/result",
-                         {"task_id": task["task_id"], "result": result},
-                         cfg["device_token"], timeout=30)
+    max_workers = min(
+        8,
+        max(2, int(os.environ.get("LIVINGRUNTIME_CONNECTOR_WORKERS", "4"))),
+    )
+    pending: set[concurrent.futures.Future[None]] = set()
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=max_workers,
+        thread_name_prefix="livingruntime-remote",
+    ) as pool:
+        while True:
+            try:
+                finished = {future for future in pending if future.done()}
+                for future in finished:
+                    pending.remove(future)
+                    future.result()
+
+                response = _request(
+                    cfg["url"],
+                    "/device/poll?wait=20",
+                    {},
+                    cfg["device_token"],
+                    timeout=30,
+                )
+                task = response.get("task")
+                if task:
+                    future = pool.submit(_handle_claimed_task, cfg, task)
+                    pending.add(future)
+                    if once:
+                        future.result()
+                        return
+            except KeyboardInterrupt:
+                return
+            except Exception as exc:
+                print(f"relay connector error: {type(exc).__name__}: {exc}", flush=True)
                 if once:
-                    return
-        except KeyboardInterrupt:
-            return
-        except Exception as exc:
-            print(f"relay connector error: {type(exc).__name__}: {exc}", flush=True)
-            if once:
-                raise
-            time.sleep(2)
+                    raise
+                time.sleep(2)
 
 
 def main() -> None:
