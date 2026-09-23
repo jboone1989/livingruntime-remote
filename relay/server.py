@@ -25,7 +25,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.17"
+VERSION = "0.4.18"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v1.html"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
@@ -38,6 +38,7 @@ TOOL_TEXT = {
     "disconnect_device": ("Disconnect paired device", "Revoke a paired LivingRuntime Remote Connector and discard its queued or completed relay tasks."),
     "connection_status": ("Check connection status", "Check SSH, gateway, authentication, configured roots, projects, and paired-device reachability before remote work."),
     "capabilities": ("List Remote capabilities", "List the bounded Remote tools currently available and report whether the toolset is healthy and complete."),
+    "list_devices": ("List managed devices", "List configured remote hosts, their stable device IDs, reachability, hostnames, projects, and bounded capabilities."),
     "list_projects": ("List configured projects", "List the named projects and bounded workspaces configured for this LivingRuntime Remote Connector."),
     "read_file": ("Read remote file", "Read bytes from a file inside an allowed project or configured root. Use this before editing or inspecting source files."),
     "list_dir": ("List remote directory", "List files and directories inside an allowed project or configured root without modifying them."),
@@ -817,8 +818,8 @@ def create_mcp(
         )
 
     @expose("connection_status", True, False, False)
-    async def connection_status() -> dict[str, Any]:
-        return await relay.call(_principal("remote:read"), "connection_status", {})
+    async def connection_status(device: str | None = None) -> dict[str, Any]:
+        return await relay.call(_principal("remote:read"), "connection_status", {"device": device})
 
     @expose("capabilities", True, False, False)
     async def capabilities() -> dict[str, Any]:
@@ -828,48 +829,52 @@ def create_mcp(
     async def list_projects() -> dict[str, Any]:
         return await relay.call(_principal("remote:read"), "list_projects", {})
 
+    @expose("list_devices", True, False, False)
+    async def list_devices() -> dict[str, Any]:
+        return await relay.call(_principal("remote:read"), "list_devices", {})
+
     @expose("read_file", True, False, False)
-    async def read_file(path: str, project: str | None = None, offset: int = 0,
+    async def read_file(path: str, project: str | None = None, device: str | None = None, offset: int = 0,
                         max_bytes: int = 131072) -> dict[str, Any]:
-        return await relay.call(_principal("remote:read"), "read_file", {"path": path, "project": project, "offset": offset, "max_bytes": max_bytes})
+        return await relay.call(_principal("remote:read"), "read_file", {"path": path, "project": project, "device": device, "offset": offset, "max_bytes": max_bytes})
 
     @expose("list_dir", True, False, False)
-    async def list_dir(path: str | None = None, project: str | None = None,
+    async def list_dir(path: str | None = None, project: str | None = None, device: str | None = None,
                        max_entries: int = 200) -> dict[str, Any]:
-        return await relay.call(_principal("remote:read"), "list_dir", {"path": path, "project": project, "max_entries": max_entries})
+        return await relay.call(_principal("remote:read"), "list_dir", {"path": path, "project": project, "device": device, "max_entries": max_entries})
 
     @expose("logs", True, False, False)
-    async def logs(unit: str | None = None, project: str | None = None, lines: int = 200,
+    async def logs(unit: str | None = None, project: str | None = None, device: str | None = None, lines: int = 200,
                    since_minutes: int = 60) -> dict[str, Any]:
-        return await relay.call(_principal("remote:read"), "logs", {"unit": unit, "project": project, "lines": lines, "since_minutes": since_minutes})
+        return await relay.call(_principal("remote:read"), "logs", {"unit": unit, "project": project, "device": device, "lines": lines, "since_minutes": since_minutes})
 
     @expose("write_file", False, False, True)
-    async def write_file(path: str, content: str, project: str | None = None,
+    async def write_file(path: str, content: str, project: str | None = None, device: str | None = None,
                          mode: str = "replace", expected_sha256: str | None = None) -> dict[str, Any]:
-        return await relay.call(_principal("remote:write"), "write_file", {"path": path, "content": content, "project": project, "mode": mode, "expected_sha256": expected_sha256})
+        return await relay.call(_principal("remote:write"), "write_file", {"path": path, "content": content, "project": project, "device": device, "mode": mode, "expected_sha256": expected_sha256})
 
     @expose("git", False, True, True)
-    async def git(args: list[str], repo_path: str | None = None, project: str | None = None,
+    async def git(args: list[str], repo_path: str | None = None, project: str | None = None, device: str | None = None,
                   timeout_seconds: int = 30) -> dict[str, Any]:
-        return await relay.call(_principal("remote:write"), "git", {"args": args, "repo_path": repo_path, "project": project, "timeout_seconds": timeout_seconds})
+        return await relay.call(_principal("remote:write"), "git", {"args": args, "repo_path": repo_path, "project": project, "device": device, "timeout_seconds": timeout_seconds})
 
     @expose("exec", False, True, True)
-    async def exec(argv: list[str], cwd: str | None = None, project: str | None = None,
+    async def exec(argv: list[str], cwd: str | None = None, project: str | None = None, device: str | None = None,
                    timeout_seconds: int = 30) -> dict[str, Any]:
-        return await relay.call(_principal("remote:write"), "exec", {"argv": argv, "cwd": cwd, "project": project, "timeout_seconds": timeout_seconds})
+        return await relay.call(_principal("remote:write"), "exec", {"argv": argv, "cwd": cwd, "project": project, "device": device, "timeout_seconds": timeout_seconds})
 
     @expose("process", False, False, True)
-    async def process(action: str, pid: int | None = None, contains: str | None = None) -> dict[str, Any]:
-        return await relay.call(_principal("remote:write"), "process", {"action": action, "pid": pid, "contains": contains})
+    async def process(action: str, pid: int | None = None, contains: str | None = None, device: str | None = None) -> dict[str, Any]:
+        return await relay.call(_principal("remote:write"), "process", {"action": action, "pid": pid, "contains": contains, "device": device})
 
     @expose("systemd", False, False, True)
-    async def systemd(action: str, unit: str | None = None, project: str | None = None) -> dict[str, Any]:
-        return await relay.call(_principal("remote:write"), "systemd", {"action": action, "unit": unit, "project": project})
+    async def systemd(action: str, unit: str | None = None, project: str | None = None, device: str | None = None) -> dict[str, Any]:
+        return await relay.call(_principal("remote:write"), "systemd", {"action": action, "unit": unit, "project": project, "device": device})
 
     @expose("apply_patch", False, False, True)
     async def apply_patch(path: str, patch: str, expected_sha256: str | None = None,
-                          project: str | None = None) -> dict[str, Any]:
-        return await relay.call(_principal("remote:write"), "apply_patch", {"path": path, "patch": patch, "expected_sha256": expected_sha256, "project": project})
+                          project: str | None = None, device: str | None = None) -> dict[str, Any]:
+        return await relay.call(_principal("remote:write"), "apply_patch", {"path": path, "patch": patch, "expected_sha256": expected_sha256, "project": project, "device": device})
 
     @expose("diagnostics", True, False, False)
     async def diagnostics() -> dict[str, Any]:

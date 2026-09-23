@@ -159,7 +159,12 @@ def default_host(cfg: dict[str, Any]) -> dict[str, Any]:
 
 def host_for(cfg: dict[str, Any], project: str | None = None, host_id: str | None = None) -> dict[str, Any]:
     if project:
-        return cfg["hosts"][require_project(cfg, project)["host"]]
+        project_host_id = require_project(cfg, project)["host"]
+        if host_id and host_id != project_host_id:
+            raise RuntimeError(
+                f"project {project!r} is bound to host {project_host_id!r}, not {host_id!r}"
+            )
+        return cfg["hosts"][project_host_id]
     if host_id:
         if host_id not in cfg["hosts"]:
             raise RuntimeError(f"unknown host {host_id!r}")
@@ -197,8 +202,14 @@ def resolve_path(cfg: dict[str, Any], path: str | None, *, project: str | None =
     return posix_path(path)
 
 
-def resolve_unit(cfg: dict[str, Any], unit: str | None, *, project: str | None = None) -> str:
-    allowed = all_units(cfg, project=project)
+def resolve_unit(
+    cfg: dict[str, Any],
+    unit: str | None,
+    *,
+    project: str | None = None,
+    host_id: str | None = None,
+) -> str:
+    allowed = all_units(cfg, project=project, host_id=host_id)
     if unit:
         name = str(unit).strip()
         if name not in allowed:

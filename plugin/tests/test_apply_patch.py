@@ -91,7 +91,14 @@ class ApplyPatchToolTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def _remote(self, op: str, payload: dict, timeout: int = 30, project: str | None = None) -> dict:
+    def _remote(
+        self,
+        op: str,
+        payload: dict,
+        timeout: int = 30,
+        project: str | None = None,
+        device: str | None = None,
+    ) -> dict:
         self.calls.append((op, payload))
         if op == "read_file":
             return {

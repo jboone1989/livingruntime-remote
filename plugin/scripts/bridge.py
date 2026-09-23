@@ -43,6 +43,7 @@ DEFAULT_TIMEOUT = 30
 
 server = FastMCP(NAME)
 _LAST_SUCCESS_UNIX = 0.0
+_DEVICE_LAST_SUCCESS_UNIX: dict[str, float] = {}
 _PROCESS_STARTED = time.time()
 _LAST_TOOLS_LIST_UNIX = 0.0
 _ACTIVE_TRANSPORT = "stdio"
@@ -195,16 +196,16 @@ def _config() -> dict[str, Any]:
     return normalize(value)
 
 
-def _host(project: str | None = None) -> str:
-    return host_for(_config(), project=project)["ssh_host"]
+def _host(project: str | None = None, device: str | None = None) -> str:
+    return host_for(_config(), project=project, host_id=device)["ssh_host"]
 
 
-def _roots(project: str | None = None) -> tuple[str, ...]:
-    return tuple(host_for(_config(), project=project)["roots"])
+def _roots(project: str | None = None, device: str | None = None) -> tuple[str, ...]:
+    return tuple(host_for(_config(), project=project, host_id=device)["roots"])
 
 
-def _units(project: str | None = None) -> set[str]:
-    return all_units(_config(), project=project)
+def _units(project: str | None = None, device: str | None = None) -> set[str]:
+    return all_units(_config(), project=project, host_id=device)
 
 
 def _audit(tool: str, ok: bool, detail: dict[str, Any]) -> None:
@@ -223,6 +224,7 @@ def _ssh(
     stdin: bytes | None = None,
     timeout: int = DEFAULT_TIMEOUT,
     project: str | None = None,
+    device: str | None = None,
 ) -> dict[str, Any]:
     command = shlex.join(remote_argv)
     started = time.monotonic()
@@ -234,7 +236,7 @@ def _ssh(
             "-o", "ConnectTimeout=10",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=2",
-            _host(project), command,
+            _host(project, device), command,
         ],
         input=b"" if stdin is None else stdin,
         stdout=subprocess.PIPE,
@@ -254,13 +256,20 @@ def _ssh(
     }
 
 
-def _remote(op: str, payload: dict[str, Any], timeout: int = DEFAULT_TIMEOUT, project: str | None = None) -> dict[str, Any]:
-    request = {"op": op, "roots": list(_roots(project)), **payload}
+def _remote(
+    op: str,
+    payload: dict[str, Any],
+    timeout: int = DEFAULT_TIMEOUT,
+    project: str | None = None,
+    device: str | None = None,
+) -> dict[str, Any]:
+    request = {"op": op, "roots": list(_roots(project, device)), **payload}
     result = _ssh(
         ["python3", "-c", _REMOTE_AGENT],
         stdin=json.dumps(request, ensure_ascii=False).encode("utf-8"),
         timeout=timeout,
         project=project,
+        device=device,
     )
     if result["returncode"] != 0:
         raise RuntimeError(result["stderr"] or result["stdout"] or "remote operation failed")
@@ -485,7 +494,7 @@ def capabilities() -> dict[str, Any]:
         openWorldHint=False,
     ),
 )
-def connection_status() -> dict[str, Any]:
+def connection_status(device: str | None = None) -> dict[str, Any]:
     """Bootstrap reachability even when a ChatGPT session has not attached the full toolset.
 
     This process cannot observe ChatGPT UI binding. If ChatGPT never calls this tool,
@@ -496,16 +505,21 @@ def connection_status() -> dict[str, Any]:
     not faked as chat_session_not_attached.
     """
     global _LAST_SUCCESS_UNIX
-    host_alias = _host()
+    cfg = _config()
+    selected_host = host_for(cfg, host_id=device)
+    device_id = selected_host["id"]
+    host_alias = selected_host["ssh_host"]
     result = _ssh(
         ["python3", "-c", "import getpass,json,os,socket; print(json.dumps({'user':getpass.getuser(),'hostname':socket.gethostname(),'cwd':os.getcwd()}))"],
         timeout=12,
+        device=device_id,
     )
     ok = result["returncode"] == 0
     remote = None
     if ok:
         remote = json.loads(result["stdout"].strip())
         _LAST_SUCCESS_UNIX = time.time()
+        _DEVICE_LAST_SUCCESS_UNIX[device_id] = _LAST_SUCCESS_UNIX
     cap = _capability_snapshot()
     toolset_loaded = bool(cap["healthy"])
     payload = {
@@ -522,6 +536,7 @@ def connection_status() -> dict[str, Any]:
             "version": VERSION,
         },
         "remote_host": {
+            "device_id": device_id,
             "alias": host_alias,
             "user": None if remote is None else remote.get("user"),
             "hostname": None if remote is None else remote.get("hostname") or remote.get("host"),
@@ -533,19 +548,89 @@ def connection_status() -> dict[str, Any]:
             "authenticated": ok,
             "authorized": ok,
             "latency_ms": result["duration_ms"],
-            "last_success_unix": _LAST_SUCCESS_UNIX or None,
+            "last_success_unix": _DEVICE_LAST_SUCCESS_UNIX.get(device_id),
         },
-        "configured_roots": list(_roots()),
-        "configured_systemd_units": sorted(_units()),
-        "projects": catalog_projects(_config()),
+        "configured_roots": list(selected_host["roots"]),
+        "configured_systemd_units": sorted(all_units(cfg, host_id=device_id)),
+        "projects": (
+            catalog_projects(cfg)
+            if device is None
+            else [
+                item for item in catalog_projects(cfg)
+                if item["host"] == device_id
+            ]
+        ),
         "core_tools": list(REMOTE_TOOLS),
         "capabilities": cap,
         "error": None if ok else _sanitized_error(result["stderr"] or result["stdout"] or "SSH connection failed"),
     }
     if _contains_secret(payload):
         raise RuntimeError("connection_status refused to return secret-bearing fields")
-    _audit("connection_status", ok, {"host_alias": host_alias, "latency_ms": result["duration_ms"]})
+    _audit("connection_status", ok, {
+        "device": device_id,
+        "host_alias": host_alias,
+        "latency_ms": result["duration_ms"],
+    })
     return payload
+
+
+@server.tool(
+    name="list_devices",
+    annotations=ToolAnnotations(
+        title="List managed devices",
+        readOnlyHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def list_devices() -> dict[str, Any]:
+    """List configured remote hosts and probe whether each one is currently reachable."""
+    cfg = _config()
+    rows: list[dict[str, Any]] = []
+    identity_argv = [
+        "python3", "-c",
+        "import getpass,json,os,socket; print(json.dumps({'user':getpass.getuser(),'hostname':socket.gethostname(),'cwd':os.getcwd()}))",
+    ]
+    for device_id, host in cfg["hosts"].items():
+        probe = _ssh(identity_argv, timeout=12, device=device_id)
+        online = probe["returncode"] == 0
+        remote: dict[str, Any] | None = None
+        if online:
+            try:
+                remote = json.loads(probe["stdout"].strip())
+            except (TypeError, ValueError, json.JSONDecodeError):
+                online = False
+            if online:
+                _DEVICE_LAST_SUCCESS_UNIX[device_id] = time.time()
+        rows.append({
+            "device_id": device_id,
+            "name": device_id,
+            "default": device_id == cfg["default_host"],
+            "online": online,
+            "ssh_host": host["ssh_host"],
+            "hostname": None if remote is None else remote.get("hostname") or remote.get("host"),
+            "user": None if remote is None else remote.get("user"),
+            "latency_ms": probe["duration_ms"],
+            "last_seen": _DEVICE_LAST_SUCCESS_UNIX.get(device_id),
+            "projects": [
+                project["name"] for project in catalog_projects(cfg)
+                if project["host"] == device_id
+            ],
+            "capabilities": [
+                "filesystem", "git", "exec", "process", "systemd", "logs"
+            ],
+            "error": None if online else _sanitized_error(
+                probe["stderr"] or probe["stdout"] or "SSH connection failed"
+            ),
+        })
+    result = {"default_device": cfg["default_host"], "devices": rows}
+    if _contains_secret(result):
+        raise RuntimeError("list_devices refused to return secret-bearing fields")
+    _audit("list_devices", True, {
+        "count": len(rows),
+        "online": sum(1 for row in rows if row["online"]),
+    })
+    return result
 
 
 @server.tool(
@@ -592,17 +677,20 @@ def exec(
     argv: list[str],
     cwd: str | None = None,
     project: str | None = None,
+    device: str | None = None,
     timeout_seconds: int = DEFAULT_TIMEOUT,
 ) -> dict[str, Any]:
     """Run one allowlisted development executable; shell command strings are not accepted."""
     _validate_exec(argv)
     timeout = min(120, max(1, int(timeout_seconds)))
-    workdir = resolve_path(_config(), cwd, project=project) if (cwd or project) else _roots(project)[0]
+    cfg = _config()
+    host_for(cfg, project=project, host_id=device)
+    workdir = resolve_path(cfg, cwd, project=project) if (cwd or project) else _roots(project, device)[0]
     result = _remote("exec", {
         "argv": argv, "cwd": workdir,
         "timeout": timeout, "max_output": MAX_OUTPUT_BYTES,
-    }, timeout=timeout + 2, project=project)
-    _audit("exec", True, {"argv": argv, "cwd": result.get("cwd"), "project": project, "returncode": result.get("returncode")})
+    }, timeout=timeout + 2, project=project, device=device)
+    _audit("exec", True, {"argv": argv, "cwd": result.get("cwd"), "project": project, "device": device, "returncode": result.get("returncode")})
     return result
 
 
@@ -847,16 +935,19 @@ def continue_openai_pi_job(
 def read_file(
     path: str,
     project: str | None = None,
+    device: str | None = None,
     offset: int = 0,
     max_bytes: int = 131072,
 ) -> dict[str, Any]:
     """Read a bounded byte range from a file. Prefer project= plus a project-relative path."""
-    target = resolve_path(_config(), path, project=project)
+    cfg = _config()
+    host_for(cfg, project=project, host_id=device)
+    target = resolve_path(cfg, path, project=project)
     result = _remote("read_file", {
         "path": target, "offset": max(0, int(offset)),
         "max_bytes": min(MAX_OUTPUT_BYTES, max(1, int(max_bytes))),
-    }, project=project)
-    _audit("read_file", True, {"path": result["path"], "project": project, "bytes_read": result["bytes_read"]})
+    }, project=project, device=device)
+    _audit("read_file", True, {"path": result["path"], "project": project, "device": device, "bytes_read": result["bytes_read"]})
     return result
 
 
@@ -874,6 +965,7 @@ def write_file(
     path: str,
     content: str,
     project: str | None = None,
+    device: str | None = None,
     mode: str = "replace",
     expected_sha256: str | None = None,
 ) -> dict[str, Any]:
@@ -882,12 +974,14 @@ def write_file(
         raise ValueError("mode must be replace or append")
     if len(content.encode("utf-8")) > MAX_OUTPUT_BYTES:
         raise ValueError("content exceeds maximum write size")
-    target = resolve_path(_config(), path, project=project)
+    cfg = _config()
+    host_for(cfg, project=project, host_id=device)
+    target = resolve_path(cfg, path, project=project)
     result = _remote("write_file", {
         "path": target, "content": content, "mode": mode,
         "expected_sha256": expected_sha256,
-    }, project=project)
-    _audit("write_file", True, {"path": result["path"], "project": project, "mode": mode, "bytes": result["bytes"]})
+    }, project=project, device=device)
+    _audit("write_file", True, {"path": result["path"], "project": project, "device": device, "mode": mode, "bytes": result["bytes"]})
     return result
 
 
@@ -906,12 +1000,15 @@ def apply_patch(
     patch: str,
     expected_sha256: str | None = None,
     project: str | None = None,
+    device: str | None = None,
 ) -> dict[str, Any]:
     """Apply a unified diff under a configured root. Failure leaves the file unchanged."""
-    target = resolve_path(_config(), path, project=project)
+    cfg = _config()
+    host_for(cfg, project=project, host_id=device)
+    target = resolve_path(cfg, path, project=project)
     current = _remote("read_file", {
         "path": target, "offset": 0, "max_bytes": MAX_OUTPUT_BYTES,
-    }, project=project)
+    }, project=project, device=device)
     old_sha = current["sha256"]
     if int(current.get("bytes_read") or 0) >= MAX_OUTPUT_BYTES:
         raise ValueError("file is too large for apply_patch")
@@ -940,7 +1037,7 @@ def apply_patch(
         "content": updated,
         "mode": "replace",
         "expected_sha256": old_sha,
-    }, project=project)
+    }, project=project, device=device)
     _audit("apply_patch", True, {
         "path": written["path"],
         "old_sha256": old_sha,
@@ -959,13 +1056,20 @@ def apply_patch(
         openWorldHint=False,
     ),
 )
-def list_dir(path: str | None = None, project: str | None = None, max_entries: int = 200) -> dict[str, Any]:
+def list_dir(
+    path: str | None = None,
+    project: str | None = None,
+    device: str | None = None,
+    max_entries: int = 200,
+) -> dict[str, Any]:
     """List one remote directory under a configured root or named project."""
-    target = resolve_path(_config(), path, project=project)
+    cfg = _config()
+    host_for(cfg, project=project, host_id=device)
+    target = resolve_path(cfg, path, project=project) if (path or project) else _roots(device=device)[0]
     result = _remote("list_dir", {
         "path": target, "max_entries": min(1000, max(1, int(max_entries))),
-    }, project=project)
-    _audit("list_dir", True, {"path": result["path"], "project": project, "entries": len(result["entries"])})
+    }, project=project, device=device)
+    _audit("list_dir", True, {"path": result["path"], "project": project, "device": device, "entries": len(result["entries"])})
     return result
 
 
@@ -983,17 +1087,20 @@ def git(
     args: list[str],
     repo_path: str | None = None,
     project: str | None = None,
+    device: str | None = None,
     timeout_seconds: int = DEFAULT_TIMEOUT,
 ) -> dict[str, Any]:
     """Run a Git subcommand. Prefer project=virtualbrain instead of an absolute repo_path."""
     _validate_git(args)
     timeout = min(120, max(1, int(timeout_seconds)))
-    cwd = resolve_path(_config(), repo_path, project=project)
+    cfg = _config()
+    host_for(cfg, project=project, host_id=device)
+    cwd = resolve_path(cfg, repo_path, project=project)
     result = _remote("exec", {
         "argv": ["git", *args], "cwd": cwd,
         "timeout": timeout, "max_output": MAX_OUTPUT_BYTES,
-    }, timeout=timeout + 2, project=project)
-    _audit("git", True, {"repo_path": cwd, "project": project, "args": args, "returncode": result.get("returncode")})
+    }, timeout=timeout + 2, project=project, device=device)
+    _audit("git", True, {"repo_path": cwd, "project": project, "device": device, "args": args, "returncode": result.get("returncode")})
     return result
 
 
@@ -1007,10 +1114,16 @@ def git(
         openWorldHint=False,
     ),
 )
-def process(action: str, pid: int | None = None, contains: str | None = None) -> dict[str, Any]:
+def process(
+    action: str,
+    pid: int | None = None,
+    contains: str | None = None,
+    device: str | None = None,
+) -> dict[str, Any]:
     """List scoped same-user processes or SIGTERM one process whose cwd is under a configured root."""
-    result = _remote("process", {"action": action, "pid": pid, "contains": contains})
-    _audit("process", True, {"action": action, "pid": pid})
+    host_for(_config(), host_id=device)
+    result = _remote("process", {"action": action, "pid": pid, "contains": contains}, device=device)
+    _audit("process", True, {"action": action, "pid": pid, "device": device})
     return result
 
 
@@ -1024,16 +1137,23 @@ def process(action: str, pid: int | None = None, contains: str | None = None) ->
         openWorldHint=False,
     ),
 )
-def systemd(action: str, unit: str | None = None, project: str | None = None) -> dict[str, Any]:
+def systemd(
+    action: str,
+    unit: str | None = None,
+    project: str | None = None,
+    device: str | None = None,
+) -> dict[str, Any]:
     """Inspect or control an explicitly allowlisted remote systemd service."""
-    selected = resolve_unit(_config(), unit, project=project)
+    cfg = _config()
+    host_for(cfg, project=project, host_id=device)
+    selected = resolve_unit(cfg, unit, project=project, host_id=device)
     if action not in {"status", "is-active", "start", "stop", "restart"}:
         raise ValueError("unsupported systemd action")
     argv = ["systemctl", action, selected]
     if action in {"start", "stop", "restart"}:
         argv = ["sudo", "-n", *argv]
-    result = _ssh(argv, timeout=30, project=project)
-    _audit("systemd", result["returncode"] == 0, {"action": action, "unit": selected, "project": project})
+    result = _ssh(argv, timeout=30, project=project, device=device)
+    _audit("systemd", result["returncode"] == 0, {"action": action, "unit": selected, "project": project, "device": device})
     return result
 
 
@@ -1049,17 +1169,20 @@ def systemd(action: str, unit: str | None = None, project: str | None = None) ->
 def logs(
     unit: str | None = None,
     project: str | None = None,
+    device: str | None = None,
     lines: int = 200,
     since_minutes: int = 60,
 ) -> dict[str, Any]:
     """Read bounded journal logs. Prefer project=ferro instead of guessing a unit name."""
-    selected = resolve_unit(_config(), unit, project=project)
+    cfg = _config()
+    host_for(cfg, project=project, host_id=device)
+    selected = resolve_unit(cfg, unit, project=project, host_id=device)
     result = _ssh([
         "journalctl", "--no-pager", "-u", selected,
         "-n", str(min(1000, max(1, int(lines)))),
         "--since", f"{min(10080, max(1, int(since_minutes)))} minutes ago",
-    ], timeout=30, project=project)
-    _audit("logs", result["returncode"] == 0, {"unit": selected, "project": project, "lines": lines})
+    ], timeout=30, project=project, device=device)
+    _audit("logs", result["returncode"] == 0, {"unit": selected, "project": project, "device": device, "lines": lines})
     return result
 
 

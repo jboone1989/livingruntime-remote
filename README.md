@@ -28,9 +28,22 @@ pi-remote is a separate private product built above this foundation. Its persist
 
 ## Current release
 
-Version: 0.4.17
+Version: 0.4.18
 
 The repository is private during development. Before public launch it will be made public and given an explicit open-source license.
+
+### Multi-device V1
+
+One Connector can manage multiple configured SSH hosts. `list_devices` discovers the configured hosts and probes their reachability. Remote tools accept an optional `device` ID such as `main` or `vultr`; omitting it preserves the configured default host. Project aliases still route to their bound host, and a conflicting `project` plus `device` selection is rejected instead of silently crossing host boundaries.
+
+Examples:
+
+```text
+list_devices()
+connection_status(device="vultr")
+logs(device="vultr", unit="livingruntime-remote-relay.service")
+exec(device="main", argv=["ps"])
+```
 
 ## Install target
 

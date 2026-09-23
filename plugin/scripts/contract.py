@@ -8,6 +8,7 @@ REMOTE_IDENTITY = "livingruntime.remote"
 REMOTE_TOOLS = (
     "connection_status",
     "capabilities",
+    "list_devices",
     "list_projects",
     "read_file",
     "write_file",
@@ -44,7 +45,7 @@ DISCOVERY_TOOLS = REMOTE_TOOLS
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 DEFAULT_HTTP_PORT = 8766
 PLUGIN_NAME = "LivingRuntime Remote"
-PLUGIN_VERSION = "0.4.17"
+PLUGIN_VERSION = "0.4.18"
 SECRET_KEYS = (
     "token",
     "password",

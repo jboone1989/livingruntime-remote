@@ -44,6 +44,18 @@
         "destructive_justification": "Does not create, overwrite, delete, or restart anything."
       }
     },
+    "list_devices": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists configured user-controlled remote hosts and probes reachability without changing them.",
+        "open_world_justification": "Contacts only configured private Remote hosts and does not publish data.",
+        "destructive_justification": "Does not create, overwrite, delete, restart, or reconfigure anything."
+      }
+    },
     "list_projects": {
       "annotations": {
         "readOnlyHint": true,

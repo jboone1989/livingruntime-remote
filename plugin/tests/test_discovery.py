@@ -125,7 +125,7 @@ class SchemaAndToolTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def _ssh(self, remote_argv, *, stdin=None, timeout=30, project=None):
+    def _ssh(self, remote_argv, *, stdin=None, timeout=30, project=None, device=None):
         command = " ".join(map(str, remote_argv))
         if "getpass" in command:
             return {
