@@ -99,8 +99,17 @@ class CredentialBrokerTests(unittest.TestCase):
             capability="provider_call",
             project="ferro",
             device="main",
+            provider="example",
         )
         self.assertEqual(resolved, "hidden-value")
+        with self.assertRaises(PermissionError):
+            credentials.resolve_secret_for_lease(
+                lease["lease_id"],
+                capability="provider_call",
+                project="ferro",
+                device="main",
+                provider="github",
+            )
         with self.assertRaises(PermissionError):
             credentials.resolve_secret_for_lease(
                 lease["lease_id"],

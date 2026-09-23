@@ -42,7 +42,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.20")
+            self.assertEqual(health.json()["version"], "0.4.21")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -314,6 +314,21 @@ class RelayServerTests(unittest.TestCase):
             ["app"],
         )
         self.assertNotIn("resourceUri", tools["wait_pi_job_completion"].meta["ui"])
+        self.assertEqual(
+            tools["remote_overview"].meta["ui"]["resourceUri"],
+            server.CONTROL_PLANE_WIDGET_URI,
+        )
+        self.assertEqual(
+            tools["remote_overview"].meta["ui"]["visibility"],
+            ["model", "app"],
+        )
+        self.assertIn(
+            "include_resources",
+            (tools["list_devices"].parameters or {}).get("properties", {}),
+        )
+        self.assertTrue(tools["remote_overview"].annotations.read_only_hint)
+        self.assertFalse(tools["github_identity"].annotations.read_only_hint)
+        self.assertTrue(tools["github_identity"].annotations.open_world_hint)
         self.assertFalse(
             tools["bind_openai_pi_continuation"].annotations.destructive_hint
         )
@@ -332,6 +347,17 @@ class RelayServerTests(unittest.TestCase):
             widget_meta["csp"],
             {"connectDomains": [], "resourceDomains": []},
         )
+        control_widget = next(
+            resource
+            for resource in resources
+            if str(resource.uri) == server.CONTROL_PLANE_WIDGET_URI
+        )
+        control_meta = control_widget.model_dump(by_alias=True)["_meta"]["ui"]
+        self.assertEqual(control_meta["domain"], server.PI_JOB_WIDGET_DOMAIN)
+        self.assertEqual(
+            control_meta["csp"],
+            {"connectDomains": [], "resourceDomains": []},
+        )
 
     def test_pi_job_widget_uses_event_wait_and_same_conversation_followup(self):
         html = server.PI_JOB_WIDGET_HTML
@@ -344,6 +370,15 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn("Remote connection lost", html)
         self.assertNotIn("setInterval(", html)
         self.assertNotIn("job-status", html)
+
+    def test_control_plane_widget_is_read_only_snapshot_ui(self):
+        html = server.CONTROL_PLANE_WIDGET_HTML
+        self.assertIn("LivingRuntime Remote Control Plane", html)
+        self.assertIn('"remote_overview"', html)
+        self.assertIn("Durable jobs", html)
+        self.assertIn("Permissions & credentials", html)
+        self.assertNotIn("approve_exec_permission", html)
+        self.assertNotIn("lease_credential", html)
 
     def test_public_openai_continuation_does_not_duplicate_widget_wait(self):
         source = inspect.getsource(server.create_mcp)

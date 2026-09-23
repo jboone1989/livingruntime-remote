@@ -2,7 +2,7 @@
 
 Identity: `livingruntime.remote`
 
-Current version: `0.4.20`
+Current version: `0.4.21`
 
 This directory contains the ChatGPT/Codex-facing MCP runtime and the local Connector implementation.
 
@@ -11,6 +11,7 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 - connection_status
 - capabilities
 - list_devices
+- remote_overview
 - list_projects
 - read_file
 - write_file
@@ -21,6 +22,7 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 - lease_credential
 - list_credential_leases
 - revoke_credential_lease
+- github_identity
 - create_job
 - get_job
 - list_jobs
@@ -34,12 +36,24 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 - logs
 - apply_patch
 - diagnostics
+- watch_pi_job
+- wait_pi_job_completion
+- bind_openai_pi_continuation
+- continue_openai_pi_job
 
 The canonical registry is `scripts/contract.py`.
 
 ### Credential broker
 
 Secrets are added only on the owned machine with `python scripts/credentialctl.py set ...`; there is intentionally no MCP tool that accepts or returns a secret value. ChatGPT sees only handles and declared capability/project/device scopes. `lease_credential` creates a short-lived opaque lease (30-900 seconds), and `revoke_credential_lease` invalidates it without deleting the underlying credential. Generic `exec_with_secret` is intentionally not provided; dedicated capabilities must consume leases internally so arbitrary commands cannot print or exfiltrate credentials.
+
+`github_identity` is the first dedicated lease consumer. It accepts only a `github.identity` lease for provider `github`, sends it only to the fixed `https://api.github.com/user` endpoint with redirects disabled, and returns only public account identity fields.
+
+### Control plane and host discovery
+
+`remote_overview` is the read-only control-plane snapshot used by the ChatGPT Apps SDK widget. It combines paired-connector health, configured host reachability, durable jobs, sanitized pending approvals, credential handles, active leases, and recent tool activity. It intentionally does not expose full pending command argv; operators inspect those through `list_exec_permissions` before approval.
+
+`list_devices(include_resources=true)` adds bounded live inventory for each configured host: CPU count/load, available memory, disk usage for configured roots, project presence, and allowlisted service state. Resource discovery never scans arbitrary network hosts.
 
 ### Durable long-running jobs
 

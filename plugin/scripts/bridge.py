@@ -9,6 +9,8 @@ import shlex
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,7 @@ from credentials import (
     create_lease as create_credential_lease,
     list_handles as credential_snapshot,
     list_leases as credential_lease_snapshot,
+    resolve_secret_for_lease,
     revoke_lease as revoke_credential_lease_runtime,
 )
 from jobs import (
@@ -798,6 +801,104 @@ def list_devices(include_resources: bool = False) -> dict[str, Any]:
     return result
 
 
+def _recent_audit_events(limit: int = 20) -> list[dict[str, Any]]:
+    path = Path.home() / ".livingruntime" / "remote-audit.jsonl"
+    if not path.exists():
+        return []
+    bounded = min(100, max(1, int(limit)))
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - 131072))
+            raw = fh.read(131072)
+    except OSError:
+        return []
+    lines = raw.decode("utf-8", errors="replace").splitlines()
+    rows: list[dict[str, Any]] = []
+    for line in lines[-bounded:]:
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(value, dict):
+            continue
+        rows.append({
+            "ts": value.get("ts"),
+            "tool": value.get("tool"),
+            "ok": bool(value.get("ok")),
+        })
+    return rows
+
+
+@server.tool(
+    name="remote_overview",
+    annotations=ToolAnnotations(
+        title="Remote control plane overview",
+        readOnlyHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def remote_overview(include_resources: bool = False) -> dict[str, Any]:
+    """Return a compact, secret-free control-plane snapshot for long-running work."""
+    devices = list_devices(include_resources=include_resources)
+    permission_state = exec_permission_snapshot()
+    pending_permissions = []
+    for row in permission_state.get("pending") or []:
+        argv = row.get("argv") if isinstance(row, dict) else None
+        executable = None
+        if isinstance(argv, list) and argv:
+            executable = os.path.basename(str(argv[0]))
+        pending_permissions.append({
+            "request_id": row.get("request_id"),
+            "host_id": row.get("host_id"),
+            "project": row.get("project"),
+            "risk": row.get("risk"),
+            "executable": executable,
+        })
+    jobs = runtime_jobs_snapshot(limit=25)
+    credential_rows = credential_snapshot()
+    credentials = [
+        {
+            "handle": row.get("handle"),
+            "provider": row.get("provider"),
+            "capabilities": row.get("capabilities") or [],
+            "projects": row.get("projects") or [],
+            "devices": row.get("devices") or [],
+            "configured": bool(
+                row.get("secret_present") and row.get("secret_permissions_ok")
+            ),
+        }
+        for row in credential_rows
+    ]
+    leases = credential_lease_snapshot(active_only=True)
+    result = {
+        "version": VERSION,
+        "generated_at": time.time(),
+        "devices": devices,
+        "jobs": jobs,
+        "permissions": {
+            "pending": pending_permissions,
+            "active_count": len(permission_state.get("grants") or []),
+            "revoked_count": len(permission_state.get("revoked") or []),
+        },
+        "credentials": credentials,
+        "active_credential_leases": leases,
+        "activity": _recent_audit_events(20),
+    }
+    if _contains_secret(result):
+        raise RuntimeError("remote_overview refused to return secret-bearing fields")
+    _audit("remote_overview", True, {
+        "devices": len(devices.get("devices") or []),
+        "jobs": len(jobs),
+        "pending_permissions": len(permission_state.get("pending") or []),
+        "credentials": len(credentials),
+        "include_resources": include_resources,
+    })
+    return result
+
+
 @server.tool(
     name="list_projects",
     annotations=ToolAnnotations(
@@ -1104,6 +1205,84 @@ def revoke_credential_lease(lease_id: str) -> dict[str, Any]:
         "lease_id": lease_id,
         "handle": result.get("handle"),
         "capability": result.get("capability"),
+    })
+    return result
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise RuntimeError("credential verification redirects are not allowed")
+
+
+@server.tool(
+    name="github_identity",
+    annotations=ToolAnnotations(
+        title="Verify GitHub credential identity",
+        readOnlyHint=False,
+        destructiveHint=False,
+        openWorldHint=True,
+    ),
+)
+def github_identity(
+    lease_id: str,
+    project: str | None = None,
+    device: str | None = None,
+) -> dict[str, Any]:
+    """Use a scoped GitHub credential lease internally without exposing its secret."""
+    cfg = _config()
+    resolved_device = device
+    if project is not None or device is not None:
+        selected = host_for(cfg, project=project, host_id=device)
+        resolved_device = selected["id"]
+    secret = resolve_secret_for_lease(
+        lease_id,
+        capability="github.identity",
+        project=project,
+        device=resolved_device,
+        provider="github",
+    )
+    request = urllib.request.Request(
+        "https://api.github.com/user",
+        headers={
+            "authorization": f"Bearer {secret}",
+            "accept": "application/vnd.github+json",
+            "user-agent": f"LivingRuntime-Remote/{VERSION}",
+            "x-github-api-version": "2022-11-28",
+        },
+        method="GET",
+    )
+    opener = urllib.request.build_opener(_NoRedirect())
+    try:
+        with opener.open(request, timeout=10) as response:
+            body = response.read(65537)
+            status = int(getattr(response, "status", 200))
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"GitHub credential verification failed with HTTP {exc.code}") from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise RuntimeError("GitHub credential verification failed") from None
+    if status != 200:
+        raise RuntimeError(f"GitHub credential verification failed with HTTP {status}")
+    if len(body) > 65536:
+        raise RuntimeError("GitHub identity response exceeded size limit")
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise RuntimeError("GitHub identity response was invalid") from None
+    if not isinstance(payload, dict):
+        raise RuntimeError("GitHub identity response was invalid")
+    result = {
+        "provider": "github",
+        "authenticated": True,
+        "login": payload.get("login"),
+        "id": payload.get("id"),
+        "name": payload.get("name"),
+        "type": payload.get("type"),
+    }
+    _audit("github_identity", True, {
+        "lease_id": lease_id,
+        "project": project,
+        "device": resolved_device,
+        "login": result["login"],
     })
     return result
 

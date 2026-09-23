@@ -4,7 +4,7 @@
   "app_info": {
     "display_name": "LivingRuntime Remote",
     "subtitle": "Bounded remote host tools",
-    "description": "LivingRuntime Remote lets ChatGPT operate development machines the user controls through bounded remote tools. It verifies connectivity, lists configured projects, reads and writes files only inside allowed roots, runs Git and development commands, persists long-running job checkpoints across model turns, exposes credential handles through scoped short-lived leases without returning secret values, and turns additional commands into durable operator approval requests with host-scoped grants and revocation. SSH passwords and private keys remain outside the service.",
+    "description": "LivingRuntime Remote lets ChatGPT operate development machines the user controls through bounded remote tools. It verifies connectivity, discovers configured hosts and resources, persists long-running jobs across model turns, provides a read-only control-plane overview, exposes credential handles through scoped short-lived leases with dedicated secret-consuming capabilities, and turns additional commands into durable operator approval requests. SSH passwords and private keys remain outside the service.",
     "category": "DEVELOPER_TOOLS"
   },
   "tools": {
@@ -402,6 +402,30 @@
         "read_only_justification": "Revokes an existing opaque credential lease so it cannot be consumed again.",
         "open_world_justification": "Changes only private local LivingRuntime lease metadata.",
         "destructive_justification": "Irreversibly invalidates that lease, while leaving the underlying credential intact."
+      }
+    },
+    "remote_overview": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns a secret-free control-plane snapshot of paired connector health, managed hosts, durable jobs, pending approvals, credential handles, and recent tool activity.",
+        "open_world_justification": "Reads only LivingRuntime Remote state and configured owned hosts; it does not publish data or contact arbitrary external services.",
+        "destructive_justification": "Does not change jobs, permissions, credentials, files, processes, or services."
+      }
+    },
+    "github_identity": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Consumes an already-issued scoped lease internally to verify the GitHub account identity; the credential itself is never returned.",
+        "open_world_justification": "Makes one fixed HTTPS request to https://api.github.com/user with redirects disabled. The destination is not user-selectable.",
+        "destructive_justification": "Does not create, modify, or delete GitHub resources or local credential material."
       }
     }
   },

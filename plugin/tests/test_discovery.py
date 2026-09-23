@@ -96,6 +96,7 @@ class DiscoveryTests(unittest.TestCase):
         expected = {
             "capabilities": (True, False, False),
             "diagnostics": (True, False, False),
+            "remote_overview": (True, False, False),
             "list_projects": (True, False, False),
             "read_file": (True, False, False),
             "apply_patch": (False, True, False),
@@ -105,6 +106,7 @@ class DiscoveryTests(unittest.TestCase):
             "lease_credential": (False, False, False),
             "list_credential_leases": (True, False, False),
             "revoke_credential_lease": (False, True, False),
+            "github_identity": (False, False, True),
             "create_job": (False, False, False),
             "get_job": (True, False, False),
             "list_jobs": (True, False, False),
@@ -302,6 +304,96 @@ class SchemaAndToolTests(unittest.TestCase):
         self.assertEqual(lease["device"], "main")
         self.assertEqual(lease["project"], "ferro")
         self.assertFalse(revoked["active"])
+
+    def test_github_identity_consumes_scoped_lease_without_returning_secret(self) -> None:
+        root = Path(self.tmp.name) / "credentials"
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self, size):
+                return json.dumps({
+                    "login": "octocat",
+                    "id": 1,
+                    "name": "The Octocat",
+                    "type": "User",
+                }).encode("utf-8")
+
+        class FakeOpener:
+            def open(self, request, timeout=10):
+                self.authorization = request.headers.get("Authorization")
+                return FakeResponse()
+
+        fake = FakeOpener()
+        with patch.dict(
+            os.environ,
+            {"LIVINGRUNTIME_REMOTE_CREDENTIALS": str(root)},
+        ), patch.object(bridge, "_config_path", return_value=str(self.config)), patch.object(
+            bridge.urllib.request, "build_opener", return_value=fake
+        ):
+            credentials.set_local_secret(
+                "github.production",
+                "never-return-this-value",
+                provider="github",
+                capabilities=["github.identity"],
+                projects=["ferro"],
+                devices=["main"],
+            )
+            lease = bridge.lease_credential(
+                "github.production",
+                "github.identity",
+                project="ferro",
+                ttl_seconds=60,
+            )
+            result = bridge.github_identity(
+                lease["lease_id"],
+                project="ferro",
+            )
+
+        self.assertEqual(result["login"], "octocat")
+        self.assertTrue(result["authenticated"])
+        self.assertIn("never-return-this-value", fake.authorization)
+        self.assertNotIn("never-return-this-value", json.dumps(result))
+
+    def test_remote_overview_is_secret_free_and_summarizes_control_plane(self) -> None:
+        jobs_root = Path(self.tmp.name) / "jobs"
+        credentials_root = Path(self.tmp.name) / "credentials"
+        with patch.dict(
+            os.environ,
+            {
+                "LIVINGRUNTIME_REMOTE_JOBS": str(jobs_root),
+                "LIVINGRUNTIME_REMOTE_CREDENTIALS": str(credentials_root),
+            },
+        ), patch.object(bridge, "_config_path", return_value=str(self.config)), patch.object(
+            bridge, "_ssh", self._ssh
+        ), patch.object(
+            bridge, "exec_permission_snapshot",
+            return_value={"pending": [], "grants": [], "revoked": []},
+        ), patch.object(
+            bridge, "_recent_audit_events",
+            return_value=[{"ts": 1.0, "tool": "connection_status", "ok": True}],
+        ):
+            credentials.set_local_secret(
+                "github.production",
+                "never-return-this-value",
+                provider="github",
+                capabilities=["github.identity"],
+            )
+            bridge.create_job("Long task", project="ferro")
+            result = bridge.remote_overview()
+
+        self.assertEqual(result["version"], PLUGIN_VERSION)
+        self.assertEqual(len(result["devices"]["devices"]), 1)
+        self.assertEqual(len(result["jobs"]), 1)
+        self.assertEqual(len(result["credentials"]), 1)
+        self.assertEqual(result["permissions"]["pending"], [])
+        self.assertNotIn("never-return-this-value", json.dumps(result))
 
     def test_openai_continuation_binding_and_terminal_resume(self) -> None:
         with patch.object(bridge.Path, "home", return_value=Path(self.tmp.name)):

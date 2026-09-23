@@ -246,6 +246,7 @@ def resolve_secret_for_lease(
     capability: str,
     project: str | None = None,
     device: str | None = None,
+    provider: str | None = None,
 ) -> str:
     store = _load_leases()
     lease = next((x for x in store["leases"] if x.get("lease_id") == lease_id), None)
@@ -256,6 +257,8 @@ def resolve_secret_for_lease(
         raise PermissionError("credential lease is not active")
     if lease.get("capability") != capability:
         raise PermissionError("credential lease capability mismatch")
+    if provider is not None and str(lease.get("provider") or "").lower() != str(provider).lower():
+        raise PermissionError("credential lease provider mismatch")
     if lease.get("project") != project or lease.get("device") != device:
         raise PermissionError("credential lease scope mismatch")
     path = _secret_path(str(lease["handle"]))

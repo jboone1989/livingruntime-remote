@@ -25,8 +25,9 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.20"
+VERSION = "0.4.21"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v1.html"
+CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v1.html"
 PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
@@ -40,6 +41,7 @@ TOOL_TEXT = {
     "connection_status": ("Check connection status", "Check SSH, gateway, authentication, configured roots, projects, and paired-device reachability before remote work."),
     "capabilities": ("List Remote capabilities", "List the bounded Remote tools currently available and report whether the toolset is healthy and complete."),
     "list_devices": ("List managed devices", "List configured remote hosts, their stable device IDs, reachability, hostnames, projects, and bounded capabilities."),
+    "remote_overview": ("Open Remote control plane", "Show one secret-free snapshot of Connector health, managed hosts, durable jobs, pending approvals, credential handles, and recent activity."),
     "list_projects": ("List configured projects", "List the named projects and bounded workspaces configured for this LivingRuntime Remote Connector."),
     "read_file": ("Read remote file", "Read bytes from a file inside an allowed project or configured root. Use this before editing or inspecting source files."),
     "list_dir": ("List remote directory", "List files and directories inside an allowed project or configured root without modifying them."),
@@ -51,6 +53,7 @@ TOOL_TEXT = {
     "lease_credential": ("Lease credential handle", "Issue a short-lived opaque credential lease scoped to one capability, project, and device."),
     "list_credential_leases": ("List credential leases", "List opaque credential leases without returning credential values."),
     "revoke_credential_lease": ("Revoke credential lease", "Revoke one opaque credential lease without deleting the underlying credential."),
+    "github_identity": ("Verify GitHub credential", "Use a scoped credential lease internally to verify the authenticated GitHub identity without returning the credential value."),
     "create_job": ("Create durable job", "Create a durable LivingRuntime Remote job for a long-running goal, optionally linked to an existing Pi job."),
     "get_job": ("Get durable job", "Read one durable Remote job including progress, backend, next action, and checkpoints."),
     "list_jobs": ("List durable jobs", "List recent durable Remote jobs, optionally filtered by status."),
@@ -261,6 +264,92 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
   }
 
   void connect();
+})();
+</script>
+</body>
+</html>"""
+
+CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { margin:0; padding:12px; font:13px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--color-text-primary,inherit); background:transparent; }
+  .top,.section { border:1px solid var(--color-border-secondary,rgba(127,127,127,.35)); border-radius:12px; padding:12px 14px; margin-bottom:10px; }
+  .row { display:flex; gap:8px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+  .badge { display:inline-flex; gap:6px; align-items:center; padding:2px 8px; border-radius:999px; background:rgba(127,127,127,.12); }
+  .dot { width:8px; height:8px; border-radius:50%; background:#999; }
+  .ok .dot { background:#32a852; } .bad .dot { background:#d64545; } .warn .dot { background:#d79a27; }
+  h3 { margin:0 0 8px; font-size:13px; }
+  .muted { color:var(--color-text-secondary,#777); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px; }
+  .item { padding:8px; border-radius:9px; background:rgba(127,127,127,.08); overflow-wrap:anywhere; }
+  code { font-family:var(--font-mono,ui-monospace,monospace); font-size:11px; }
+  button { border:1px solid var(--color-border-secondary,rgba(127,127,127,.4)); border-radius:8px; padding:6px 10px; background:transparent; color:inherit; }
+</style>
+</head>
+<body>
+  <div class="top">
+    <div class="row"><strong>LivingRuntime Remote Control Plane</strong><button id="refresh">Refresh</button></div>
+    <div id="headline" class="muted">Loading snapshot…</div>
+  </div>
+  <div class="section"><h3>Hosts</h3><div id="devices" class="grid"></div></div>
+  <div class="section"><h3>Durable jobs</h3><div id="jobs" class="grid"></div></div>
+  <div class="section"><h3>Permissions & credentials</h3><div id="security" class="grid"></div></div>
+  <div class="section"><h3>Recent activity</h3><div id="activity" class="grid"></div></div>
+<script>
+(() => {
+  const pending = new Map(); let nextId = 1; let connected = false; let latest = null;
+  const q = id => document.getElementById(id);
+  function request(method, params) {
+    const id = nextId++; window.parent.postMessage({jsonrpc:"2.0",id,method,params},"*");
+    return new Promise((resolve,reject)=>pending.set(id,{resolve,reject}));
+  }
+  function notify(method, params={}) { window.parent.postMessage({jsonrpc:"2.0",method,params},"*"); }
+  function data(result) { return result?.structuredContent || result?.structured_content || result || null; }
+  function esc(v) { return String(v ?? "").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+  function render(snapshot) {
+    latest = snapshot || {};
+    const connector = latest.connector || {};
+    const online = connector.online !== false;
+    q("headline").innerHTML = '<span class="badge '+(online?'ok':'bad')+'"><span class="dot"></span>'+(online?'Connector online':'Connector offline')+'</span> · v'+esc(latest.version || latest.overview?.version || "?");
+    const overview = latest.overview || latest;
+    const devices = overview?.devices?.devices || [];
+    q("devices").innerHTML = devices.length ? devices.map(d=>{
+      const inv=d.inventory||{}; const mem=inv.memory||{};
+      const resource=inv.ok ? '<div class="muted">CPU '+esc(inv.cpu_count)+' · RAM '+esc(mem.available_bytes ?? "?")+' free</div>' : '';
+      return '<div class="item"><div class="badge '+(d.online?'ok':'bad')+'"><span class="dot"></span>'+esc(d.device_id)+'</div><div>'+esc(d.hostname||d.ssh_host||"")+'</div><div class="muted">'+esc(d.latency_ms)+' ms · '+esc((d.projects||[]).join(", "))+'</div>'+resource+'</div>';
+    }).join("") : '<span class="muted">No hosts reported.</span>';
+    const jobs = overview?.jobs || [];
+    q("jobs").innerHTML = jobs.length ? jobs.slice(0,8).map(j=>'<div class="item"><div><strong>'+esc(j.status)+'</strong> <code>'+esc(j.job_id)+'</code></div><div>'+esc(j.goal)+'</div><div class="muted">'+esc(j.current_step||j.next_action||"No current step")+'</div></div>').join("") : '<span class="muted">No durable jobs.</span>';
+    const p=overview?.permissions||{}; const creds=overview?.credentials||[];
+    q("security").innerHTML =
+      '<div class="item"><strong>'+esc((p.pending||[]).length)+'</strong> pending command approvals<div class="muted">'+esc(p.active_count||0)+' active grants</div></div>'+
+      '<div class="item"><strong>'+esc(creds.length)+'</strong> credential handles<div class="muted">'+esc(creds.map(c=>c.handle).slice(0,5).join(", ")||"None")+'</div></div>';
+    const activity=overview?.activity||[];
+    q("activity").innerHTML = activity.length ? activity.slice().reverse().slice(0,12).map(a=>'<div class="item"><span class="badge '+(a.ok?'ok':'bad')+'"><span class="dot"></span>'+esc(a.tool)+'</span><div class="muted">'+esc(a.ts)+'</div></div>').join("") : '<span class="muted">No recent activity.</span>';
+  }
+  async function refresh() {
+    if (!connected) return;
+    q("headline").textContent="Refreshing…";
+    try {
+      const result=await request("tools/call",{name:"remote_overview",arguments:{include_resources:false}});
+      render(data(result));
+    } catch (e) { q("headline").textContent="Refresh failed: "+String(e?.message||e); }
+  }
+  q("refresh").addEventListener("click",()=>void refresh());
+  window.addEventListener("message", event=>{
+    if(event.source!==window.parent)return; const m=event.data; if(!m||m.jsonrpc!=="2.0")return;
+    if(m.id!==undefined&&pending.has(m.id)){const w=pending.get(m.id);pending.delete(m.id);m.error?w.reject(m.error):w.resolve(m.result);return;}
+    if(m.method==="ui/notifications/tool-result") render(m.params?.structuredContent||null);
+  },{passive:true});
+  (async()=>{try{
+    await request("ui/initialize",{appInfo:{name:"livingruntime-remote-control-plane",version:"1.0.0"},appCapabilities:{},protocolVersion:"2026-01-26"});
+    notify("ui/notifications/initialized"); connected=true;
+    render(window.openai?.toolOutput||latest);
+  }catch(e){q("headline").textContent="Widget initialization failed: "+String(e?.message||e);}})();
 })();
 </script>
 </body>
@@ -596,6 +685,16 @@ def create_mcp(
         domain=PI_JOB_WIDGET_DOMAIN,
         prefers_border=True,
     )
+    apps.add_html_resource(
+        CONTROL_PLANE_WIDGET_URI,
+        CONTROL_PLANE_WIDGET_HTML,
+        name="remote-control-plane",
+        title="LivingRuntime Remote control plane",
+        description="Read-only snapshot of connector health, hosts, durable jobs, approvals, credential handles, and recent activity.",
+        csp=ResourceCsp(connect_domains=[], resource_domains=[]),
+        domain=PI_JOB_WIDGET_DOMAIN,
+        prefers_border=True,
+    )
 
     @apps.tool(
         resource_uri=PI_JOB_WIDGET_URI,
@@ -634,6 +733,50 @@ def create_mcp(
             "jobRoot": job_root,
             "state": state,
             "terminal": state.get("status") in {"SUCCEEDED", "FAILED", "CANCELLED"},
+        }
+
+    @apps.tool(
+        resource_uri=CONTROL_PLANE_WIDGET_URI,
+        visibility=["model", "app"],
+        name="remote_overview",
+        title=TOOL_TEXT["remote_overview"][0],
+        description=TOOL_TEXT["remote_overview"][1],
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        meta=READ,
+    )
+    async def remote_overview(include_resources: bool = False) -> dict[str, Any]:
+        user_sub = _principal("remote:read")
+        device = relay.device_status(user_sub)
+        connector = None
+        if device is not None:
+            connector = {
+                "name": device.get("name"),
+                "online": bool(device.get("online")),
+                "last_seen": device.get("last_seen"),
+                "stale_for_seconds": device.get("stale_for_seconds"),
+            }
+        if device is None or not device.get("online"):
+            return {
+                "version": VERSION,
+                "generated_at": time.time(),
+                "connector": connector or {"online": False},
+                "overview": None,
+                "error": "paired connector is offline or unavailable",
+            }
+        overview = await relay.call(
+            user_sub,
+            "remote_overview",
+            {"include_resources": bool(include_resources)},
+        )
+        return {
+            "version": VERSION,
+            "generated_at": time.time(),
+            "connector": connector,
+            "overview": overview,
         }
 
     server = MCPServer(
@@ -879,8 +1022,12 @@ def create_mcp(
         return await relay.call(_principal("remote:read"), "list_projects", {})
 
     @expose("list_devices", True, False, False)
-    async def list_devices() -> dict[str, Any]:
-        return await relay.call(_principal("remote:read"), "list_devices", {})
+    async def list_devices(include_resources: bool = False) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:read"),
+            "list_devices",
+            {"include_resources": bool(include_resources)},
+        )
 
     @expose("read_file", True, False, False)
     async def read_file(path: str, project: str | None = None, device: str | None = None, offset: int = 0,
@@ -950,6 +1097,18 @@ def create_mcp(
             _principal("remote:write"),
             "revoke_credential_lease",
             {"lease_id": lease_id},
+        )
+
+    @expose("github_identity", False, True, False)
+    async def github_identity(
+        lease_id: str,
+        project: str | None = None,
+        device: str | None = None,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "github_identity",
+            {"lease_id": lease_id, "project": project, "device": device},
         )
 
     @expose("create_job", False, False, False)
