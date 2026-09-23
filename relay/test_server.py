@@ -42,7 +42,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.15")
+            self.assertEqual(health.json()["version"], "0.4.16")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -268,7 +268,13 @@ class RelayServerTests(unittest.TestCase):
     def test_public_mcp_declares_expected_tools_and_security(self):
         mcp = server.create_mcp(server.Relay(self.store))
         tools = {tool.name: tool for tool in mcp._tool_manager.list_tools()}
-        expected = {"create_pairing_code", "device_status", "disconnect_device"} | set(REMOTE_TOOLS)
+        expected = {
+            "create_pairing_code",
+            "device_status",
+            "disconnect_device",
+            "watch_pi_job",
+            "wait_pi_job_completion",
+        } | set(REMOTE_TOOLS)
         self.assertEqual(set(tools), expected)
         for tool in tools.values():
             self.assertTrue(tool.title, tool.name)
@@ -286,6 +292,29 @@ class RelayServerTests(unittest.TestCase):
             tools["git"].meta["securitySchemes"][0]["scopes"],
             ["remote:read", "remote:write", "openid", "email"],
         )
+        self.assertEqual(
+            tools["watch_pi_job"].meta["ui"]["resourceUri"],
+            server.PI_JOB_WIDGET_URI,
+        )
+        self.assertEqual(
+            tools["watch_pi_job"].meta["ui"]["visibility"],
+            ["model", "app"],
+        )
+        self.assertEqual(
+            tools["wait_pi_job_completion"].meta["ui"]["visibility"],
+            ["app"],
+        )
+        self.assertNotIn("resourceUri", tools["wait_pi_job_completion"].meta["ui"])
+
+    def test_pi_job_widget_uses_event_wait_and_same_conversation_followup(self):
+        html = server.PI_JOB_WIDGET_HTML
+        self.assertIn('"tools/call"', html)
+        self.assertIn('"wait_pi_job_completion"', html)
+        self.assertIn('"ui/message"', html)
+        self.assertIn('"ui/update-model-context"', html)
+        self.assertIn('"ui/initialize"', html)
+        self.assertNotIn("setInterval(", html)
+        self.assertNotIn("job-status", html)
 
 
 if __name__ == "__main__":

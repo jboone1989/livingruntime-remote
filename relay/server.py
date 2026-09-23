@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
+from mcp.server.apps import Apps
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
@@ -24,7 +25,8 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.15"
+VERSION = "0.4.16"
+PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v1.html"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
 READ = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", *IDENTITY_SCOPES]}]}
@@ -48,6 +50,186 @@ TOOL_TEXT = {
     "apply_patch": ("Apply file patch", "Apply a unified diff to a file inside an allowed workspace, optionally guarded by an expected SHA-256."),
     "diagnostics": ("Run Remote diagnostics", "Collect bounded LivingRuntime Remote diagnostics for connectivity, configuration, and tool-health troubleshooting."),
 }
+
+PI_JOB_WIDGET_HTML = r"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0;
+    padding: 12px;
+    font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: var(--color-text-primary, inherit);
+    background: transparent;
+  }
+  .card {
+    border: 1px solid var(--color-border-secondary, rgba(127,127,127,.35));
+    border-radius: 12px;
+    padding: 12px 14px;
+  }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .dot {
+    width: 8px; height: 8px; border-radius: 999px;
+    background: var(--color-text-info, #4f7cff);
+    flex: 0 0 auto;
+  }
+  #detail { margin-top: 6px; color: var(--color-text-secondary, #777); }
+  code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="row"><span class="dot"></span><strong id="status">Preparing Pi job watcher…</strong></div>
+    <div id="detail"></div>
+  </div>
+<script>
+(() => {
+  const pending = new Map();
+  let nextId = 1;
+  let connected = false;
+  let latestOutput = null;
+  let activeJob = null;
+  let stopped = false;
+  const statusEl = document.getElementById("status");
+  const detailEl = document.getElementById("detail");
+
+  function request(method, params) {
+    const id = nextId++;
+    window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+    return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+  }
+
+  function notify(method, params = {}) {
+    window.parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
+  }
+
+  function setStatus(status, detail = "") {
+    statusEl.textContent = status;
+    detailEl.textContent = detail;
+  }
+
+  function toolResultData(result) {
+    return result?.structuredContent || result?.structured_content || result || null;
+  }
+
+  async function sendFollowUp(jobId, state) {
+    const completionStatus = state?.status || "UNKNOWN";
+    const prompt =
+      "Pi Remote job " + jobId + " completed with status " + completionStatus +
+      ". Continue this same development task now. Inspect the durable Pi job/session result, " +
+      "review the changes and tests, and proceed to the next required step without asking me to say continue.";
+    try {
+      await request("ui/message", {
+        role: "user",
+        content: [{ type: "text", text: prompt }]
+      });
+      return;
+    } catch (error) {
+      const openai = typeof window !== "undefined" ? window.openai : undefined;
+      if (openai?.sendFollowUpMessage) {
+        await openai.sendFollowUpMessage({ prompt, scrollToBottom: false });
+        return;
+      }
+      throw error;
+    }
+  }
+
+  async function watch(output) {
+    const jobId = output?.jobId;
+    const piRemoteDir = output?.piRemoteDir;
+    const jobRoot = output?.jobRoot || null;
+    if (!connected || !jobId || activeJob === jobId || stopped) return;
+    activeJob = jobId;
+    setStatus("Pi is working…", "Job " + jobId);
+
+    try {
+      while (!stopped) {
+        const result = await request("tools/call", {
+          name: "wait_pi_job_completion",
+          arguments: {
+            job_id: jobId,
+            pi_remote_dir: piRemoteDir,
+            job_root: jobRoot,
+            timeout_seconds: 90
+          }
+        });
+        const data = toolResultData(result);
+        if (data?.terminal) {
+          const state = data.state || {};
+          setStatus(
+            "Pi finished: " + (state.status || "terminal"),
+            "Sending a follow-up into this ChatGPT conversation…"
+          );
+          await request("ui/update-model-context", {
+            structuredContent: {
+              piRemoteCompletion: {
+                jobId,
+                status: state.status || null,
+                finishedAt: state.finishedAt || null
+              }
+            }
+          }).catch(() => {});
+          await sendFollowUp(jobId, state);
+          setStatus("Follow-up sent", "ChatGPT can continue from the completed Pi job.");
+          stopped = true;
+          return;
+        }
+        if (!data?.timedOut) {
+          throw new Error("Pi job wait returned without terminal state or timeout");
+        }
+        setStatus("Pi is still working…", "No ChatGPT status polling; watcher remains attached.");
+      }
+    } catch (error) {
+      setStatus("Watcher stopped", String(error?.message || error));
+    }
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window.parent) return;
+    const message = event.data;
+    if (!message || message.jsonrpc !== "2.0") return;
+    if (message.id !== undefined && pending.has(message.id)) {
+      const waiter = pending.get(message.id);
+      pending.delete(message.id);
+      if (message.error) waiter.reject(message.error);
+      else waiter.resolve(message.result);
+      return;
+    }
+    if (message.method === "ui/notifications/tool-result") {
+      latestOutput = message.params?.structuredContent || null;
+      void watch(latestOutput);
+    }
+    if (message.method === "ui/notifications/request-teardown") {
+      stopped = true;
+    }
+  }, { passive: true });
+
+  async function connect() {
+    try {
+      await request("ui/initialize", {
+        appInfo: { name: "livingruntime-remote-pi-job-watch", version: "1.0.0" },
+        appCapabilities: {},
+        protocolVersion: "2026-01-26"
+      });
+      notify("ui/notifications/initialized");
+      connected = true;
+      if (!latestOutput && window.openai?.toolOutput) {
+        latestOutput = window.openai.toolOutput;
+      }
+      await watch(latestOutput);
+    } catch (error) {
+      setStatus("Widget initialization failed", String(error?.message || error));
+    }
+  }
+
+  void connect();
+})();
+</script>
+</body>
+</html>"""
 
 
 class PairRateLimiter:
@@ -290,10 +472,109 @@ def create_mcp(
     else:
         kwargs = {"token_verifier": verifier_from_env()}
 
+    async def pi_job_command(
+        user_sub: str,
+        command: str,
+        job_id: str,
+        pi_remote_dir: str,
+        job_root: str | None = None,
+        timeout_seconds: int = 30,
+    ) -> dict[str, Any]:
+        if command not in {"job-status", "job-wait"}:
+            raise ValueError("unsupported Pi job command")
+        job_id = str(job_id).strip()
+        pi_remote_dir = str(pi_remote_dir).strip()
+        if not job_id or len(job_id) > 128:
+            raise ValueError("job_id must be a bounded non-empty string")
+        if not pi_remote_dir or len(pi_remote_dir) > 4096:
+            raise ValueError("pi_remote_dir must be a bounded non-empty path")
+        payload: dict[str, Any] = {"jobId": job_id}
+        if job_root:
+            if len(job_root) > 4096:
+                raise ValueError("job_root path is too long")
+            payload["jobRoot"] = job_root
+        bounded_timeout = min(90, max(1, int(timeout_seconds)))
+        if command == "job-wait":
+            payload["timeoutMs"] = bounded_timeout * 1000
+        result = await relay.call(
+            user_sub,
+            "exec",
+            {
+                "argv": [
+                    "node",
+                    str(Path(pi_remote_dir) / "cli.js"),
+                    command,
+                    json.dumps(payload, separators=(",", ":")),
+                ],
+                "cwd": pi_remote_dir,
+                "project": None,
+                "timeout_seconds": min(120, bounded_timeout + 10),
+            },
+        )
+        if int(result.get("returncode", 1)) != 0:
+            raise RuntimeError(str(result.get("stderr") or "Pi Remote job command failed"))
+        stdout = result.get("stdout")
+        if not isinstance(stdout, str) or not stdout.strip():
+            raise RuntimeError("Pi Remote job command returned no JSON")
+        parsed = json.loads(stdout)
+        if not isinstance(parsed, dict):
+            raise RuntimeError("Pi Remote job command returned non-object JSON")
+        return parsed
+
+    apps = Apps()
+    apps.add_html_resource(
+        PI_JOB_WIDGET_URI,
+        PI_JOB_WIDGET_HTML,
+        name="pi-job-watch",
+        title="Pi Remote job watcher",
+        description="Wait for an existing Pi Remote detached job and continue this conversation when it finishes.",
+        prefers_border=True,
+    )
+
+    @apps.tool(
+        resource_uri=PI_JOB_WIDGET_URI,
+        visibility=["model", "app"],
+        name="watch_pi_job",
+        title="Watch Pi Remote job",
+        description=(
+            "Attach a no-polling watcher to an existing Pi Remote detached job. "
+            "Use this after starting a Pi Remote job. The widget waits for terminal state "
+            "and sends a follow-up message into this same conversation so ChatGPT can continue."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        meta=READ,
+    )
+    async def watch_pi_job(
+        job_id: str,
+        pi_remote_dir: str = "/home/ubuntu/src/pi-remote",
+        job_root: str | None = None,
+    ) -> dict[str, Any]:
+        user_sub = _principal("remote:read")
+        state = await pi_job_command(
+            user_sub,
+            "job-status",
+            job_id,
+            pi_remote_dir,
+            job_root,
+            timeout_seconds=15,
+        )
+        return {
+            "jobId": job_id,
+            "piRemoteDir": pi_remote_dir,
+            "jobRoot": job_root,
+            "state": state,
+            "terminal": state.get("status") in {"SUCCEEDED", "FAILED", "CANCELLED"},
+        }
+
     server = MCPServer(
         NAME,
         version=VERSION,
         auth=auth_settings,
+        extensions=[apps],
         **kwargs,
     )
 
@@ -365,6 +646,35 @@ def create_mcp(
     def disconnect_device(device_id: str | None = None) -> dict[str, Any]:
         """Revoke a paired connector and discard its queued or completed relay tasks."""
         return {"disconnected": relay.store.revoke_device(_principal("remote:write"), device_id)}
+
+    @server.tool(
+        name="wait_pi_job_completion",
+        title="Wait for Pi Remote job completion",
+        description=(
+            "App-only long wait for a Pi Remote detached job. This is used by the Pi job watcher "
+            "so the model does not poll job status."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        meta={**READ, "ui": {"visibility": ["app"]}},
+    )
+    async def wait_pi_job_completion(
+        job_id: str,
+        pi_remote_dir: str = "/home/ubuntu/src/pi-remote",
+        job_root: str | None = None,
+        timeout_seconds: int = 90,
+    ) -> dict[str, Any]:
+        return await pi_job_command(
+            _principal("remote:read"),
+            "job-wait",
+            job_id,
+            pi_remote_dir,
+            job_root,
+            timeout_seconds=timeout_seconds,
+        )
 
     def expose(name: str, read_only: bool, open_world: bool, destructive: bool):
         meta = READ if read_only else WRITE
