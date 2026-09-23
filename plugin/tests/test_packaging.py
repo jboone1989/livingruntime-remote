@@ -20,9 +20,10 @@ class PackagingTests(unittest.TestCase):
         openai = plugin["extensions"]["com.openai"]
         self.assertEqual(plugin["name"], "livingruntime-remote")
         self.assertEqual(plugin["version"], PLUGIN_VERSION)
-        self.assertEqual(PLUGIN_VERSION, "0.4.14")
+        self.assertEqual(PLUGIN_VERSION, "0.4.17")
         self.assertEqual(REMOTE_IDENTITY, "livingruntime.remote")
         self.assertEqual(openai["apps"], "./.app.json")
+        self.assertEqual(openai["hooks"], "./hooks/hooks.json")
         self.assertEqual(openai["interface"]["displayName"], "LivingRuntime Remote")
         self.assertEqual(openai["interface"]["supportURL"], "https://remote.livingruntime.com/support")
         self.assertTrue((self.root / "assets" / "logo.png").exists())
@@ -63,7 +64,29 @@ class PackagingTests(unittest.TestCase):
         overlay = json.loads((self.root / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         self.assertEqual(overlay["apps"], "./.app.json")
         self.assertEqual(overlay["mcpServers"], "./.mcp.json")
+        self.assertEqual(overlay["hooks"], "./hooks/hooks.json")
         self.assertEqual(overlay["version"], PLUGIN_VERSION)
+
+    def test_openai_hooks_bind_watch_and_continue_on_stop(self) -> None:
+        hooks = json.loads((self.root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+        post = hooks["hooks"]["PostToolUse"][0]
+        self.assertEqual(post["matcher"], "watch_pi_job$")
+        binder = post["hooks"][0]
+        self.assertEqual(binder["type"], "mcp_tool")
+        self.assertEqual(binder["server"], "livingruntime_remote")
+        self.assertEqual(binder["tool"], "bind_openai_pi_continuation")
+        self.assertEqual(binder["input"]["session_id"], "${session_id}")
+        self.assertEqual(binder["input"]["job_id"], "${tool_input.job_id}")
+        self.assertNotIn("pi_remote_dir", binder["input"])
+        self.assertNotIn("job_root", binder["input"])
+
+        stop = hooks["hooks"]["Stop"][0]["hooks"][0]
+        self.assertEqual(stop["type"], "mcp_tool")
+        self.assertEqual(stop["server"], "livingruntime_remote")
+        self.assertEqual(stop["tool"], "continue_openai_pi_job")
+        self.assertEqual(stop["input"]["session_id"], "${session_id}")
+        self.assertEqual(stop["input"]["timeout_seconds"], 540)
+        self.assertEqual(stop["timeout"], 600)
 
     def test_submission_covers_public_tools_and_review_case_contract(self) -> None:
         submission = json.loads((self.root / "chatgpt-app-submission.json").read_text(encoding="utf-8"))

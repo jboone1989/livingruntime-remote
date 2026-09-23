@@ -42,7 +42,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.16")
+            self.assertEqual(health.json()["version"], "0.4.17")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -274,6 +274,8 @@ class RelayServerTests(unittest.TestCase):
             "disconnect_device",
             "watch_pi_job",
             "wait_pi_job_completion",
+            "bind_openai_pi_continuation",
+            "continue_openai_pi_job",
         } | set(REMOTE_TOOLS)
         self.assertEqual(set(tools), expected)
         for tool in tools.values():
@@ -305,6 +307,12 @@ class RelayServerTests(unittest.TestCase):
             ["app"],
         )
         self.assertNotIn("resourceUri", tools["wait_pi_job_completion"].meta["ui"])
+        self.assertFalse(
+            tools["bind_openai_pi_continuation"].annotations.destructive_hint
+        )
+        self.assertFalse(
+            tools["continue_openai_pi_job"].annotations.read_only_hint
+        )
 
     def test_pi_job_widget_uses_event_wait_and_same_conversation_followup(self):
         html = server.PI_JOB_WIDGET_HTML
@@ -315,6 +323,15 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn('"ui/initialize"', html)
         self.assertNotIn("setInterval(", html)
         self.assertNotIn("job-status", html)
+
+    def test_openai_headless_continuation_is_durable_and_bounded(self):
+        source = inspect.getsource(server.create_mcp)
+        self.assertIn("bind_openai_pi_continuation", source)
+        self.assertIn("continue_openai_pi_job", source)
+        self.assertIn("wait_pi_job_until_terminal", source)
+        self.assertIn("min(540", source)
+        self.assertIn('"decision": "block"', source)
+        self.assertIn("clear_continuation", source)
 
 
 if __name__ == "__main__":

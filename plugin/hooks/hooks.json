@@ -1,0 +1,40 @@
+{
+  "description": "Continue OpenAI Codex runtime sessions when a watched Pi Remote job finishes.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "watch_pi_job$",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "livingruntime_remote",
+            "tool": "bind_openai_pi_continuation",
+            "input": {
+              "session_id": "${session_id}",
+              "job_id": "${tool_input.job_id}"
+            },
+            "timeout": 30,
+            "statusMessage": "Arming Pi Remote continuation"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "livingruntime_remote",
+            "tool": "continue_openai_pi_job",
+            "input": {
+              "session_id": "${session_id}",
+              "timeout_seconds": 540
+            },
+            "timeout": 600,
+            "statusMessage": "Waiting for Pi Remote"
+          }
+        ]
+      }
+    ]
+  }
+}

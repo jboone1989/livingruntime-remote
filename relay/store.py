@@ -26,6 +26,11 @@ class RelayStore:
               tool TEXT NOT NULL,args_json TEXT NOT NULL,status TEXT NOT NULL,result_json TEXT,
               created_at REAL NOT NULL,claimed_at REAL,completed_at REAL);
             CREATE INDEX IF NOT EXISTS idx_tasks_device ON tasks(device_id,status,created_at);
+            CREATE TABLE IF NOT EXISTS continuations(
+              user_sub TEXT NOT NULL,session_id TEXT NOT NULL,job_id TEXT NOT NULL,
+              pi_remote_dir TEXT NOT NULL,job_root TEXT,created_at REAL NOT NULL,updated_at REAL NOT NULL,
+              PRIMARY KEY(user_sub,session_id));
+            CREATE INDEX IF NOT EXISTS idx_continuations_updated ON continuations(updated_at);
             """)
 
     def db(self) -> sqlite3.Connection:
@@ -46,6 +51,49 @@ class RelayStore:
                 "DELETE FROM tasks WHERE status IN ('queued','claimed') AND created_at < ?",
                 (cutoff,),
             )
+            db.execute("DELETE FROM continuations WHERE updated_at < ?", (cutoff,))
+
+    def bind_continuation(
+        self,
+        user_sub: str,
+        session_id: str,
+        job_id: str,
+        pi_remote_dir: str,
+        job_root: str | None = None,
+    ) -> dict[str, Any]:
+        self.cleanup()
+        now = time.time()
+        with self.db() as db:
+            db.execute(
+                "INSERT INTO continuations(user_sub,session_id,job_id,pi_remote_dir,job_root,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(user_sub,session_id) DO UPDATE SET "
+                "job_id=excluded.job_id,pi_remote_dir=excluded.pi_remote_dir,job_root=excluded.job_root,updated_at=excluded.updated_at",
+                (user_sub, session_id, job_id, pi_remote_dir, job_root, now, now),
+            )
+        return {
+            "session_id": session_id,
+            "job_id": job_id,
+            "pi_remote_dir": pi_remote_dir,
+            "job_root": job_root,
+        }
+
+    def continuation_for_user(self, user_sub: str, session_id: str) -> dict[str, Any] | None:
+        with self.db() as db:
+            row = db.execute(
+                "SELECT session_id,job_id,pi_remote_dir,job_root,created_at,updated_at "
+                "FROM continuations WHERE user_sub=? AND session_id=?",
+                (user_sub, session_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def clear_continuation(self, user_sub: str, session_id: str) -> bool:
+        with self.db() as db:
+            cur = db.execute(
+                "DELETE FROM continuations WHERE user_sub=? AND session_id=?",
+                (user_sub, session_id),
+            )
+        return cur.rowcount == 1
 
     def create_pairing_code(self, user_sub: str, ttl: int = 600) -> dict[str, Any]:
         self.cleanup()

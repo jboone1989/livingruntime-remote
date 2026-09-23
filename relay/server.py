@@ -25,7 +25,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.16"
+VERSION = "0.4.17"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v1.html"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
@@ -521,6 +521,32 @@ def create_mcp(
             raise RuntimeError("Pi Remote job command returned non-object JSON")
         return parsed
 
+    async def wait_pi_job_until_terminal(
+        user_sub: str,
+        binding: dict[str, Any],
+        timeout_seconds: int,
+    ) -> dict[str, Any]:
+        """Wait in bounded event-driven chunks without creating model-side polling turns."""
+        deadline = time.monotonic() + min(540, max(1, int(timeout_seconds)))
+        latest: dict[str, Any] | None = None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return latest or {"terminal": False, "timedOut": True, "state": None}
+            latest = await pi_job_command(
+                user_sub,
+                "job-wait",
+                str(binding["job_id"]),
+                str(binding["pi_remote_dir"]),
+                binding.get("job_root"),
+                timeout_seconds=min(90, max(1, int(remaining))),
+            )
+            state = latest.get("state") if isinstance(latest.get("state"), dict) else {}
+            if latest.get("terminal") or state.get("status") in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+                return latest
+            if not latest.get("timedOut"):
+                return latest
+
     apps = Apps()
     apps.add_html_resource(
         PI_JOB_WIDGET_URI,
@@ -675,6 +701,103 @@ def create_mcp(
             job_root,
             timeout_seconds=timeout_seconds,
         )
+
+    @server.tool(
+        name="bind_openai_pi_continuation",
+        title="Bind Pi job to OpenAI session",
+        description=(
+            "Internal OpenAI runtime hook helper. Bind a watched Pi Remote job to the current "
+            "Codex or ChatGPT Work session so the Stop hook can continue it after Pi finishes."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        meta=READ,
+    )
+    async def bind_openai_pi_continuation(
+        session_id: str,
+        job_id: str,
+        pi_remote_dir: str = "/home/ubuntu/src/pi-remote",
+        job_root: str | None = None,
+    ) -> dict[str, Any]:
+        user_sub = _principal("remote:read")
+        session_id = str(session_id).strip()
+        job_id = str(job_id).strip()
+        pi_remote_dir = str(pi_remote_dir).strip()
+        if not session_id or len(session_id) > 256:
+            raise ValueError("session_id must be a bounded non-empty string")
+        if not job_id or len(job_id) > 128:
+            raise ValueError("job_id must be a bounded non-empty string")
+        if not pi_remote_dir or len(pi_remote_dir) > 4096:
+            raise ValueError("pi_remote_dir must be a bounded non-empty path")
+        if job_root is not None and len(job_root) > 4096:
+            raise ValueError("job_root path is too long")
+        binding = relay.store.bind_continuation(
+            user_sub, session_id, job_id, pi_remote_dir, job_root
+        )
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": (
+                    f"Pi Remote continuation is armed for job {binding['job_id']} in this OpenAI session."
+                ),
+            }
+        }
+
+    @server.tool(
+        name="continue_openai_pi_job",
+        title="Continue OpenAI session after Pi job",
+        description=(
+            "Internal OpenAI Stop-hook helper. Wait for the Pi Remote job bound to this session "
+            "and return a Codex continuation decision when the job finishes."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        meta=READ,
+    )
+    async def continue_openai_pi_job(
+        session_id: str,
+        timeout_seconds: int = 540,
+    ) -> dict[str, Any]:
+        user_sub = _principal("remote:read")
+        session_id = str(session_id).strip()
+        if not session_id or len(session_id) > 256:
+            raise ValueError("session_id must be a bounded non-empty string")
+        binding = relay.store.continuation_for_user(user_sub, session_id)
+        if binding is None:
+            return {"continue": True}
+
+        result = await wait_pi_job_until_terminal(user_sub, binding, timeout_seconds)
+        state = result.get("state") if isinstance(result.get("state"), dict) else {}
+        terminal = bool(result.get("terminal")) or state.get("status") in {
+            "SUCCEEDED", "FAILED", "CANCELLED"
+        }
+        if terminal:
+            relay.store.clear_continuation(user_sub, session_id)
+            status = str(state.get("status") or "terminal")
+            return {
+                "decision": "block",
+                "reason": (
+                    f"Pi Remote job {binding['job_id']} completed with status {status}. "
+                    "Continue this same development task now: inspect the durable Pi job/session "
+                    "result, review changes and tests, then proceed to the next required step "
+                    "without asking the user to say continue."
+                ),
+            }
+
+        return {
+            "decision": "block",
+            "reason": (
+                f"Pi Remote job {binding['job_id']} is still running after the bounded wait. "
+                "Do not poll it from the model. End this continuation so the OpenAI Stop hook "
+                "can resume waiting event-driven on the next stop."
+            ),
+        }
 
     def expose(name: str, read_only: bool, open_world: bool, destructive: bool):
         meta = READ if read_only else WRITE

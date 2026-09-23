@@ -89,6 +89,35 @@ class RelayStoreTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.store.authenticate_device(paired["device_token"])
 
+    def test_continuation_binding_is_scoped_and_consumable(self):
+        first = self.store.bind_continuation(
+            "user-a", "session-1", "job-a", "/srv/pi", "/tmp/jobs"
+        )
+        self.assertEqual(first["job_id"], "job-a")
+        self.assertIsNone(self.store.continuation_for_user("user-b", "session-1"))
+        self.assertIsNone(self.store.continuation_for_user("user-a", "session-2"))
+
+        rebound = self.store.bind_continuation(
+            "user-a", "session-1", "job-b", "/srv/pi", None
+        )
+        self.assertEqual(rebound["job_id"], "job-b")
+        stored = self.store.continuation_for_user("user-a", "session-1")
+        self.assertEqual(stored["job_id"], "job-b")
+        self.assertTrue(self.store.clear_continuation("user-a", "session-1"))
+        self.assertIsNone(self.store.continuation_for_user("user-a", "session-1"))
+
+    def test_cleanup_removes_stale_continuations(self):
+        self.store.bind_continuation(
+            "user-a", "session-1", "job-a", "/srv/pi", None
+        )
+        with self.store.db() as db:
+            db.execute(
+                "UPDATE continuations SET updated_at=0 WHERE user_sub=? AND session_id=?",
+                ("user-a", "session-1"),
+            )
+        self.store.cleanup(retention_seconds=1)
+        self.assertIsNone(self.store.continuation_for_user("user-a", "session-1"))
+
 
 if __name__ == "__main__":
     unittest.main()

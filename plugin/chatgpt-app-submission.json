@@ -199,6 +199,54 @@
         "open_world_justification": "Changes only private relay authorization state and does not modify public or third-party systems.",
         "destructive_justification": "Revokes device access and removes its pending relay tasks, so that connection must be paired again."
       }
+    },
+    "watch_pi_job": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads the current state of an existing Pi Remote detached job before attaching continuation behavior.",
+        "open_world_justification": "Uses only the user's paired bounded Remote workspace and does not access arbitrary public services.",
+        "destructive_justification": "Does not modify repository files, services, or the Pi job."
+      }
+    },
+    "wait_pi_job_completion": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Waits for an existing Pi Remote job and returns its durable terminal state.",
+        "open_world_justification": "Waits only through the user's paired bounded Remote workspace.",
+        "destructive_justification": "Does not modify the Pi job or development workspace."
+      }
+    },
+    "bind_openai_pi_continuation": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Stores bounded continuation metadata linking an OpenAI runtime session to an existing Pi job.",
+        "open_world_justification": "Changes only private LivingRuntime continuation state and does not contact open-ended external services.",
+        "destructive_justification": "Does not delete user data, stop processes, or modify repository contents."
+      }
+    },
+    "continue_openai_pi_job": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Waits for the bound Pi job and consumes its private continuation binding after terminal completion.",
+        "open_world_justification": "Uses only the user's paired bounded Remote workspace and OpenAI runtime continuation state.",
+        "destructive_justification": "Does not alter repository files, stop services, or cancel the Pi job."
+      }
     }
   },
   "test_cases": [

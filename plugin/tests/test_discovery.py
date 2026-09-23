@@ -100,6 +100,10 @@ class DiscoveryTests(unittest.TestCase):
             "apply_patch": (False, True, False),
             "git": (False, True, True),
             "logs": (True, False, False),
+            "watch_pi_job": (True, False, False),
+            "wait_pi_job_completion": (True, False, False),
+            "bind_openai_pi_continuation": (False, False, False),
+            "continue_openai_pi_job": (False, False, False),
         }
         for name, (read_only, destructive, open_world) in expected.items():
             annotations = by_name[name].annotations
@@ -233,6 +237,32 @@ class SchemaAndToolTests(unittest.TestCase):
         self.assertEqual(bridge._ACTIVE_TRANSPORT, "streamable-http")
         self.assertEqual(bridge._HTTP_BIND, "127.0.0.1:8766")
         self.assertFalse(bridge._transport_endpoint()["public_ingress"])
+
+    def test_openai_continuation_binding_and_terminal_resume(self) -> None:
+        with patch.object(bridge.Path, "home", return_value=Path(self.tmp.name)):
+            bound = bridge.bind_openai_pi_continuation(
+                "session-a", "job-a", "/home/ubuntu/src/pi-remote", None
+            )
+            self.assertEqual(
+                bound["hookSpecificOutput"]["hookEventName"], "PostToolUse"
+            )
+            with patch.object(
+                bridge,
+                "_pi_job_command",
+                return_value={
+                    "terminal": True,
+                    "timedOut": False,
+                    "state": {"status": "SUCCEEDED"},
+                },
+            ):
+                decision = bridge.continue_openai_pi_job("session-a", timeout_seconds=5)
+            self.assertEqual(decision["decision"], "block")
+            self.assertIn("job-a", decision["reason"])
+            self.assertIn("SUCCEEDED", decision["reason"])
+            self.assertEqual(
+                bridge.continue_openai_pi_job("session-a", timeout_seconds=1),
+                {"continue": True},
+            )
 
 
 if __name__ == "__main__":

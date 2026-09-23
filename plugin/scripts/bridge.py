@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -8,6 +9,7 @@ import shlex
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -602,6 +604,235 @@ def exec(
     }, timeout=timeout + 2, project=project)
     _audit("exec", True, {"argv": argv, "cwd": result.get("cwd"), "project": project, "returncode": result.get("returncode")})
     return result
+
+
+def _openai_continuation_path(session_id: str) -> Path:
+    session_id = str(session_id).strip()
+    if not session_id or len(session_id) > 256:
+        raise ValueError("session_id must be a bounded non-empty string")
+    root = Path.home() / ".livingruntime" / "openai-continuations"
+    root.mkdir(parents=True, exist_ok=True)
+    name = hashlib.sha256(session_id.encode("utf-8")).hexdigest() + ".json"
+    return root / name
+
+
+def _load_openai_continuation(session_id: str) -> dict[str, Any] | None:
+    path = _openai_continuation_path(session_id)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    if not isinstance(value, dict):
+        raise RuntimeError("invalid OpenAI continuation state")
+    return value
+
+
+def _save_openai_continuation(session_id: str, value: dict[str, Any]) -> None:
+    path = _openai_continuation_path(session_id)
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+    try:
+        temp.chmod(0o600)
+    except OSError:
+        pass
+    temp.replace(path)
+
+
+def _clear_openai_continuation(session_id: str) -> None:
+    try:
+        _openai_continuation_path(session_id).unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _pi_job_command(
+    command: str,
+    job_id: str,
+    pi_remote_dir: str,
+    job_root: str | None = None,
+    timeout_seconds: int = 30,
+) -> dict[str, Any]:
+    if command not in {"job-status", "job-wait"}:
+        raise ValueError("unsupported Pi job command")
+    job_id = str(job_id).strip()
+    pi_remote_dir = str(pi_remote_dir).strip()
+    if not job_id or len(job_id) > 128:
+        raise ValueError("job_id must be a bounded non-empty string")
+    if not pi_remote_dir or len(pi_remote_dir) > 4096:
+        raise ValueError("pi_remote_dir must be a bounded non-empty path")
+    payload: dict[str, Any] = {"jobId": job_id}
+    if job_root:
+        if len(job_root) > 4096:
+            raise ValueError("job_root path is too long")
+        payload["jobRoot"] = job_root
+    bounded_timeout = min(90, max(1, int(timeout_seconds)))
+    if command == "job-wait":
+        payload["timeoutMs"] = bounded_timeout * 1000
+    result = exec(
+        argv=[
+            "node",
+            pi_remote_dir.rstrip("/") + "/cli.js",
+            command,
+            json.dumps(payload, separators=(",", ":")),
+        ],
+        cwd=pi_remote_dir,
+        timeout_seconds=min(120, bounded_timeout + 10),
+    )
+    if int(result.get("returncode", 1)) != 0:
+        raise RuntimeError(str(result.get("stderr") or "Pi Remote job command failed"))
+    stdout = result.get("stdout")
+    if not isinstance(stdout, str) or not stdout.strip():
+        raise RuntimeError("Pi Remote job command returned no JSON")
+    parsed = json.loads(stdout)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Pi Remote job command returned non-object JSON")
+    return parsed
+
+
+@server.tool(
+    name="watch_pi_job",
+    annotations=ToolAnnotations(
+        title="Watch Pi Remote job",
+        readOnlyHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def watch_pi_job(
+    job_id: str,
+    pi_remote_dir: str = "/home/ubuntu/src/pi-remote",
+    job_root: str | None = None,
+) -> dict[str, Any]:
+    """Inspect an existing Pi Remote detached job before arming OpenAI continuation."""
+    state = _pi_job_command("job-status", job_id, pi_remote_dir, job_root, timeout_seconds=15)
+    return {
+        "jobId": job_id,
+        "piRemoteDir": pi_remote_dir,
+        "jobRoot": job_root,
+        "state": state,
+        "terminal": state.get("status") in {"SUCCEEDED", "FAILED", "CANCELLED"},
+    }
+
+
+@server.tool(
+    name="wait_pi_job_completion",
+    annotations=ToolAnnotations(
+        title="Wait for Pi Remote job completion",
+        readOnlyHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def wait_pi_job_completion(
+    job_id: str,
+    pi_remote_dir: str = "/home/ubuntu/src/pi-remote",
+    job_root: str | None = None,
+    timeout_seconds: int = 90,
+) -> dict[str, Any]:
+    """Event-driven bounded wait for an existing Pi Remote detached job."""
+    return _pi_job_command(
+        "job-wait", job_id, pi_remote_dir, job_root, timeout_seconds=timeout_seconds
+    )
+
+
+@server.tool(
+    name="bind_openai_pi_continuation",
+    annotations=ToolAnnotations(
+        title="Bind Pi job to OpenAI session",
+        readOnlyHint=False,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def bind_openai_pi_continuation(
+    session_id: str,
+    job_id: str,
+    pi_remote_dir: str = "/home/ubuntu/src/pi-remote",
+    job_root: str | None = None,
+) -> dict[str, Any]:
+    """Bind a watched Pi job to a Codex/Work session for the plugin Stop hook."""
+    session_id = str(session_id).strip()
+    job_id = str(job_id).strip()
+    pi_remote_dir = str(pi_remote_dir).strip()
+    if not job_id or len(job_id) > 128:
+        raise ValueError("job_id must be a bounded non-empty string")
+    if not pi_remote_dir or len(pi_remote_dir) > 4096:
+        raise ValueError("pi_remote_dir must be a bounded non-empty path")
+    if job_root is not None and len(job_root) > 4096:
+        raise ValueError("job_root path is too long")
+    _save_openai_continuation(session_id, {
+        "session_id": session_id,
+        "job_id": job_id,
+        "pi_remote_dir": pi_remote_dir,
+        "job_root": job_root,
+        "updated_at": time.time(),
+    })
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": "Pi Remote continuation is armed for this OpenAI session.",
+        }
+    }
+
+
+@server.tool(
+    name="continue_openai_pi_job",
+    annotations=ToolAnnotations(
+        title="Continue OpenAI session after Pi job",
+        readOnlyHint=False,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def continue_openai_pi_job(
+    session_id: str,
+    timeout_seconds: int = 540,
+) -> dict[str, Any]:
+    """Codex/Work Stop-hook helper that waits for Pi and requests a new continuation turn."""
+    binding = _load_openai_continuation(session_id)
+    if binding is None:
+        return {"continue": True}
+
+    deadline = time.monotonic() + min(540, max(1, int(timeout_seconds)))
+    latest: dict[str, Any] | None = None
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        latest = _pi_job_command(
+            "job-wait",
+            str(binding["job_id"]),
+            str(binding["pi_remote_dir"]),
+            binding.get("job_root"),
+            timeout_seconds=min(90, max(1, int(remaining))),
+        )
+        state = latest.get("state") if isinstance(latest.get("state"), dict) else {}
+        terminal = bool(latest.get("terminal")) or state.get("status") in {
+            "SUCCEEDED", "FAILED", "CANCELLED"
+        }
+        if terminal:
+            _clear_openai_continuation(session_id)
+            status = str(state.get("status") or "terminal")
+            return {
+                "decision": "block",
+                "reason": (
+                    f"Pi Remote job {binding['job_id']} completed with status {status}. "
+                    "Continue this same development task now: inspect the durable Pi job/session "
+                    "result, review changes and tests, then proceed to the next required step "
+                    "without asking the user to say continue."
+                ),
+            }
+        if not latest.get("timedOut"):
+            break
+
+    return {
+        "decision": "block",
+        "reason": (
+            f"Pi Remote job {binding['job_id']} is still running after the bounded wait. "
+            "Do not poll it from the model. End this continuation so the OpenAI Stop hook "
+            "can resume waiting event-driven on the next stop."
+        ),
+    }
 
 
 @server.tool(
