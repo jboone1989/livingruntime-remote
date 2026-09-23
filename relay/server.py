@@ -25,7 +25,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.22"
+VERSION = "0.4.23"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v1.html"
 CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v1.html"
 PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
