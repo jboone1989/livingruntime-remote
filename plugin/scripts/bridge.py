@@ -68,6 +68,8 @@ IDENTITY = REMOTE_IDENTITY
 VERSION = PLUGIN_VERSION
 MAX_OUTPUT_BYTES = 262144
 DEFAULT_TIMEOUT = 30
+DEFERRED_RESTART_DELAY_SECONDS = 3.0
+DEFERRED_SELF_RESTART_UNITS = frozenset({"livingruntime-remote-relay.service"})
 
 server = FastMCP(NAME)
 _LAST_SUCCESS_UNIX = 0.0
@@ -88,6 +90,124 @@ _BLOCKED_INLINE = {
     "node": {"-e", "--eval"},
 }
 _BLOCKED_GIT = {"credential", "daemon", "shell"}
+
+_DEFERRED_RESTART_WORKER = r"""
+import json, pathlib, subprocess, sys, time
+
+receipt_path = pathlib.Path(sys.argv[1])
+unit = sys.argv[2]
+
+def save(payload):
+    temp = receipt_path.with_suffix(".tmp")
+    temp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        temp.chmod(0o600)
+    except OSError:
+        pass
+    temp.replace(receipt_path)
+
+payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+payload["status"] = "RESTARTING"
+payload["started_at"] = time.time()
+save(payload)
+
+try:
+    completed = subprocess.run(
+        ["/usr/bin/systemctl", "restart", unit],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=45,
+        check=False,
+    )
+    payload["returncode"] = completed.returncode
+    payload["status"] = "RESTART_COMPLETED" if completed.returncode == 0 else "RESTART_FAILED"
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).decode("utf-8", errors="replace").strip()
+        payload["error"] = detail[-500:]
+except Exception as exc:
+    payload["returncode"] = None
+    payload["status"] = "RESTART_FAILED"
+    payload["error"] = str(exc)[-500:]
+
+payload["finished_at"] = time.time()
+save(payload)
+raise SystemExit(0 if payload["status"] == "RESTART_COMPLETED" else 1)
+"""
+
+_DEFERRED_RESTART_SCHEDULER = r"""
+import json, pathlib, re, subprocess, sys, time
+
+req = json.load(sys.stdin)
+receipt_id = str(req["receipt_id"])
+unit = str(req["unit"])
+delay_seconds = float(req["delay_seconds"])
+root = pathlib.Path(req["root"]).expanduser().resolve(strict=True)
+worker_code = str(req["worker_code"])
+
+if not re.fullmatch(r"restart-[0-9a-f]{20}", receipt_id):
+    raise ValueError("invalid restart receipt id")
+if not unit.endswith(".service") or "/" in unit or "\\" in unit:
+    raise ValueError("invalid systemd service name")
+if delay_seconds < 1.0 or delay_seconds > 30.0:
+    raise ValueError("invalid restart delay")
+
+directory = root / ".livingruntime" / "restart-receipts"
+directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+receipt_path = directory / (receipt_id + ".json")
+
+def save(payload):
+    temp = receipt_path.with_suffix(".tmp")
+    temp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        temp.chmod(0o600)
+    except OSError:
+        pass
+    temp.replace(receipt_path)
+
+now = time.time()
+payload = {
+    "receipt_id": receipt_id,
+    "action": "restart",
+    "unit": unit,
+    "status": "RESTART_SCHEDULING",
+    "scheduled_at": now,
+    "not_before": now + delay_seconds,
+    "receipt_path": str(receipt_path),
+}
+save(payload)
+
+transient_name = "livingruntime-" + receipt_id
+argv = [
+    "sudo", "-n", "systemd-run",
+    "--quiet",
+    "--collect",
+    "--unit=" + transient_name,
+    "--on-active=" + str(delay_seconds) + "s",
+    "/usr/bin/python3", "-c", worker_code, str(receipt_path), unit,
+]
+completed = subprocess.run(
+    argv,
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    timeout=15,
+    check=False,
+)
+if completed.returncode != 0:
+    payload["status"] = "RESTART_SCHEDULE_FAILED"
+    payload["returncode"] = completed.returncode
+    detail = (completed.stderr or completed.stdout).decode("utf-8", errors="replace").strip()
+    payload["error"] = detail[-500:]
+    save(payload)
+    print(json.dumps(payload))
+    raise SystemExit(completed.returncode)
+
+payload["status"] = "RESTART_SCHEDULED"
+payload["returncode"] = 0
+save(payload)
+print(json.dumps(payload))
+"""
 
 _REMOTE_AGENT = r"""
 import hashlib, json, os, pathlib, signal, subprocess, sys
@@ -2260,6 +2380,56 @@ def process(
     return result
 
 
+def _schedule_deferred_systemd_restart(
+    selected: str,
+    *,
+    project: str | None,
+    device: str | None,
+    root: str,
+) -> dict[str, Any]:
+    seed = f"{selected}:{time.time_ns()}:{os.getpid()}".encode("utf-8")
+    receipt_id = "restart-" + hashlib.sha256(seed).hexdigest()[:20]
+    remote = _ssh(
+        ["python3", "-c", _DEFERRED_RESTART_SCHEDULER],
+        stdin=json.dumps(
+            {
+                "receipt_id": receipt_id,
+                "unit": selected,
+                "delay_seconds": DEFERRED_RESTART_DELAY_SECONDS,
+                "root": root,
+                "worker_code": _DEFERRED_RESTART_WORKER,
+            },
+            ensure_ascii=False,
+        ).encode("utf-8"),
+        timeout=20,
+        project=project,
+        device=device,
+    )
+    receipt: dict[str, Any] = {}
+    if remote.get("stdout"):
+        try:
+            parsed = json.loads(str(remote["stdout"]).strip().splitlines()[-1])
+            if isinstance(parsed, dict):
+                receipt = parsed
+        except json.JSONDecodeError:
+            receipt = {}
+    if not receipt:
+        receipt = {
+            "receipt_id": receipt_id,
+            "action": "restart",
+            "unit": selected,
+            "status": "RESTART_SCHEDULE_FAILED",
+        }
+    return {
+        "returncode": int(receipt.get("returncode", remote.get("returncode", 1))),
+        "stdout": "",
+        "stderr": remote.get("stderr", ""),
+        "duration_ms": remote.get("duration_ms"),
+        "deferred": True,
+        **receipt,
+    }
+
+
 @server.tool(
     name="systemd",
     annotations=ToolAnnotations(
@@ -2278,10 +2448,27 @@ def systemd(
 ) -> dict[str, Any]:
     """Inspect or control an explicitly allowlisted remote systemd service."""
     cfg = _config()
-    host_for(cfg, project=project, host_id=device)
+    selected_host = host_for(cfg, project=project, host_id=device)
     selected = resolve_unit(cfg, unit, project=project, host_id=device)
     if action not in {"status", "is-active", "start", "stop", "restart"}:
         raise ValueError("unsupported systemd action")
+    if action == "restart" and selected in DEFERRED_SELF_RESTART_UNITS:
+        result = _schedule_deferred_systemd_restart(
+            selected,
+            project=project,
+            device=device,
+            root=selected_host["roots"][0],
+        )
+        _audit("systemd", result["status"] == "RESTART_SCHEDULED", {
+            "action": action,
+            "unit": selected,
+            "project": project,
+            "device": device,
+            "deferred": True,
+            "receipt_id": result.get("receipt_id"),
+            "status": result.get("status"),
+        })
+        return result
     argv = ["systemctl", action, selected]
     if action in {"start", "stop", "restart"}:
         argv = ["sudo", "-n", *argv]

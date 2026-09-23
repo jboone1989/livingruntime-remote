@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import asyncio
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -149,6 +150,134 @@ class MultiDeviceTests(unittest.TestCase):
         with patch.object(bridge, "_config_path", return_value=str(self.config)):
             with self.assertRaisesRegex(RuntimeError, "unknown host"):
                 bridge.connection_status(device="missing")
+
+    def test_relay_self_restart_is_deferred_and_returns_receipt(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        def fake_ssh(
+            remote_argv,
+            *,
+            stdin=None,
+            timeout=30,
+            project=None,
+            device=None,
+        ):
+            calls.append(
+                {
+                    "argv": remote_argv,
+                    "stdin": stdin,
+                    "project": project,
+                    "device": device,
+                }
+            )
+            self.assertEqual(remote_argv[0:2], ["python3", "-c"])
+            payload = json.loads(stdin.decode("utf-8"))
+            self.assertEqual(payload["unit"], "livingruntime-remote-relay.service")
+            self.assertEqual(payload["root"], "/root")
+            self.assertEqual(payload["delay_seconds"], bridge.DEFERRED_RESTART_DELAY_SECONDS)
+            receipt_id = payload["receipt_id"]
+            receipt = {
+                "receipt_id": receipt_id,
+                "action": "restart",
+                "unit": payload["unit"],
+                "status": "RESTART_SCHEDULED",
+                "scheduled_at": 100.0,
+                "not_before": 103.0,
+                "receipt_path": f"/root/.livingruntime/restart-receipts/{receipt_id}.json",
+                "returncode": 0,
+            }
+            return {
+                "returncode": 0,
+                "stdout": json.dumps(receipt) + "\n",
+                "stderr": "",
+                "duration_ms": 5.0,
+            }
+
+        with patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(
+            bridge, "_ssh", fake_ssh
+        ), patch.object(
+            bridge, "_audit"
+        ):
+            result = bridge.systemd("restart", project="remote-public")
+
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(result["deferred"])
+        self.assertEqual(result["status"], "RESTART_SCHEDULED")
+        self.assertEqual(result["unit"], "livingruntime-remote-relay.service")
+        self.assertTrue(result["receipt_id"].startswith("restart-"))
+        self.assertEqual(result["returncode"], 0)
+
+    def test_non_control_plane_restart_remains_synchronous(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_ssh(
+            remote_argv,
+            *,
+            stdin=None,
+            timeout=30,
+            project=None,
+            device=None,
+        ):
+            calls.append(remote_argv)
+            return {
+                "returncode": 0,
+                "stdout": "",
+                "stderr": "",
+                "duration_ms": 5.0,
+            }
+
+        with patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(
+            bridge, "_ssh", fake_ssh
+        ), patch.object(
+            bridge, "_audit"
+        ):
+            result = bridge.systemd("restart", project="ferro")
+
+        self.assertEqual(
+            calls,
+            [["sudo", "-n", "systemctl", "restart", "content-agent.service"]],
+        )
+        self.assertNotIn("deferred", result)
+        self.assertEqual(result["returncode"], 0)
+
+    def test_deferred_restart_scheduler_persists_scheduled_receipt(self) -> None:
+        fake_bin = Path(self.tmp.name) / "bin"
+        fake_bin.mkdir()
+        fake_sudo = fake_bin / "sudo"
+        fake_sudo.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_sudo.chmod(0o755)
+        receipt_id = "restart-" + ("a" * 20)
+        request = {
+            "receipt_id": receipt_id,
+            "unit": "livingruntime-remote-relay.service",
+            "delay_seconds": 3.0,
+            "root": self.tmp.name,
+            "worker_code": "raise SystemExit(0)",
+        }
+        env = dict(os.environ)
+        env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
+        completed = subprocess.run(
+            [sys.executable, "-c", bridge._DEFERRED_RESTART_SCHEDULER],
+            input=json.dumps(request),
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        payload = json.loads(completed.stdout)
+        self.assertEqual(payload["status"], "RESTART_SCHEDULED")
+        receipt_path = Path(payload["receipt_path"])
+        self.assertTrue(receipt_path.is_file())
+        persisted = json.loads(receipt_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["status"], "RESTART_SCHEDULED")
+        self.assertEqual(persisted["receipt_id"], receipt_id)
 
     def test_dynamic_exec_permission_is_host_scoped_by_default(self) -> None:
         env = {"LIVINGRUNTIME_REMOTE_PERMISSIONS": str(self.permission_store)}
