@@ -32,7 +32,10 @@ class MultiDeviceTests(unittest.TestCase):
                         "main": {
                             "ssh_host": "main-alias",
                             "roots": ["/home/ubuntu"],
-                            "units": ["content-agent.service"],
+                            "units": [
+                                "content-agent.service",
+                                "livingruntime-tunnel.service",
+                            ],
                         },
                         "vultr": {
                             "ssh_host": "vultr-alias",
@@ -207,6 +210,62 @@ class MultiDeviceTests(unittest.TestCase):
         self.assertEqual(result["status"], "RESTART_SCHEDULED")
         self.assertEqual(result["unit"], "livingruntime-remote-relay.service")
         self.assertTrue(result["receipt_id"].startswith("restart-"))
+        self.assertEqual(result["returncode"], 0)
+
+    def test_local_tunnel_self_restart_is_deferred(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        def fake_ssh(
+            remote_argv,
+            *,
+            stdin=None,
+            timeout=30,
+            project=None,
+            device=None,
+        ):
+            payload = json.loads(stdin.decode("utf-8"))
+            calls.append({"argv": remote_argv, "payload": payload, "device": device})
+            receipt_id = payload["receipt_id"]
+            receipt = {
+                "receipt_id": receipt_id,
+                "action": "restart",
+                "unit": payload["unit"],
+                "status": "RESTART_SCHEDULED",
+                "scheduled_at": 200.0,
+                "not_before": 203.0,
+                "receipt_path": (
+                    f"/home/ubuntu/.livingruntime/restart-receipts/{receipt_id}.json"
+                ),
+                "returncode": 0,
+            }
+            return {
+                "returncode": 0,
+                "stdout": json.dumps(receipt) + "\n",
+                "stderr": "",
+                "duration_ms": 5.0,
+            }
+
+        with patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(
+            bridge, "_ssh", fake_ssh
+        ), patch.object(
+            bridge, "_audit"
+        ):
+            result = bridge.systemd(
+                "restart",
+                unit="livingruntime-tunnel.service",
+                device="main",
+            )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["payload"]["root"], "/home/ubuntu")
+        self.assertEqual(
+            calls[0]["payload"]["unit"],
+            "livingruntime-tunnel.service",
+        )
+        self.assertTrue(result["deferred"])
+        self.assertEqual(result["status"], "RESTART_SCHEDULED")
         self.assertEqual(result["returncode"], 0)
 
     def test_non_control_plane_restart_remains_synchronous(self) -> None:

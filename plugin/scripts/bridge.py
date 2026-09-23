@@ -69,7 +69,10 @@ VERSION = PLUGIN_VERSION
 MAX_OUTPUT_BYTES = 262144
 DEFAULT_TIMEOUT = 30
 DEFERRED_RESTART_DELAY_SECONDS = 3.0
-DEFERRED_SELF_RESTART_UNITS = frozenset({"livingruntime-remote-relay.service"})
+DEFERRED_SELF_RESTART_UNITS = frozenset({
+    "livingruntime-tunnel.service",
+    "livingruntime-remote-relay.service",
+})
 
 server = FastMCP(NAME)
 _LAST_SUCCESS_UNIX = 0.0
