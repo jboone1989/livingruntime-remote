@@ -25,7 +25,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.18"
+VERSION = "0.4.19"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v1.html"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
@@ -45,7 +45,11 @@ TOOL_TEXT = {
     "logs": ("Read service logs", "Read recent journal logs for an allowlisted service, optionally scoped through a configured project."),
     "write_file": ("Write remote file", "Create or replace a file inside an allowed project or configured root, optionally guarded by an expected SHA-256."),
     "git": ("Run Git command", "Run a bounded Git command inside an allowed repository using explicit arguments."),
-    "exec": ("Execute bounded command", "Run an allowlisted executable with explicit argv inside an allowed workspace. Shell command strings and credential overrides are blocked."),
+    "exec": ("Execute bounded command", "Run a built-in development command or an exact command previously approved by the operator. Unapproved commands return a durable approval request."),
+    "list_exec_permissions": ("List command permissions", "List pending dynamic command requests plus active and revoked persisted grants."),
+    "approve_exec_permission": ("Approve command permission", "Approve a pending exact command request. Host scope is the default; all-host or diagnostic-class grants are limited to read-only diagnostics."),
+    "deny_exec_permission": ("Deny command permission", "Deny a pending dynamic command request without executing it."),
+    "revoke_exec_permission": ("Revoke command permission", "Revoke a persisted dynamic command grant so matching commands require approval again."),
     "process": ("Manage remote process", "Perform a permitted process action on the connected host using a PID or bounded process-name match."),
     "systemd": ("Manage allowlisted service", "Inspect or control an explicitly allowlisted systemd unit on the connected host."),
     "apply_patch": ("Apply file patch", "Apply a unified diff to a file inside an allowed workspace, optionally guarded by an expected SHA-256."),
@@ -862,6 +866,38 @@ def create_mcp(
     async def exec(argv: list[str], cwd: str | None = None, project: str | None = None, device: str | None = None,
                    timeout_seconds: int = 30) -> dict[str, Any]:
         return await relay.call(_principal("remote:write"), "exec", {"argv": argv, "cwd": cwd, "project": project, "device": device, "timeout_seconds": timeout_seconds})
+
+    @expose("list_exec_permissions", True, False, False)
+    async def list_exec_permissions() -> dict[str, Any]:
+        return await relay.call(_principal("remote:read"), "list_exec_permissions", {})
+
+    @expose("approve_exec_permission", False, False, True)
+    async def approve_exec_permission(
+        request_id: str,
+        scope: str = "host",
+        grant_mode: str = "exact",
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "approve_exec_permission",
+            {"request_id": request_id, "scope": scope, "grant_mode": grant_mode},
+        )
+
+    @expose("deny_exec_permission", False, False, True)
+    async def deny_exec_permission(request_id: str) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "deny_exec_permission",
+            {"request_id": request_id},
+        )
+
+    @expose("revoke_exec_permission", False, False, True)
+    async def revoke_exec_permission(permission_id: str) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "revoke_exec_permission",
+            {"permission_id": permission_id},
+        )
 
     @expose("process", False, False, True)
     async def process(action: str, pid: int | None = None, contains: str | None = None, device: str | None = None) -> dict[str, Any]:

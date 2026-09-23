@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "livingruntime-remote",
-  "version": "0.4.18",
+  "version": "0.4.19",
   "description": "Bounded SSH-backed remote development tools for user-controlled hosts, available through local stdio and a public OAuth-protected MCP endpoint.",
   "author": {
     "name": "LivingRuntime",
@@ -24,7 +24,7 @@
       "interface": {
         "displayName": "LivingRuntime Remote",
         "shortDescription": "Bounded remote host tools",
-        "longDescription": "Remote development plugin for user-controlled machines. Verify connectivity, inspect configured projects, read and edit files within allowed roots, run bounded Git and allowlisted development commands, and inspect allowlisted services and logs. Public ChatGPT and Codex access uses the production OAuth-protected MCP service.",
+        "longDescription": "Remote development plugin for user-controlled machines. Verify connectivity, inspect configured projects, read and edit files within allowed roots, run bounded Git and built-in development commands, request operator approval for additional exact commands, and inspect allowlisted services and logs. Public ChatGPT and Codex access uses the production OAuth-protected MCP service.",
         "developerName": "LivingRuntime",
         "category": "Developer Tools",
         "capabilities": [

@@ -2,7 +2,7 @@
 
 Identity: `livingruntime.remote`
 
-Current version: `0.4.18`
+Current version: `0.4.19`
 
 This directory contains the ChatGPT/Codex-facing MCP runtime and the local Connector implementation.
 
@@ -10,12 +10,17 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 
 - connection_status
 - capabilities
+- list_devices
 - list_projects
 - read_file
 - write_file
 - list_dir
 - git
 - exec
+- list_exec_permissions
+- approve_exec_permission
+- deny_exec_permission
+- revoke_exec_permission
 - process
 - systemd
 - logs
@@ -23,6 +28,17 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 - diagnostics
 
 The canonical registry is `scripts/contract.py`.
+
+### Dynamic exec approvals
+
+`exec` keeps the built-in bounded development command set, but an otherwise unlisted executable
+now produces a durable approval request instead of requiring a code change. Approval is exact-command
+and host-scoped by default. Read-only diagnostics may be approved for all owned hosts or as a
+diagnostic class. Hard-denied shells, privilege escalation, destructive filesystem commands, and
+direct system service control cannot be enabled through this path.
+
+Use `list_exec_permissions` to inspect requests/grants, `approve_exec_permission` or
+`deny_exec_permission` to decide a request, and `revoke_exec_permission` to remove a grant.
 
 ## Public install flow
 

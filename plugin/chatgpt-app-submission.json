@@ -4,7 +4,7 @@
   "app_info": {
     "display_name": "LivingRuntime Remote",
     "subtitle": "Bounded remote host tools",
-    "description": "LivingRuntime Remote lets ChatGPT operate development machines the user controls through bounded remote tools. It verifies connectivity, lists configured projects, reads and writes files only inside allowed roots, runs Git and allowlisted development commands, and inspects allowlisted services and logs. SSH passwords and private keys remain outside the service.",
+    "description": "LivingRuntime Remote lets ChatGPT operate development machines the user controls through bounded remote tools. It verifies connectivity, lists configured projects, reads and writes files only inside allowed roots, runs Git and built-in development commands, and turns additional commands into durable operator approval requests with host-scoped grants and revocation. SSH passwords and private keys remain outside the service.",
     "category": "DEVELOPER_TOOLS"
   },
   "tools": {
@@ -135,8 +135,8 @@
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Runs an allowlisted development executable that can change files or process state.",
-        "open_world_justification": "Allowlisted tools such as npm or go can reach the network.",
+        "read_only_justification": "Runs a built-in development executable or an additional exact command previously approved by the operator.",
+        "open_world_justification": "Development tools or explicitly approved commands may reach the network.",
         "destructive_justification": "A development command can overwrite files or stop processes."
       }
     },
@@ -258,6 +258,54 @@
         "read_only_justification": "Waits for the bound Pi job and consumes its private continuation binding after terminal completion.",
         "open_world_justification": "Uses only the user's paired bounded Remote workspace and OpenAI runtime continuation state.",
         "destructive_justification": "Does not alter repository files, stop services, or cancel the Pi job."
+      }
+    },
+    "list_exec_permissions": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists pending dynamic command approval requests and persisted grants without executing commands.",
+        "open_world_justification": "Reads only the local Remote authorization store.",
+        "destructive_justification": "Does not add, revoke, or execute permissions."
+      }
+    },
+    "approve_exec_permission": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Persists an operator-approved command grant so a future exec call may run it.",
+        "open_world_justification": "Changes only the private Remote authorization store and does not itself run the command.",
+        "destructive_justification": "Changes the durable authorization boundary; host scope is the default and all-host grants are restricted to read-only diagnostics."
+      }
+    },
+    "deny_exec_permission": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Records that a pending dynamic command request was denied.",
+        "open_world_justification": "Changes only the private Remote authorization store.",
+        "destructive_justification": "Changes durable approval state but does not execute the denied command."
+      }
+    },
+    "revoke_exec_permission": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Revokes an existing persisted dynamic command grant.",
+        "open_world_justification": "Changes only the private Remote authorization store.",
+        "destructive_justification": "Removes a previously granted authorization so future matching commands require approval again."
       }
     }
   },

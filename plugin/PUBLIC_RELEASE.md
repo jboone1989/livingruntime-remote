@@ -17,7 +17,7 @@ ChatGPT
 
 Connector binaries are built by `.github/workflows/release.yml` for Windows x64, Linux x64/ARM64, and macOS Intel/Apple Silicon. Tags use `vX.Y.Z`. The repository is public and release assets are downloadable without repository credentials.
 
-## 0.4.18 release readiness
+## 0.4.19 release readiness
 
 Implemented:
 
@@ -29,6 +29,7 @@ Implemented:
 - branded home/install/support/privacy/terms routes
 - five-platform Connector releases
 - standalone public repository and release workflow
+- host-scoped dynamic exec approval with read-only all-host grants and revocation
 
 ## Remaining launch work
 

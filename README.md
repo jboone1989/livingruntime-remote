@@ -28,9 +28,19 @@ pi-remote is a separate private product built above this foundation. Its persist
 
 ## Current release
 
-Version: 0.4.18
+Version: 0.4.19
 
 The repository is private during development. Before public launch it will be made public and given an explicit open-source license.
+
+### Dynamic exec approval V1
+
+Commands outside the built-in development allowlist no longer have to be added in code first. An
+`exec` call creates a durable approval request containing the exact argv, target host, project,
+working directory, and risk class. Operator approval persists a grant; revocation removes it.
+
+Permissions are host-scoped by default. Only read-only diagnostic commands can receive
+`all_owned_hosts` or `diagnostic_class` grants. Shells, privilege escalation, destructive filesystem
+commands, and direct systemd/journal control remain hard-denied through dynamic exec authorization.
 
 ### Multi-device V1
 

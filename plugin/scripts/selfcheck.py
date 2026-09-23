@@ -23,6 +23,7 @@ def main() -> None:
         ROOT / "scripts" / "connector.py",
         ROOT / "scripts" / "relay_agent.py",
         ROOT / "scripts" / "contract.py",
+        ROOT / "scripts" / "permissions.py",
     ]
     for path in python_files:
         ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -37,7 +38,7 @@ def main() -> None:
 
     assert plugin["$schema"] == "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
     assert plugin["name"] == "livingruntime-remote"
-    assert plugin["version"] == PLUGIN_VERSION == "0.4.18"
+    assert plugin["version"] == PLUGIN_VERSION == "0.4.19"
     assert legacy["version"] == PLUGIN_VERSION
     assert REMOTE_IDENTITY == "livingruntime.remote"
     assert plugin["extensions"]["com.openai"]["apps"] == "./.app.json"

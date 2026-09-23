@@ -15,6 +15,10 @@ REMOTE_TOOLS = (
     "list_dir",
     "git",
     "exec",
+    "list_exec_permissions",
+    "approve_exec_permission",
+    "deny_exec_permission",
+    "revoke_exec_permission",
     "process",
     "systemd",
     "logs",
@@ -45,7 +49,7 @@ DISCOVERY_TOOLS = REMOTE_TOOLS
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 DEFAULT_HTTP_PORT = 8766
 PLUGIN_NAME = "LivingRuntime Remote"
-PLUGIN_VERSION = "0.4.18"
+PLUGIN_VERSION = "0.4.19"
 SECRET_KEYS = (
     "token",
     "password",

@@ -34,6 +34,15 @@ from configmodel import (
     resolve_path,
     resolve_unit,
 )
+from permissions import (
+    approve as approve_dynamic_exec,
+    classify as classify_dynamic_exec,
+    deny as deny_dynamic_exec,
+    ensure_request as ensure_dynamic_exec_request,
+    is_granted as dynamic_exec_grant,
+    revoke as revoke_dynamic_exec,
+    snapshot as exec_permission_snapshot,
+)
 
 NAME = PLUGIN_NAME
 IDENTITY = REMOTE_IDENTITY
@@ -280,12 +289,12 @@ def _validate_exec(argv: list[str]) -> None:
     if not argv:
         raise ValueError("argv is required")
     executable = os.path.basename(str(argv[0]))
-    if executable not in _ALLOWED_EXECUTABLES:
-        raise PermissionError(f"executable is not allowlisted: {executable}")
     if any(arg in _BLOCKED_INLINE.get(executable, set()) for arg in argv[1:]):
         raise PermissionError(f"inline code flag is blocked for {executable}")
     if any("\x00" in str(arg) for arg in argv):
         raise ValueError("NUL bytes are not allowed")
+    if executable not in _ALLOWED_EXECUTABLES and classify_dynamic_exec(argv) == "hard_deny":
+        raise PermissionError(f"executable is hard-denied: {executable}")
 
 
 def _validate_git(args: list[str]) -> None:
@@ -680,18 +689,166 @@ def exec(
     device: str | None = None,
     timeout_seconds: int = DEFAULT_TIMEOUT,
 ) -> dict[str, Any]:
-    """Run one allowlisted development executable; shell command strings are not accepted."""
+    """Run a bounded command or return a durable operator approval request.
+
+    Built-in development executables remain immediately available. Other commands
+    require a persisted grant. Grants are host-scoped by default; only read-only
+    diagnostics can be approved across all owned hosts.
+    """
     _validate_exec(argv)
     timeout = min(120, max(1, int(timeout_seconds)))
     cfg = _config()
-    host_for(cfg, project=project, host_id=device)
+    selected_host = host_for(cfg, project=project, host_id=device)
+    host_id = selected_host["id"]
     workdir = resolve_path(cfg, cwd, project=project) if (cwd or project) else _roots(project, device)[0]
+    executable = os.path.basename(str(argv[0]))
+    if executable not in _ALLOWED_EXECUTABLES:
+        grant = dynamic_exec_grant(
+            host_id=host_id,
+            project=project,
+            cwd=workdir,
+            argv=argv,
+        )
+        if grant is None:
+            request = ensure_dynamic_exec_request(
+                host_id=host_id,
+                project=project,
+                cwd=workdir,
+                argv=argv,
+            )
+            _audit("exec_permission_request", True, {
+                "request_id": request["request_id"],
+                "host_id": host_id,
+                "project": project,
+                "argv": argv,
+                "risk": request["risk"],
+            })
+            return {
+                "ok": False,
+                "approval_required": True,
+                "request": {
+                    "request_id": request["request_id"],
+                    "host_id": host_id,
+                    "project": project,
+                    "cwd": workdir,
+                    "argv": list(argv),
+                    "risk": request["risk"],
+                    "allowed_scopes": (
+                        ["host", "all_owned_hosts"]
+                        if request["risk"] == "read_only_diagnostic"
+                        else ["host"]
+                    ),
+                    "allowed_grant_modes": (
+                        ["exact", "diagnostic_class"]
+                        if request["risk"] == "read_only_diagnostic"
+                        else ["exact"]
+                    ),
+                },
+            }
     result = _remote("exec", {
         "argv": argv, "cwd": workdir,
         "timeout": timeout, "max_output": MAX_OUTPUT_BYTES,
     }, timeout=timeout + 2, project=project, device=device)
     _audit("exec", True, {"argv": argv, "cwd": result.get("cwd"), "project": project, "device": device, "returncode": result.get("returncode")})
     return result
+
+
+@server.tool(
+    name="list_exec_permissions",
+    annotations=ToolAnnotations(
+        title="List dynamic exec permissions",
+        readOnlyHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def list_exec_permissions() -> dict[str, Any]:
+    """List pending dynamic-exec requests plus active and revoked grants."""
+    result = exec_permission_snapshot()
+    _audit("list_exec_permissions", True, {
+        "pending": len(result["pending"]),
+        "grants": len(result["grants"]),
+        "revoked": len(result["revoked"]),
+    })
+    return result
+
+
+@server.tool(
+    name="approve_exec_permission",
+    annotations=ToolAnnotations(
+        title="Approve dynamic exec permission",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def approve_exec_permission(
+    request_id: str,
+    scope: str = "host",
+    grant_mode: str = "exact",
+) -> dict[str, Any]:
+    """Approve a pending exec request.
+
+    scope=host is the default. all_owned_hosts and diagnostic_class are accepted
+    only for commands classified as read-only diagnostics.
+    """
+    grant = approve_dynamic_exec(
+        request_id,
+        scope=scope,
+        grant_mode=grant_mode,
+        operator="mcp_operator",
+    )
+    _audit("approve_exec_permission", True, {
+        "request_id": request_id,
+        "permission_id": grant["permission_id"],
+        "scope": grant["scope"],
+        "grant_mode": grant["grant_mode"],
+        "risk": grant["risk"],
+    })
+    return grant
+
+
+@server.tool(
+    name="deny_exec_permission",
+    annotations=ToolAnnotations(
+        title="Deny dynamic exec permission",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def deny_exec_permission(request_id: str) -> dict[str, Any]:
+    """Deny one pending dynamic-exec request."""
+    request = deny_dynamic_exec(request_id, operator="mcp_operator")
+    _audit("deny_exec_permission", True, {
+        "request_id": request_id,
+        "host_id": request.get("host_id"),
+        "argv": request.get("argv"),
+    })
+    return request
+
+
+@server.tool(
+    name="revoke_exec_permission",
+    annotations=ToolAnnotations(
+        title="Revoke dynamic exec permission",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def revoke_exec_permission(permission_id: str) -> dict[str, Any]:
+    """Revoke a previously persisted dynamic-exec grant."""
+    grant = revoke_dynamic_exec(permission_id, operator="mcp_operator")
+    _audit("revoke_exec_permission", True, {
+        "permission_id": permission_id,
+        "scope": grant.get("scope"),
+        "risk": grant.get("risk"),
+    })
+    return grant
 
 
 def _openai_continuation_path(session_id: str) -> Path:

@@ -56,6 +56,7 @@ class MultiDeviceTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.calls: list[dict[str, object]] = []
+        self.permission_store = Path(self.tmp.name) / "exec-permissions.json"
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -131,6 +132,102 @@ class MultiDeviceTests(unittest.TestCase):
         with patch.object(bridge, "_config_path", return_value=str(self.config)):
             with self.assertRaisesRegex(RuntimeError, "unknown host"):
                 bridge.connection_status(device="missing")
+
+    def test_dynamic_exec_permission_is_host_scoped_by_default(self) -> None:
+        env = {"LIVINGRUNTIME_REMOTE_PERMISSIONS": str(self.permission_store)}
+        with patch.dict(os.environ, env), patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(bridge, "_ssh", self.fake_ssh):
+            first = bridge.exec(["free", "-h"], device="main")
+            self.assertTrue(first["approval_required"])
+            request = first["request"]
+            self.assertEqual(request["host_id"], "main")
+            self.assertEqual(request["risk"], "read_only_diagnostic")
+
+            grant = bridge.approve_exec_permission(request["request_id"])
+            self.assertEqual(grant["scope"], "host")
+            self.assertEqual(grant["grant_mode"], "exact")
+
+            main = bridge.exec(["free", "-h"], device="main")
+            vultr = bridge.exec(["free", "-h"], device="vultr")
+
+        self.assertEqual(main["stdout"], "main\n")
+        self.assertTrue(vultr["approval_required"])
+        self.assertEqual(vultr["request"]["host_id"], "vultr")
+
+    def test_read_only_diagnostic_class_can_span_owned_hosts(self) -> None:
+        env = {"LIVINGRUNTIME_REMOTE_PERMISSIONS": str(self.permission_store)}
+        with patch.dict(os.environ, env), patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(bridge, "_ssh", self.fake_ssh):
+            first = bridge.exec(["uptime"], device="main")
+            grant = bridge.approve_exec_permission(
+                first["request"]["request_id"],
+                scope="all_owned_hosts",
+                grant_mode="diagnostic_class",
+            )
+            main = bridge.exec(["free", "-h"], device="main")
+            vultr = bridge.exec(["nproc"], device="vultr")
+
+        self.assertEqual(grant["scope"], "all_owned_hosts")
+        self.assertEqual(grant["grant_mode"], "diagnostic_class")
+        self.assertEqual(main["stdout"], "main\n")
+        self.assertEqual(vultr["stdout"], "vultr\n")
+
+    def test_non_diagnostic_cannot_receive_global_grant(self) -> None:
+        env = {"LIVINGRUNTIME_REMOTE_PERMISSIONS": str(self.permission_store)}
+        with patch.dict(os.environ, env), patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(bridge, "_ssh", self.fake_ssh):
+            first = bridge.exec(["curl", "https://example.com"], device="main")
+            self.assertEqual(first["request"]["risk"], "explicit_host_approval")
+            with self.assertRaises(PermissionError):
+                bridge.approve_exec_permission(
+                    first["request"]["request_id"],
+                    scope="all_owned_hosts",
+                )
+
+    def test_non_diagnostic_exact_grant_is_bound_to_project_and_cwd(self) -> None:
+        env = {"LIVINGRUNTIME_REMOTE_PERMISSIONS": str(self.permission_store)}
+        with patch.dict(os.environ, env), patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(bridge, "_ssh", self.fake_ssh):
+            first = bridge.exec(["curl", "https://example.com"], device="main")
+            bridge.approve_exec_permission(first["request"]["request_id"])
+            root_result = bridge.exec(["curl", "https://example.com"], device="main")
+            project_result = bridge.exec(["curl", "https://example.com"], project="ferro")
+
+        self.assertEqual(root_result["stdout"], "main\n")
+        self.assertTrue(project_result["approval_required"])
+        self.assertEqual(project_result["request"]["project"], "ferro")
+
+    def test_hard_denied_exec_cannot_create_approval_request(self) -> None:
+        env = {"LIVINGRUNTIME_REMOTE_PERMISSIONS": str(self.permission_store)}
+        with patch.dict(os.environ, env), patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ):
+            with self.assertRaisesRegex(PermissionError, "hard-denied"):
+                bridge.exec(["bash", "-c", "id"], device="main")
+        self.assertFalse(self.permission_store.exists())
+
+    def test_revoked_permission_requires_fresh_approval(self) -> None:
+        env = {"LIVINGRUNTIME_REMOTE_PERMISSIONS": str(self.permission_store)}
+        with patch.dict(os.environ, env), patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(bridge, "_ssh", self.fake_ssh):
+            first = bridge.exec(["free", "-h"], device="main")
+            grant = bridge.approve_exec_permission(first["request"]["request_id"])
+            allowed = bridge.exec(["free", "-h"], device="main")
+            revoked = bridge.revoke_exec_permission(grant["permission_id"])
+            again = bridge.exec(["free", "-h"], device="main")
+
+        self.assertEqual(allowed["stdout"], "main\n")
+        self.assertIsNotNone(revoked["revoked_at"])
+        self.assertTrue(again["approval_required"])
+        self.assertNotEqual(
+            first["request"]["request_id"],
+            again["request"]["request_id"],
+        )
 
     def test_device_selector_is_exposed_in_mcp_schemas(self) -> None:
         tools = {tool.name: tool for tool in asyncio.run(bridge.server.list_tools())}
