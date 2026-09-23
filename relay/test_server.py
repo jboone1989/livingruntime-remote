@@ -320,6 +320,18 @@ class RelayServerTests(unittest.TestCase):
         self.assertFalse(
             tools["continue_openai_pi_job"].annotations.read_only_hint
         )
+        resources = asyncio.run(mcp.list_resources())
+        widget = next(
+            resource
+            for resource in resources
+            if str(resource.uri) == server.PI_JOB_WIDGET_URI
+        )
+        widget_meta = widget.model_dump(by_alias=True)["_meta"]["ui"]
+        self.assertEqual(widget_meta["domain"], server.PI_JOB_WIDGET_DOMAIN)
+        self.assertEqual(
+            widget_meta["csp"],
+            {"connectDomains": [], "resourceDomains": []},
+        )
 
     def test_pi_job_widget_uses_event_wait_and_same_conversation_followup(self):
         html = server.PI_JOB_WIDGET_HTML

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
-from mcp.server.apps import Apps
+from mcp.server.apps import Apps, ResourceCsp
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
@@ -27,6 +27,7 @@ from store import RelayStore
 NAME = "LivingRuntime Remote"
 VERSION = "0.4.19"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v1.html"
+PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
 READ = {"securitySchemes": [{"type": "oauth2", "scopes": ["remote:read", *IDENTITY_SCOPES]}]}
@@ -559,6 +560,11 @@ def create_mcp(
         name="pi-job-watch",
         title="Pi Remote job watcher",
         description="Wait for an existing Pi Remote detached job and continue this conversation when it finishes.",
+        csp=ResourceCsp(
+            connect_domains=[],
+            resource_domains=[],
+        ),
+        domain=PI_JOB_WIDGET_DOMAIN,
         prefers_border=True,
     )
 
