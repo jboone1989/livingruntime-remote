@@ -42,7 +42,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.25")
+            self.assertEqual(health.json()["version"], "0.4.26")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -461,6 +461,8 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn('"remote_overview"', html)
         self.assertIn("Durable jobs", html)
         self.assertIn("Permissions & credentials", html)
+        self.assertIn("formatTs", html)
+        self.assertIn("toLocaleString", html)
         self.assertNotIn("approve_exec_permission", html)
         self.assertNotIn("lease_credential", html)
 

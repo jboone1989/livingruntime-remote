@@ -26,10 +26,10 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.25"
+VERSION = "0.4.26"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
-CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v2.html"
+CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v3.html"
 PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
@@ -519,6 +519,16 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
   function notify(method, params={}) { window.parent.postMessage({jsonrpc:"2.0",method,params},"*"); }
   function data(result) { return result?.structuredContent || result?.structured_content || result || null; }
   function esc(v) { return String(v ?? "").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+  function formatTs(value) {
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds)) return String(value ?? "");
+    const date = new Date(seconds * 1000);
+    if (Number.isNaN(date.getTime())) return String(value ?? "");
+    return date.toLocaleString(undefined, {
+      year:"numeric", month:"2-digit", day:"2-digit",
+      hour:"2-digit", minute:"2-digit", second:"2-digit", hour12:false
+    });
+  }
   function render(snapshot) {
     latest = snapshot || {};
     const connector = latest.connector || {};
@@ -538,7 +548,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
       '<div class="item"><strong>'+esc((p.pending||[]).length)+'</strong> pending command approvals<div class="muted">'+esc(p.active_count||0)+' active grants</div></div>'+
       '<div class="item"><strong>'+esc(creds.length)+'</strong> credential handles<div class="muted">'+esc(creds.map(c=>c.handle).slice(0,5).join(", ")||"None")+'</div></div>';
     const activity=overview?.activity||[];
-    q("activity").innerHTML = activity.length ? activity.slice().reverse().slice(0,12).map(a=>'<div class="item"><span class="badge '+(a.ok?'ok':'bad')+'"><span class="dot"></span>'+esc(a.tool)+'</span><div class="muted">'+esc(a.ts)+'</div></div>').join("") : '<span class="muted">No recent activity.</span>';
+    q("activity").innerHTML = activity.length ? activity.slice().reverse().slice(0,12).map(a=>'<div class="item"><span class="badge '+(a.ok?'ok':'bad')+'"><span class="dot"></span>'+esc(a.tool)+'</span><div class="muted" title="'+esc(a.ts)+'">'+esc(formatTs(a.ts))+'</div></div>').join("") : '<span class="muted">No recent activity.</span>';
   }
   async function refresh() {
     if (!connected) return;
