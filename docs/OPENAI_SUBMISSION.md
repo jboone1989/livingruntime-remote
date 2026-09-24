@@ -97,4 +97,4 @@ Before creating or submitting the draft:
 
 ## Release notes text
 
-LivingRuntime Remote 0.4.19 provides bounded remote-development tools for user-controlled machines, including multi-device discovery, explicit device routing, and host-scoped dynamic command approvals, with OAuth/OIDC authentication, refreshable ChatGPT sessions, one-time Connector pairing, configured-root and service allowlists, auditable write actions, cross-platform Connector releases for Windows, Linux, and macOS, and Pi Remote completion-driven ChatGPT continuation.
+LivingRuntime Remote 0.4.24 provides durable, bounded remote work on user-controlled machines, including multi-device discovery, long-running jobs and checkpoints, completion-driven ChatGPT continuation, explicit device routing, host-scoped dynamic command approvals, OAuth/OIDC authentication, scoped credential leases, configured-root and service allowlists, auditable write actions, and cross-platform Connector releases for Windows, Linux, and macOS.
