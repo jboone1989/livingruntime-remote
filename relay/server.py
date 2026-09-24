@@ -1730,9 +1730,14 @@ nav a{{margin-right:18px}}
         return public_page(
             "LivingRuntime Remote",
             """<h1>LivingRuntime Remote</h1>
-<p>Bounded remote development tools for machines and repositories you control.</p>
+<p><strong>Let AI agents keep working on machines you control after the conversation stops.</strong></p>
+<p>Durable jobs, checkpoints, completion-driven continuation, multi-host routing, and bounded approvals over an OAuth-protected MCP bridge.</p>
+<div class="card"><h2>No more status babysitting</h2>
+<p>Start long-running work on your own machine, let the runtime persist the job, and let a watcher hand the terminal result back to a continuation-capable controller instead of repeatedly asking a human to check and type &quot;continue&quot;.</p></div>
 <div class="card"><p><a href="/install">Install the Connector</a></p>
-<p><a href="/support">Support and documentation</a></p>\n<p><a href="/demo">Watch the review demo</a></p></div>""",
+<p><a href="/demo">See the demo</a></p>
+<p><a href="https://github.com/jboone1989/livingruntime-remote">View the MIT-licensed source on GitHub</a></p>
+<p><a href="/support">Support and documentation</a></p></div>""",
         )
 
     async def install_page(_: Request):
@@ -1794,8 +1799,13 @@ nav a{{margin-right:18px}}
         return public_page(
             "Demo",
             """<h1>LivingRuntime Remote Demo</h1>
-<p>This recorded demo shows the production OAuth connection and the isolated review workflow for connection status, project listing, bounded file access, Git status, and bounded writes.</p>
-<div class="card"><p><a href="/demo.mp4">Open the MP4 recording</a></p></div>""",
+<p>The core product loop is durable remote work: start a real task on a machine you control, persist its state, observe completion, and continue from the result without a human status-polling loop.</p>
+<div class="card"><h2>Review recording</h2>
+<p>The current MP4 demonstrates the production OAuth connection and isolated review workflow for connection status, project listing, bounded file access, Git status, and bounded writes.</p>
+<p><a href="/demo.mp4">Open the MP4 recording</a></p></div>
+<div class="card"><h2>Durable continuation walkthrough</h2>
+<p>See the public reproducible demo guide for the long-running job, watcher, checkpoint, and continuation flow.</p>
+<p><a href="https://github.com/jboone1989/livingruntime-remote/blob/main/docs/DEMO.md">Open the durable-work demo guide</a></p></div>""",
         )
 
     async def demo_recording(_: Request):
