@@ -439,6 +439,66 @@
         "open_world_justification": "The detached batch is restricted to local Pi file/search/edit tools; Pi bash is rejected and commands remain behind LivingRuntime Remote exec permissions.",
         "destructive_justification": "Coder actions may edit or write files in the selected configured project, so the tool is explicitly marked destructive."
       }
+    },
+    "start_long_job": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Starts a bounded command under the durable long-job supervisor and records its process/liveness state.",
+        "open_world_justification": "The supervised development command may access external services to the same extent as the already-approved exec command.",
+        "destructive_justification": "The supervised command can modify files or processes, so operator-approved command boundaries still apply."
+      }
+    },
+    "watch_long_job": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Refreshes an existing supervised long job and attaches watcher UI without changing the running process.",
+        "open_world_justification": "Reads only the user's paired Remote host and private durable job state.",
+        "destructive_justification": "Does not modify files, stop processes, or change the command."
+      }
+    },
+    "get_long_job": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads the durable receipt, heartbeat, progress age, bounded output tails, and status of one supervised command.",
+        "open_world_justification": "Reads only the user's paired Remote host and private job metadata.",
+        "destructive_justification": "Does not modify files, services, or the supervised process."
+      }
+    },
+    "wait_long_job": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Performs an app-only bounded wait for an existing supervised command to become stalled or terminal.",
+        "open_world_justification": "Waits only through the user's paired bounded Remote workspace.",
+        "destructive_justification": "Does not modify or cancel the running command."
+      }
+    },
+    "cancel_long_job": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Requests cancellation of the already-running supervised command process group.",
+        "open_world_justification": "The cancellation signal stays on the user's paired private host.",
+        "destructive_justification": "Cancellation stops the running worker/child process group and may interrupt in-progress work."
+      }
     }
   },
   "test_cases": [

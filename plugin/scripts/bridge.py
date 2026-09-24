@@ -52,6 +52,7 @@ from jobs import (
     get as get_runtime_job,
     list_jobs as runtime_jobs_snapshot,
     sync_backend_status,
+    update_runtime as update_runtime_job,
 )
 from permissions import (
     approve as approve_dynamic_exec,
@@ -216,6 +217,179 @@ save(payload)
 print(json.dumps(payload))
 """
 
+_DETACHED_EXEC_WORKER = r"""
+import json, os, pathlib, selectors, signal, subprocess, sys, time
+
+receipt_path = pathlib.Path(sys.argv[1])
+spec_path = pathlib.Path(sys.argv[2])
+receipt_stat = receipt_path.stat()
+receipt_uid = receipt_stat.st_uid
+receipt_gid = receipt_stat.st_gid
+
+def save(payload):
+    temp = receipt_path.with_suffix(".tmp")
+    temp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        temp.chmod(0o600)
+        os.chown(temp, receipt_uid, receipt_gid)
+    except OSError:
+        pass
+    temp.replace(receipt_path)
+
+def tail_append(buffer, chunk, limit):
+    buffer.extend(chunk)
+    if len(buffer) > limit:
+        del buffer[:-limit]
+
+payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+spec = json.loads(spec_path.read_text(encoding="utf-8"))
+heartbeat_seconds = max(1.0, min(float(spec.get("heartbeat_seconds") or 10.0), 60.0))
+stall_seconds = max(heartbeat_seconds * 2.0, min(float(spec.get("stall_seconds") or 300.0), 86400.0))
+tail_limit = max(1024, min(int(spec.get("tail_bytes") or 32768), 131072))
+cancelled = False
+cancel_started_at = None
+child = None
+
+def request_cancel(_signum, _frame):
+    global cancelled, cancel_started_at
+    cancelled = True
+    if cancel_started_at is None:
+        cancel_started_at = time.time()
+    if child is not None and child.poll() is None:
+        try:
+            child.terminate()
+        except ProcessLookupError:
+            pass
+
+signal.signal(signal.SIGTERM, request_cancel)
+signal.signal(signal.SIGINT, request_cancel)
+
+now = time.time()
+payload.update({
+    "status": "STARTING",
+    "terminal": False,
+    "worker_pid": os.getpid(),
+    "heartbeat_seconds": heartbeat_seconds,
+    "stall_seconds": stall_seconds,
+    "last_heartbeat_at": now,
+    "last_progress_at": now,
+})
+save(payload)
+
+stdout_tail = bytearray()
+stderr_tail = bytearray()
+selector = selectors.DefaultSelector()
+try:
+    child = subprocess.Popen(
+        list(spec["argv"]),
+        cwd=str(spec["cwd"]),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        close_fds=True,
+    )
+    if child.stdout is None or child.stderr is None:
+        raise RuntimeError("detached child pipes unavailable")
+    selector.register(child.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(child.stderr, selectors.EVENT_READ, "stderr")
+    now = time.time()
+    payload.update({
+        "status": "RUNNING",
+        "terminal": False,
+        "child_pid": child.pid,
+        "started_at": now,
+        "last_heartbeat_at": now,
+        "last_progress_at": now,
+        "stdout_bytes": 0,
+        "stderr_bytes": 0,
+    })
+    save(payload)
+    last_save = now
+
+    while True:
+        progressed = False
+        for key, _mask in selector.select(timeout=min(1.0, heartbeat_seconds)):
+            try:
+                chunk = os.read(key.fd, 65536)
+            except BlockingIOError:
+                chunk = b""
+            if chunk:
+                progressed = True
+                if key.data == "stdout":
+                    payload["stdout_bytes"] = int(payload.get("stdout_bytes") or 0) + len(chunk)
+                    tail_append(stdout_tail, chunk, tail_limit)
+                else:
+                    payload["stderr_bytes"] = int(payload.get("stderr_bytes") or 0) + len(chunk)
+                    tail_append(stderr_tail, chunk, tail_limit)
+            else:
+                try:
+                    selector.unregister(key.fileobj)
+                except Exception:
+                    pass
+
+        now = time.time()
+        if progressed:
+            payload["last_progress_at"] = now
+        if cancelled and child.poll() is None and cancel_started_at is not None:
+            if now - cancel_started_at >= 5.0:
+                try:
+                    child.kill()
+                except ProcessLookupError:
+                    pass
+
+        running = child.poll() is None
+        if now - last_save >= heartbeat_seconds or progressed or not running:
+            progress_age = max(0.0, now - float(payload.get("last_progress_at") or now))
+            payload.update({
+                "last_heartbeat_at": now,
+                "progress_age_seconds": round(progress_age, 3),
+                "stdout_tail": stdout_tail.decode("utf-8", errors="replace"),
+                "stderr_tail": stderr_tail.decode("utf-8", errors="replace"),
+            })
+            if running:
+                payload["status"] = "STALLED" if progress_age >= stall_seconds else "RUNNING"
+                payload["terminal"] = False
+            save(payload)
+            last_save = now
+
+        if not running and not selector.get_map():
+            break
+
+    returncode = child.wait()
+    now = time.time()
+    payload.update({
+        "returncode": returncode,
+        "finished_at": now,
+        "last_heartbeat_at": now,
+        "progress_age_seconds": max(
+            0.0, now - float(payload.get("last_progress_at") or now)
+        ),
+        "stdout_tail": stdout_tail.decode("utf-8", errors="replace"),
+        "stderr_tail": stderr_tail.decode("utf-8", errors="replace"),
+        "terminal": True,
+        "status": "CANCELLED" if cancelled else ("SUCCEEDED" if returncode == 0 else "FAILED"),
+    })
+    save(payload)
+except Exception as exc:
+    now = time.time()
+    payload.update({
+        "status": "CANCELLED" if cancelled else "FAILED",
+        "terminal": True,
+        "finished_at": now,
+        "last_heartbeat_at": now,
+        "returncode": None if child is None else child.poll(),
+        "error": (type(exc).__name__ + ": " + str(exc))[-1000:],
+        "stdout_tail": stdout_tail.decode("utf-8", errors="replace"),
+        "stderr_tail": stderr_tail.decode("utf-8", errors="replace"),
+    })
+    save(payload)
+finally:
+    try:
+        spec_path.unlink()
+    except OSError:
+        pass
+"""
+
 _REMOTE_AGENT = r"""
 import hashlib, json, os, pathlib, signal, subprocess, sys
 req = json.load(sys.stdin)
@@ -262,37 +436,91 @@ if op == "exec":
         raise ValueError("cwd must be a directory")
     if req.get("detached"):
         execution_id = str(req.get("execution_id") or "")
-        detached_receipt_path(execution_id)
-        p = subprocess.Popen(
-            req["argv"], cwd=str(cwd), stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True, close_fds=True,
+        receipt_path = detached_receipt_path(execution_id)
+        spec_path = receipt_path.with_suffix(".spec.json")
+        heartbeat_seconds = max(1.0, min(float(req.get("heartbeat_seconds") or 10.0), 60.0))
+        stall_seconds = max(
+            heartbeat_seconds * 2.0,
+            min(float(req.get("stall_seconds") or 300.0), 86400.0),
         )
+        spec = {
+            "argv": list(req["argv"]),
+            "cwd": str(cwd),
+            "heartbeat_seconds": heartbeat_seconds,
+            "stall_seconds": stall_seconds,
+            "tail_bytes": min(int(req.get("tail_bytes") or 32768), 131072),
+        }
+        spec_path.write_text(json.dumps(spec, sort_keys=True) + "\n", encoding="utf-8")
+        try:
+            spec_path.chmod(0o600)
+        except OSError:
+            pass
+        now = __import__("time").time()
         result = {
             "returncode": None,
             "stdout": "",
             "stderr": "",
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "stdout_bytes": 0,
+            "stderr_bytes": 0,
             "cwd": str(cwd),
             "detached": True,
-            "status": "STARTED",
-            "pid": p.pid,
+            "terminal": False,
+            "status": "STARTING",
             "execution_id": execution_id,
+            "created_at": now,
+            "last_heartbeat_at": now,
+            "last_progress_at": now,
+            "heartbeat_seconds": heartbeat_seconds,
+            "stall_seconds": stall_seconds,
         }
+        save_detached_receipt(result)
+        p = subprocess.Popen(
+            [sys.executable, "-c", str(req["worker_code"]), str(receipt_path), str(spec_path)],
+            cwd=str(cwd),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+        result["worker_pid"] = p.pid
+        result["pid"] = p.pid
         save_detached_receipt(result)
         print(json.dumps(result))
         raise SystemExit(0)
-    p = subprocess.run(
-        req["argv"], cwd=str(cwd), stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        timeout=req["timeout"], check=False,
-    )
     limit = req["max_output"]
-    print(json.dumps({
-        "returncode": p.returncode,
-        "stdout": p.stdout[:limit].decode("utf-8", errors="replace"),
-        "stderr": p.stderr[:limit].decode("utf-8", errors="replace"),
-        "cwd": str(cwd),
-    }))
+    try:
+        p = subprocess.run(
+            req["argv"], cwd=str(cwd), stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=req["timeout"], check=False,
+        )
+        print(json.dumps({
+            "returncode": p.returncode,
+            "stdout": p.stdout[:limit].decode("utf-8", errors="replace"),
+            "stderr": p.stderr[:limit].decode("utf-8", errors="replace"),
+            "cwd": str(cwd),
+            "status": "COMPLETED",
+            "timed_out": False,
+        }))
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or b""
+        stderr = exc.stderr or b""
+        if isinstance(stdout, str):
+            stdout = stdout.encode("utf-8", errors="replace")
+        if isinstance(stderr, str):
+            stderr = stderr.encode("utf-8", errors="replace")
+        print(json.dumps({
+            "returncode": None,
+            "stdout": stdout[:limit].decode("utf-8", errors="replace"),
+            "stderr": stderr[:limit].decode("utf-8", errors="replace"),
+            "cwd": str(cwd),
+            "status": "TIMED_OUT",
+            "timed_out": True,
+            "timeout_seconds": req["timeout"],
+        }))
 elif op == "exec_receipt":
     execution_id = str(req.get("execution_id") or "")
     target = detached_receipt_path(execution_id)
@@ -300,8 +528,62 @@ elif op == "exec_receipt":
         print(json.dumps({"found": False, "execution_id": execution_id}))
     else:
         payload = json.loads(target.read_text(encoding="utf-8"))
+        now = __import__("time").time()
+        heartbeat_at = float(payload.get("last_heartbeat_at") or payload.get("created_at") or now)
+        progress_at = float(payload.get("last_progress_at") or payload.get("created_at") or now)
+        payload["heartbeat_age_seconds"] = round(max(0.0, now - heartbeat_at), 3)
+        payload["progress_age_seconds"] = round(max(0.0, now - progress_at), 3)
+        observed = str(payload.get("status") or "UNKNOWN")
+        worker_pid = int(payload.get("worker_pid") or payload.get("pid") or 0)
+        child_pid = int(payload.get("child_pid") or 0)
+        def alive(pid):
+            if pid <= 1:
+                return False
+            try:
+                os.kill(pid, 0)
+                return True
+            except (ProcessLookupError, PermissionError, OSError):
+                return False
+        worker_alive = alive(worker_pid)
+        child_alive = alive(child_pid)
+        payload["worker_alive"] = worker_alive
+        payload["child_alive"] = child_alive
+        if not payload.get("terminal"):
+            heartbeat_limit = max(
+                30.0, float(payload.get("heartbeat_seconds") or 10.0) * 3.0
+            )
+            if not worker_alive and child_alive:
+                observed = "ORPHANED"
+            elif not worker_alive:
+                observed = "LOST"
+            elif payload["heartbeat_age_seconds"] >= heartbeat_limit:
+                observed = "HEARTBEAT_STALE"
+        payload["observed_status"] = observed
         payload["found"] = True
         print(json.dumps(payload))
+elif op == "exec_cancel":
+    execution_id = str(req.get("execution_id") or "")
+    target = detached_receipt_path(execution_id)
+    if not target.is_file():
+        print(json.dumps({"found": False, "execution_id": execution_id}))
+    else:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        if payload.get("terminal"):
+            payload["found"] = True
+            payload["cancel_requested"] = False
+            print(json.dumps(payload))
+        else:
+            worker_pid = int(payload.get("worker_pid") or payload.get("pid") or 0)
+            if worker_pid <= 1:
+                raise RuntimeError("detached worker pid is unavailable")
+            os.killpg(worker_pid, signal.SIGTERM)
+            print(json.dumps({
+                "found": True,
+                "execution_id": execution_id,
+                "worker_pid": worker_pid,
+                "cancel_requested": True,
+                "status": payload.get("status"),
+            }))
 elif op == "read_file":
     p = inside(req["path"])
     if not p.is_file():
@@ -1144,6 +1426,8 @@ def exec(
     device: str | None = None,
     timeout_seconds: int = DEFAULT_TIMEOUT,
     detached: bool = False,
+    heartbeat_seconds: int = 10,
+    stall_seconds: int = 300,
 ) -> dict[str, Any]:
     """Run a bounded command or return a durable operator approval request.
 
@@ -1153,7 +1437,31 @@ def exec(
     requires an exact host-scoped approval and returns after the child is spawned.
     """
     _validate_exec(argv)
-    timeout = min(120, max(1, int(timeout_seconds)))
+    requested_timeout = max(1, int(timeout_seconds))
+    if not detached and requested_timeout > 30:
+        _audit("exec_long_job_required", True, {
+            "argv": list(argv),
+            "project": project,
+            "device": device,
+            "requested_timeout_seconds": requested_timeout,
+        })
+        return {
+            "ok": False,
+            "long_job_required": True,
+            "suggested_tool": "start_long_job",
+            "reason": (
+                "Synchronous exec is capped at 30 seconds so a model turn cannot "
+                "silently block on long work. Start this command with start_long_job "
+                "to get heartbeat, stall detection, durable receipt, and watcher UI."
+            ),
+            "requested_timeout_seconds": requested_timeout,
+            "argv": list(argv),
+            "project": project,
+            "device": device,
+        }
+    timeout = min(30, requested_timeout)
+    heartbeat = min(60, max(1, int(heartbeat_seconds)))
+    stall = min(86400, max(heartbeat * 2, int(stall_seconds)))
     cfg = _config()
     selected_host = host_for(cfg, project=project, host_id=device)
     host_id = selected_host["id"]
@@ -1218,6 +1526,10 @@ def exec(
             "timeout": timeout, "max_output": MAX_OUTPUT_BYTES,
             "detached": bool(detached),
             "execution_id": execution_id,
+            "heartbeat_seconds": heartbeat,
+            "stall_seconds": stall,
+            "tail_bytes": 32768,
+            "worker_code": _DETACHED_EXEC_WORKER if detached else None,
         }, timeout=timeout + 2, project=project, device=device)
     except Exception as exc:
         if not detached or execution_id is None:
@@ -1640,6 +1952,298 @@ def checkpoint_job(
         "checkpoint_count": len(result.get("checkpoints") or []),
     })
     return result
+
+
+
+def _long_job_runtime(receipt: dict[str, Any]) -> dict[str, Any]:
+    status = str(receipt.get("status") or "UNKNOWN").upper()
+    observed = str(receipt.get("observed_status") or status).upper()
+    runtime: dict[str, Any] = {
+        "backend_status": status,
+        "observed_status": observed,
+        "progress_state": (
+            "STALLED"
+            if observed in {"STALLED", "HEARTBEAT_STALE", "LOST", "ORPHANED"}
+            else ("TERMINAL" if bool(receipt.get("terminal")) else "ACTIVE")
+        ),
+    }
+    for key in (
+        "last_heartbeat_at", "last_progress_at", "heartbeat_age_seconds",
+        "progress_age_seconds", "started_at", "finished_at", "stdout_bytes",
+        "stderr_bytes", "worker_pid", "child_pid", "returncode",
+        "worker_alive", "child_alive",
+    ):
+        value = receipt.get(key)
+        if value is None:
+            continue
+        target = "pid" if key == "worker_pid" else key
+        if isinstance(value, bool):
+            runtime[target] = value
+        elif isinstance(value, (int, float)):
+            runtime[target] = value
+    error = receipt.get("error")
+    if error:
+        runtime["error"] = str(error)[:2000]
+    return runtime
+
+
+def _long_job_status(receipt: dict[str, Any]) -> str:
+    observed = str(
+        receipt.get("observed_status") or receipt.get("status") or ""
+    ).upper()
+    if observed in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+        return observed
+    if observed in {"STALLED", "HEARTBEAT_STALE", "LOST", "ORPHANED"}:
+        return "STALLED"
+    return "RUNNING"
+
+
+def _sync_long_job(job: dict[str, Any], receipt: dict[str, Any]) -> dict[str, Any]:
+    mapped = _long_job_status(receipt)
+    previous = str(job.get("status") or "PENDING")
+    execution_id = str((job.get("backend") or {}).get("job_id") or "")
+    if previous != mapped and previous not in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+        if mapped == "STALLED":
+            summary = (
+                f"Detached execution {execution_id} has no observable progress "
+                f"or heartbeat within its configured threshold."
+            )
+            current_step = "Detached command appears stalled"
+            next_action = (
+                "Inspect the durable output tail and liveness fields; cancel or retry "
+                "only after identifying whether the command is actually hung."
+            )
+        elif mapped == "RUNNING":
+            summary = f"Detached execution {execution_id} is making progress again."
+            current_step = "Detached command running"
+            next_action = "Keep the watcher attached until terminal state."
+        else:
+            summary = f"Detached execution {execution_id} ended with status {mapped}."
+            current_step = f"Detached command {mapped.lower()}"
+            next_action = (
+                "Inspect stdout/stderr tail and acceptance evidence, then continue the goal."
+            )
+        job = checkpoint_runtime_job(
+            job["job_id"],
+            summary=summary,
+            current_step=current_step,
+            next_action=next_action,
+            status=mapped,
+            source="backend",
+        )
+
+    current_step = (
+        "Detached command stalled"
+        if mapped == "STALLED"
+        else (
+            f"Detached command {mapped.lower()}"
+            if mapped in {"SUCCEEDED", "FAILED", "CANCELLED"}
+            else "Detached command running"
+        )
+    )
+    return update_runtime_job(
+        job["job_id"],
+        runtime=_long_job_runtime(receipt),
+        status=mapped,
+        current_step=current_step,
+    )
+
+
+@server.tool(
+    name="start_long_job",
+    annotations=ToolAnnotations(
+        title="Start supervised long-running command",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+def start_long_job(
+    goal: str,
+    argv: list[str],
+    cwd: str | None = None,
+    project: str | None = None,
+    device: str | None = None,
+    stall_seconds: int = 300,
+    heartbeat_seconds: int = 10,
+) -> dict[str, Any]:
+    """Start a command under a durable detached supervisor and return immediately."""
+    goal = str(goal).strip()
+    if not goal or len(goal) > 8000:
+        raise ValueError("goal must be a bounded non-empty string")
+    launched = exec(
+        argv=argv,
+        cwd=cwd,
+        project=project,
+        device=device,
+        timeout_seconds=30,
+        detached=True,
+        heartbeat_seconds=heartbeat_seconds,
+        stall_seconds=stall_seconds,
+    )
+    if launched.get("approval_required"):
+        return {
+            **launched,
+            "long_job_started": False,
+            "goal": goal,
+        }
+
+    execution_id = str(launched.get("execution_id") or "")
+    if not execution_id:
+        raise RuntimeError("detached exec returned no execution id")
+    cfg = _config()
+    selected = host_for(cfg, project=project, host_id=device)
+    workdir = str(launched.get("cwd") or resolve_path(cfg, cwd, project=project))
+    runtime_job = create_runtime_job(
+        goal=goal,
+        project=project,
+        device=selected["id"],
+        backend={
+            "type": "exec",
+            "job_id": execution_id,
+            "cwd": workdir,
+            "executable": os.path.basename(str(argv[0])),
+        },
+        status="RUNNING",
+    )
+    runtime_job = checkpoint_runtime_job(
+        runtime_job["job_id"],
+        summary=f"Supervised detached execution {execution_id} started.",
+        current_step=f"Running {os.path.basename(str(argv[0]))}",
+        next_action="Keep the long-job watcher attached until terminal or stalled state.",
+        status="RUNNING",
+        source="runtime",
+    )
+    receipt = dict(launched)
+    receipt["observed_status"] = str(receipt.get("status") or "STARTING")
+    runtime_job = _sync_long_job(runtime_job, receipt)
+    _audit("start_long_job", True, {
+        "runtime_job_id": runtime_job["job_id"],
+        "execution_id": execution_id,
+        "project": project,
+        "device": selected["id"],
+        "executable": os.path.basename(str(argv[0])),
+    })
+    return {
+        "runtimeJobId": runtime_job["job_id"],
+        "executionId": execution_id,
+        "state": receipt,
+        "status": runtime_job["status"],
+        "terminal": bool(runtime_job["terminal"]),
+        "watchRecommended": True,
+    }
+
+
+def _long_job_receipt(job: dict[str, Any]) -> dict[str, Any]:
+    backend = job.get("backend")
+    if not isinstance(backend, dict) or backend.get("type") != "exec":
+        raise ValueError("job is not backed by a supervised exec")
+    execution_id = str(backend.get("job_id") or "")
+    receipt = _remote(
+        "exec_receipt",
+        {"execution_id": execution_id},
+        timeout=8,
+        project=job.get("project"),
+        device=job.get("device"),
+    )
+    if not receipt.get("found"):
+        raise RuntimeError("detached execution receipt is missing")
+    return receipt
+
+
+@server.tool(
+    name="get_long_job",
+    annotations=ToolAnnotations(
+        title="Get supervised long-running job",
+        readOnlyHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def get_long_job(job_id: str) -> dict[str, Any]:
+    """Refresh one supervised long job from its remote durable receipt."""
+    job = get_runtime_job(job_id)
+    receipt = _long_job_receipt(job)
+    job = _sync_long_job(job, receipt)
+    return {
+        "job": job,
+        "state": receipt,
+        "terminal": bool(job.get("terminal")),
+    }
+
+
+@server.tool(
+    name="watch_long_job",
+    annotations=ToolAnnotations(
+        title="Watch supervised long-running job",
+        readOnlyHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def watch_long_job(job_id: str) -> dict[str, Any]:
+    """Refresh a supervised long job and return watcher-ready state."""
+    return get_long_job(job_id)
+
+
+@server.tool(
+    name="wait_long_job",
+    annotations=ToolAnnotations(
+        title="Wait for supervised long-running job",
+        readOnlyHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def wait_long_job(job_id: str, timeout_seconds: int = 30) -> dict[str, Any]:
+    """Bounded event wait used by the Apps SDK watcher, not model-side polling."""
+    deadline = time.monotonic() + min(90, max(1, int(timeout_seconds)))
+    latest: dict[str, Any] | None = None
+    while True:
+        latest = get_long_job(job_id)
+        job = latest["job"]
+        if job.get("terminal") or job.get("status") == "STALLED":
+            return {**latest, "timedOut": False}
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {**latest, "timedOut": True}
+        time.sleep(min(1.0, remaining))
+
+
+@server.tool(
+    name="cancel_long_job",
+    annotations=ToolAnnotations(
+        title="Cancel supervised long-running job",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def cancel_long_job(job_id: str) -> dict[str, Any]:
+    """Request cancellation of a supervised command process group."""
+    job = get_runtime_job(job_id)
+    backend = job.get("backend")
+    if not isinstance(backend, dict) or backend.get("type") != "exec":
+        raise ValueError("job is not backed by a supervised exec")
+    execution_id = str(backend.get("job_id") or "")
+    result = _remote(
+        "exec_cancel",
+        {"execution_id": execution_id},
+        timeout=8,
+        project=job.get("project"),
+        device=job.get("device"),
+    )
+    _audit("cancel_long_job", True, {
+        "runtime_job_id": job_id,
+        "execution_id": execution_id,
+        "cancel_requested": bool(result.get("cancel_requested")),
+    })
+    return {
+        "job": get_runtime_job(job_id),
+        "cancel": result,
+    }
 
 
 def _openai_continuation_path(session_id: str) -> Path:

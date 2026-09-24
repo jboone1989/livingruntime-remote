@@ -112,6 +112,11 @@ class DiscoveryTests(unittest.TestCase):
             "get_job": (True, False, False),
             "list_jobs": (True, False, False),
             "checkpoint_job": (False, False, False),
+            "start_long_job": (False, True, True),
+            "watch_long_job": (True, False, False),
+            "get_long_job": (True, False, False),
+            "wait_long_job": (True, False, False),
+            "cancel_long_job": (False, True, False),
             "start_pi_step": (False, True, False),
             "watch_pi_job": (True, False, False),
             "wait_pi_job_completion": (True, False, False),
@@ -617,6 +622,23 @@ class SchemaAndToolTests(unittest.TestCase):
                 bridge.continue_openai_pi_job("session-a", timeout_seconds=1),
                 {"continue": True},
             )
+
+
+    def test_exec_refuses_long_synchronous_wait_and_points_to_supervisor(self) -> None:
+        with patch.object(bridge, "_audit") as audit, patch.object(
+            bridge, "_remote"
+        ) as remote:
+            result = bridge.exec(
+                ["python3", "-m", "pytest", "-q"],
+                timeout_seconds=120,
+            )
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["long_job_required"])
+        self.assertEqual(result["suggested_tool"], "start_long_job")
+        self.assertEqual(result["requested_timeout_seconds"], 120)
+        self.assertIn("heartbeat", result["reason"])
+        remote.assert_not_called()
+        audit.assert_called_once()
 
 
 if __name__ == "__main__":

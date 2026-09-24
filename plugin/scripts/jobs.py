@@ -12,7 +12,7 @@ STORE_VERSION = 1
 MAX_CHECKPOINTS = 100
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 STATUSES = frozenset({
-    "PENDING", "RUNNING", "WAITING", "BLOCKED",
+    "PENDING", "RUNNING", "STALLED", "WAITING", "BLOCKED",
     "SUCCEEDED", "FAILED", "CANCELLED",
 })
 TERMINAL_STATUSES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED"})
@@ -105,6 +105,7 @@ def create(
         "backend": normalized_backend,
         "current_step": None,
         "next_action": None,
+        "runtime": {},
         "checkpoints": [],
         "created_at": now,
         "updated_at": now,
@@ -185,6 +186,86 @@ def checkpoint(
     return dict(value)
 
 
+def update_runtime(
+    job_id: str,
+    *,
+    runtime: dict[str, Any],
+    status: str | None = None,
+    current_step: str | None = None,
+    next_action: str | None = None,
+) -> dict[str, Any]:
+    """Persist lightweight liveness/progress without creating a checkpoint."""
+    if not isinstance(runtime, dict):
+        raise ValueError("runtime must be an object")
+    value = _load(job_id)
+    previous = str(value.get("status") or "PENDING")
+    new_status = status or previous
+    if new_status not in STATUSES:
+        raise ValueError("unsupported job status")
+    if previous in TERMINAL_STATUSES and new_status != previous:
+        raise RuntimeError("terminal job status cannot transition")
+
+    allowed_text = {
+        "backend_status": 64,
+        "observed_status": 64,
+        "progress_state": 64,
+        "current_item": 2000,
+        "error": 2000,
+    }
+    allowed_number = {
+        "last_heartbeat_at",
+        "last_progress_at",
+        "heartbeat_age_seconds",
+        "progress_age_seconds",
+        "started_at",
+        "finished_at",
+        "stdout_bytes",
+        "stderr_bytes",
+        "pid",
+        "child_pid",
+        "returncode",
+        "completed_items",
+        "total_items",
+    }
+    allowed_bool = {"worker_alive", "child_alive"}
+    normalized: dict[str, Any] = {}
+    if "last_heartbeat_at" not in runtime and "heartbeat_at" in runtime:
+        runtime = {**runtime, "last_heartbeat_at": runtime.get("heartbeat_at")}
+    for key, maximum in allowed_text.items():
+        raw = runtime.get(key)
+        if raw is not None:
+            normalized[key] = _bounded(
+                str(raw), field=f"runtime.{key}", maximum=maximum
+            )
+    for key in allowed_number:
+        raw = runtime.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise ValueError(f"runtime.{key} must be numeric")
+        normalized[key] = raw
+    for key in allowed_bool:
+        raw = runtime.get(key)
+        if raw is None:
+            continue
+        if not isinstance(raw, bool):
+            raise ValueError(f"runtime.{key} must be boolean")
+        normalized[key] = raw
+
+    current_step = _bounded(current_step, field="current_step", maximum=2000)
+    next_action = _bounded(next_action, field="next_action", maximum=4000)
+    value["runtime"] = normalized
+    value["status"] = new_status
+    value["terminal"] = new_status in TERMINAL_STATUSES
+    if current_step is not None:
+        value["current_step"] = current_step
+    if next_action is not None:
+        value["next_action"] = next_action
+    value["updated_at"] = time.time()
+    _save(value)
+    return dict(value)
+
+
 def find_by_backend(backend_type: str, backend_job_id: str) -> dict[str, Any] | None:
     backend_type = _bounded(backend_type, field="backend_type", maximum=64, required=True) or ""
     backend_job_id = _bounded(
@@ -253,7 +334,12 @@ def sync_backend_status(
     mapped = {
         "PENDING": "PENDING",
         "QUEUED": "PENDING",
+        "STARTING": "RUNNING",
+        "STARTED": "RUNNING",
         "RUNNING": "RUNNING",
+        "STALLED": "STALLED",
+        "HEARTBEAT_STALE": "STALLED",
+        "LOST": "STALLED",
         "WAITING": "WAITING",
         "BLOCKED": "BLOCKED",
         "SUCCEEDED": "SUCCEEDED",
@@ -297,6 +383,8 @@ def _normalize_backend(backend: dict[str, Any] | None) -> dict[str, Any] | None:
         "session_file",
         "session_id",
         "controller_mode",
+        "cwd",
+        "executable",
     ):
         if key in backend and backend[key] is not None:
             normalized[key] = _bounded(

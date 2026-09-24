@@ -3,9 +3,19 @@ name: remote-development
 description: Safely develop, inspect, test, and operate the user's LivingRuntime remote host through the livingruntime_remote MCP tools.
 ---
 
-Identity is `livingruntime.remote`, version `0.4.23`. Use `capabilities` then `list_devices` / `connection_status` before the first remote write in a session. Pass `device` when a specific configured host is intended; omitting it preserves the configured default, while project aliases continue to route to their bound host. A conflicting `project` + `device` selection fails closed. Those names are stable; do not guess `gateway_status` unless an older gateway client only exposes the compatibility alias. `capabilities.healthy` and `server_tools` are the MCP process registry (`tools/list`). ChatGPT may cache an older Custom App action list independently of that snapshot.
+Identity is `livingruntime.remote`, version `0.4.24`. Use `capabilities` then `list_devices` / `connection_status` before the first remote write in a session. Pass `device` when a specific configured host is intended; omitting it preserves the configured default, while project aliases continue to route to their bound host. A conflicting `project` + `device` selection fails closed. Those names are stable; do not guess `gateway_status` unless an older gateway client only exposes the compatibility alias. `capabilities.healthy` and `server_tools` are the MCP process registry (`tools/list`). ChatGPT may cache an older Custom App action list independently of that snapshot.
 
 When the user names a repo such as VirtualBrain, Ferro, agent-runtime, or trading, call `list_projects` first and then pass `project=` to the other tools. Do not ask the user for `/home/ubuntu/...` paths when a project alias exists.
+
+Never hold a model turn open on work that may exceed roughly 30 seconds. Use
+`start_long_job` for long tests, builds, benchmarks, migrations, deployments, or
+other commands with uncertain duration, then keep the returned watcher attached.
+The long-job supervisor persists heartbeat, last progress, bounded output tails,
+worker/child liveness, stall detection, and terminal state. If a synchronous
+`exec` reports `long_job_required`, immediately re-issue the command through
+`start_long_job` instead of increasing the synchronous timeout. A `STALLED`,
+`ORPHANED`, `HEARTBEAT_STALE`, or `LOST` observation requires inspection of
+`get_long_job` before assuming the command is still making progress.
 
 Prefer the narrow tool that matches the task:
 - `read_file(project="virtualbrain", path="pyproject.toml")` instead of an absolute path or a shell read.

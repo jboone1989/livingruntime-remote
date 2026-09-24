@@ -42,7 +42,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.23")
+            self.assertEqual(health.json()["version"], "0.4.24")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -302,6 +302,27 @@ class RelayServerTests(unittest.TestCase):
             ["remote:read", "remote:write", "openid", "email"],
         )
         self.assertEqual(
+            tools["start_long_job"].meta["ui"]["resourceUri"],
+            server.LONG_JOB_WIDGET_URI,
+        )
+        self.assertEqual(
+            tools["start_long_job"].meta["ui"]["visibility"],
+            ["model", "app"],
+        )
+        self.assertEqual(
+            tools["watch_long_job"].meta["ui"]["resourceUri"],
+            server.LONG_JOB_WIDGET_URI,
+        )
+        self.assertEqual(
+            tools["watch_long_job"].meta["ui"]["visibility"],
+            ["model", "app"],
+        )
+        self.assertEqual(
+            tools["wait_long_job"].meta["ui"]["visibility"],
+            ["app"],
+        )
+        self.assertNotIn("resourceUri", tools["wait_long_job"].meta["ui"])
+        self.assertEqual(
             tools["watch_pi_job"].meta["ui"]["resourceUri"],
             server.PI_JOB_WIDGET_URI,
         )
@@ -357,6 +378,17 @@ class RelayServerTests(unittest.TestCase):
             widget_meta["csp"],
             {"connectDomains": [], "resourceDomains": []},
         )
+        long_widget = next(
+            resource
+            for resource in resources
+            if str(resource.uri) == server.LONG_JOB_WIDGET_URI
+        )
+        long_meta = long_widget.model_dump(by_alias=True)["_meta"]["ui"]
+        self.assertEqual(long_meta["domain"], server.PI_JOB_WIDGET_DOMAIN)
+        self.assertEqual(
+            long_meta["csp"],
+            {"connectDomains": [], "resourceDomains": []},
+        )
         control_widget = next(
             resource
             for resource in resources
@@ -382,6 +414,19 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn("Remote connection lost", html)
         self.assertNotIn("setInterval(", html)
         self.assertNotIn("job-status", html)
+
+    def test_long_job_widget_uses_bounded_wait_and_reports_stall(self):
+        html = server.LONG_JOB_WIDGET_HTML
+        self.assertIn('"tools/call"', html)
+        self.assertIn('"wait_long_job"', html)
+        self.assertIn("timeout_seconds:30", html)
+        self.assertIn("STALLED", html)
+        self.assertIn("longJobProgress", html)
+        self.assertIn("heartbeatAgeSeconds", html)
+        self.assertIn("progressAgeSeconds", html)
+        self.assertIn('"ui/message"', html)
+        self.assertIn('"ui/update-model-context"', html)
+        self.assertNotIn("setInterval(", html)
 
     def test_control_plane_widget_is_read_only_snapshot_ui(self):
         html = server.CONTROL_PLANE_WIDGET_HTML

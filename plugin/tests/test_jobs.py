@@ -117,6 +117,71 @@ class JobStoreTests(unittest.TestCase):
                 {"type": "pi-step", "job_id": "step-2"},
             )
 
+
+    def test_runtime_heartbeat_updates_without_checkpoint_spam(self) -> None:
+        created = jobs.create(
+            goal="Long command",
+            project="ferro",
+            backend={
+                "type": "exec",
+                "job_id": "dex_123",
+                "cwd": "/home/ubuntu/src/content-agent",
+                "executable": "pytest",
+            },
+            status="RUNNING",
+        )
+        updated = jobs.update_runtime(
+            created["job_id"],
+            runtime={
+                "backend_status": "RUNNING",
+                "observed_status": "RUNNING",
+                "last_heartbeat_at": 123.0,
+                "last_progress_at": 120.0,
+                "heartbeat_age_seconds": 1.5,
+                "progress_age_seconds": 4.5,
+                "pid": 100,
+                "child_pid": 101,
+                "stdout_bytes": 55,
+                "stderr_bytes": 2,
+                "worker_alive": True,
+                "child_alive": True,
+            },
+            current_step="pytest running",
+        )
+        self.assertEqual(updated["status"], "RUNNING")
+        self.assertEqual(updated["runtime"]["child_pid"], 101)
+        self.assertEqual(updated["runtime"]["last_heartbeat_at"], 123.0)
+        self.assertTrue(updated["runtime"]["worker_alive"])
+        self.assertTrue(updated["runtime"]["child_alive"])
+        self.assertEqual(updated["backend"]["executable"], "pytest")
+        self.assertEqual(updated["checkpoints"], [])
+
+    def test_stalled_status_is_nonterminal_and_can_resume(self) -> None:
+        created = jobs.create(goal="Potentially stalled")
+        stalled = jobs.update_runtime(
+            created["job_id"],
+            runtime={
+                "backend_status": "STALLED",
+                "observed_status": "STALLED",
+                "last_heartbeat_at": 10.0,
+                "last_progress_at": 1.0,
+            },
+            status="STALLED",
+        )
+        self.assertFalse(stalled["terminal"])
+        resumed = jobs.update_runtime(
+            created["job_id"],
+            runtime={
+                "backend_status": "RUNNING",
+                "observed_status": "RUNNING",
+                "last_heartbeat_at": 20.0,
+                "last_progress_at": 20.0,
+            },
+            status="RUNNING",
+        )
+        self.assertEqual(resumed["status"], "RUNNING")
+        self.assertFalse(resumed["terminal"])
+
     def test_job_files_are_owner_only(self) -> None:
         created = jobs.create(goal="Private task")
         path = self.root / f"{created['job_id']}.json"

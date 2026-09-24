@@ -25,8 +25,9 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.23"
+VERSION = "0.4.24"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v1.html"
+LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v1.html"
 CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v1.html"
 PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
 IDENTITY_SCOPES = ["openid", "email"]
@@ -58,6 +59,11 @@ TOOL_TEXT = {
     "get_job": ("Get durable job", "Read one durable Remote job including progress, backend, next action, and checkpoints."),
     "list_jobs": ("List durable jobs", "List recent durable Remote jobs, optionally filtered by status."),
     "checkpoint_job": ("Checkpoint durable job", "Persist bounded progress, current step, next action, and status for a durable Remote job."),
+    "start_long_job": ("Start supervised long job", "Start a command under the durable long-job supervisor and return immediately with a watcher-ready job ID."),
+    "watch_long_job": ("Watch supervised long job", "Attach the no-polling watcher to an existing supervised long-running command."),
+    "get_long_job": ("Get supervised long job", "Refresh one supervised long-running command from its durable remote receipt."),
+    "wait_long_job": ("Wait for supervised long job", "App-only bounded wait used by the long-job watcher."),
+    "cancel_long_job": ("Cancel supervised long job", "Request cancellation of a supervised long-running command process group."),
     "list_exec_permissions": ("List command permissions", "List pending dynamic command requests plus active and revoked persisted grants."),
     "approve_exec_permission": ("Approve command permission", "Approve a pending exact command request. Host scope is the default; all-host or diagnostic-class grants are limited to read-only diagnostics."),
     "deny_exec_permission": ("Deny command permission", "Deny a pending dynamic command request without executing it."),
@@ -282,6 +288,189 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
     }
   }
 
+  void connect();
+})();
+</script>
+</body>
+</html>"""
+
+LONG_JOB_WIDGET_HTML = r"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { margin:0; padding:12px; font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--color-text-primary,inherit); background:transparent; }
+  .card { border:1px solid var(--color-border-secondary,rgba(127,127,127,.35)); border-radius:12px; padding:12px 14px; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .dot { width:8px; height:8px; border-radius:999px; background:var(--color-text-info,#4f7cff); flex:0 0 auto; }
+  #detail { margin-top:6px; color:var(--color-text-secondary,#777); white-space:pre-wrap; }
+  code { font-family:var(--font-mono,ui-monospace,monospace); font-size:12px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="row"><span class="dot"></span><strong id="status">Preparing long-job watcher…</strong></div>
+  <div id="detail"></div>
+</div>
+<script>
+(() => {
+  const pending = new Map();
+  let nextId = 1;
+  let connected = false;
+  let latestOutput = null;
+  let activeJob = null;
+  let stopped = false;
+  const statusEl = document.getElementById("status");
+  const detailEl = document.getElementById("detail");
+
+  function request(method, params) {
+    const id = nextId++;
+    window.parent.postMessage({ jsonrpc:"2.0", id, method, params }, "*");
+    return new Promise((resolve,reject)=>pending.set(id,{resolve,reject}));
+  }
+  function notify(method, params={}) {
+    window.parent.postMessage({ jsonrpc:"2.0", method, params }, "*");
+  }
+  function setStatus(status, detail="") {
+    statusEl.textContent = status;
+    detailEl.textContent = detail;
+  }
+  function toolResultData(result) {
+    return result?.structuredContent || result?.structured_content || result || null;
+  }
+  function jobIdFrom(output) {
+    return output?.runtimeJobId || output?.job?.job_id || null;
+  }
+  function describe(data) {
+    const job = data?.job || {};
+    const state = data?.state || {};
+    const heartbeat = state?.heartbeat_age_seconds;
+    const progress = state?.progress_age_seconds;
+    const bits = [
+      "Job " + (job.job_id || "?"),
+      "state " + (job.status || state.observed_status || state.status || "UNKNOWN")
+    ];
+    if (heartbeat !== undefined && heartbeat !== null) bits.push("heartbeat " + heartbeat + "s ago");
+    if (progress !== undefined && progress !== null) bits.push("progress " + progress + "s ago");
+    return bits.join(" · ");
+  }
+  async function followUp(jobId, status) {
+    const prompt =
+      "LivingRuntime Remote long job " + jobId + " is now " + status +
+      ". Continue this same task now. Call get_long_job for the durable receipt, inspect the output tail and current repository/process state, " +
+      "then either proceed, repair/retry, or cancel as appropriate. Do not ask me to say continue and do not assume the job is still running.";
+    try {
+      await request("ui/message", { role:"user", content:[{type:"text",text:prompt}] });
+      return;
+    } catch (error) {
+      const openai = typeof window !== "undefined" ? window.openai : undefined;
+      if (openai?.sendFollowUpMessage) {
+        await openai.sendFollowUpMessage({prompt,scrollToBottom:false});
+        return;
+      }
+      throw error;
+    }
+  }
+
+  async function watch(output) {
+    const jobId = jobIdFrom(output);
+    if (!connected || !jobId || activeJob === jobId || stopped) return;
+    activeJob = jobId;
+    setStatus("Long job watcher attached", "Job " + jobId + " · waiting for heartbeat");
+    try {
+      while (!stopped) {
+        const result = await request("tools/call", {
+          name:"wait_long_job",
+          arguments:{job_id:jobId,timeout_seconds:30}
+        });
+        const data = toolResultData(result);
+        const job = data?.job || {};
+        const state = data?.state || {};
+        const status = job.status || state.observed_status || state.status || "UNKNOWN";
+
+        if (data?.terminal || job.terminal) {
+          setStatus("Long job finished: " + status, describe(data));
+          await request("ui/update-model-context", {
+            structuredContent:{longJobCompletion:{jobId,status,terminal:true}}
+          }).catch(()=>{});
+          await followUp(jobId,status);
+          setStatus("Follow-up sent", "ChatGPT can continue from the durable receipt.");
+          stopped = true;
+          return;
+        }
+        if (status === "STALLED") {
+          setStatus("Long job stalled", describe(data));
+          await request("ui/update-model-context", {
+            structuredContent:{longJobCompletion:{jobId,status:"STALLED",terminal:false}}
+          }).catch(()=>{});
+          await followUp(jobId,"STALLED");
+          setStatus("Stall reported", "ChatGPT can inspect and recover the job.");
+          stopped = true;
+          return;
+        }
+        if (!data?.timedOut) {
+          throw new Error("long-job wait returned without terminal/stalled state or timeout");
+        }
+        setStatus("Long job is working…", describe(data));
+        await request("ui/update-model-context", {
+          structuredContent:{
+            longJobProgress:{
+              jobId,
+              status,
+              heartbeatAgeSeconds:state?.heartbeat_age_seconds ?? null,
+              progressAgeSeconds:state?.progress_age_seconds ?? null
+            }
+          }
+        }).catch(()=>{});
+      }
+    } catch (error) {
+      const message = String(error?.message || error);
+      setStatus("Long-job watcher stopped", message);
+      try {
+        await request("ui/message", {
+          role:"user",
+          content:[{type:"text",text:
+            "LivingRuntime Remote long-job watcher for " + jobId + " stopped: " + message +
+            ". Check get_long_job and device_status before assuming the command is still running."
+          }]
+        });
+      } catch (_) {}
+    }
+  }
+
+  window.addEventListener("message",(event)=>{
+    if (event.source !== window.parent) return;
+    const message = event.data;
+    if (!message || message.jsonrpc !== "2.0") return;
+    if (message.id !== undefined && pending.has(message.id)) {
+      const waiter=pending.get(message.id); pending.delete(message.id);
+      if (message.error) waiter.reject(message.error); else waiter.resolve(message.result);
+      return;
+    }
+    if (message.method === "ui/notifications/tool-result") {
+      latestOutput = message.params?.structuredContent || null;
+      void watch(latestOutput);
+    }
+    if (message.method === "ui/notifications/request-teardown") stopped=true;
+  },{passive:true});
+
+  async function connect() {
+    try {
+      await request("ui/initialize", {
+        appInfo:{name:"livingruntime-remote-long-job-watch",version:"1.0.0"},
+        appCapabilities:{},
+        protocolVersion:"2026-01-26"
+      });
+      notify("ui/notifications/initialized");
+      connected=true;
+      if (!latestOutput && window.openai?.toolOutput) latestOutput=window.openai.toolOutput;
+      await watch(latestOutput);
+    } catch (error) {
+      setStatus("Widget initialization failed",String(error?.message || error));
+    }
+  }
   void connect();
 })();
 </script>
@@ -705,6 +894,16 @@ def create_mcp(
         prefers_border=True,
     )
     apps.add_html_resource(
+        LONG_JOB_WIDGET_URI,
+        LONG_JOB_WIDGET_HTML,
+        name="long-job-watch",
+        title="Long-running job watcher",
+        description="Watch a supervised long-running command without model-side polling and report stalled or terminal state back into the same conversation.",
+        csp=ResourceCsp(connect_domains=[], resource_domains=[]),
+        domain=PI_JOB_WIDGET_DOMAIN,
+        prefers_border=True,
+    )
+    apps.add_html_resource(
         CONTROL_PLANE_WIDGET_URI,
         CONTROL_PLANE_WIDGET_HTML,
         name="remote-control-plane",
@@ -777,6 +976,62 @@ def create_mcp(
                 "pi_remote_dir": pi_remote_dir,
                 "job_root": job_root,
             },
+        )
+
+    @apps.tool(
+        resource_uri=LONG_JOB_WIDGET_URI,
+        visibility=["model", "app"],
+        name="start_long_job",
+        title=TOOL_TEXT["start_long_job"][0],
+        description=TOOL_TEXT["start_long_job"][1],
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=True,
+            openWorldHint=True,
+        ),
+        meta=WRITE,
+    )
+    async def start_long_job(
+        goal: str,
+        argv: list[str],
+        cwd: str | None = None,
+        project: str | None = None,
+        device: str | None = None,
+        stall_seconds: int = 300,
+        heartbeat_seconds: int = 10,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "start_long_job",
+            {
+                "goal": goal,
+                "argv": argv,
+                "cwd": cwd,
+                "project": project,
+                "device": device,
+                "stall_seconds": stall_seconds,
+                "heartbeat_seconds": heartbeat_seconds,
+            },
+        )
+
+    @apps.tool(
+        resource_uri=LONG_JOB_WIDGET_URI,
+        visibility=["model", "app"],
+        name="watch_long_job",
+        title=TOOL_TEXT["watch_long_job"][0],
+        description=TOOL_TEXT["watch_long_job"][1],
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        meta=READ,
+    )
+    async def watch_long_job(job_id: str) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:read"),
+            "watch_long_job",
+            {"job_id": job_id},
         )
 
     @apps.tool(
@@ -899,6 +1154,27 @@ def create_mcp(
     def disconnect_device(device_id: str | None = None) -> dict[str, Any]:
         """Revoke a paired connector and discard its queued or completed relay tasks."""
         return {"disconnected": relay.store.revoke_device(_principal("remote:write"), device_id)}
+
+    @server.tool(
+        name="wait_long_job",
+        title=TOOL_TEXT["wait_long_job"][0],
+        description=TOOL_TEXT["wait_long_job"][1],
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        meta={**READ, "ui": {"visibility": ["app"]}},
+    )
+    async def wait_long_job(
+        job_id: str,
+        timeout_seconds: int = 30,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:read"),
+            "wait_long_job",
+            {"job_id": job_id, "timeout_seconds": timeout_seconds},
+        )
 
     @server.tool(
         name="wait_pi_job_completion",
@@ -1102,7 +1378,8 @@ def create_mcp(
 
     @expose("exec", False, True, True)
     async def exec(argv: list[str], cwd: str | None = None, project: str | None = None, device: str | None = None,
-                   timeout_seconds: int = 30, detached: bool = False) -> dict[str, Any]:
+                   timeout_seconds: int = 30, detached: bool = False,
+                   heartbeat_seconds: int = 10, stall_seconds: int = 300) -> dict[str, Any]:
         return await relay.call(
             _principal("remote:write"),
             "exec",
@@ -1113,6 +1390,8 @@ def create_mcp(
                 "device": device,
                 "timeout_seconds": timeout_seconds,
                 "detached": detached,
+                "heartbeat_seconds": heartbeat_seconds,
+                "stall_seconds": stall_seconds,
             },
         )
 
@@ -1224,6 +1503,22 @@ def create_mcp(
                 "next_action": next_action,
                 "status": status,
             },
+        )
+
+    @expose("get_long_job", True, False, False)
+    async def get_long_job(job_id: str) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:read"),
+            "get_long_job",
+            {"job_id": job_id},
+        )
+
+    @expose("cancel_long_job", False, False, True)
+    async def cancel_long_job(job_id: str) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "cancel_long_job",
+            {"job_id": job_id},
         )
 
     @expose("list_exec_permissions", True, False, False)

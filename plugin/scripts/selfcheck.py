@@ -38,7 +38,7 @@ def main() -> None:
 
     assert plugin["$schema"] == "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
     assert plugin["name"] == "livingruntime-remote"
-    assert plugin["version"] == PLUGIN_VERSION == "0.4.23"
+    assert plugin["version"] == PLUGIN_VERSION == "0.4.24"
     assert legacy["version"] == PLUGIN_VERSION
     assert REMOTE_IDENTITY == "livingruntime.remote"
     assert plugin["extensions"]["com.openai"]["apps"] == "./.app.json"
