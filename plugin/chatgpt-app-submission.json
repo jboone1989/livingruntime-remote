@@ -3,8 +3,8 @@
   "schema_version": 1,
   "app_info": {
     "display_name": "LivingRuntime Remote",
-    "subtitle": "Bounded remote host tools",
-    "description": "LivingRuntime Remote lets ChatGPT operate development machines the user controls through bounded remote tools. It discovers managed hosts, persists long-running jobs, runs detached Pi external-controller steps without Pi model calls, provides a read-only control plane, exposes credential handles through scoped leases, and keeps commands behind explicit permission boundaries. SSH passwords and private keys remain outside the service.",
+    "subtitle": "Durable work on your machines",
+    "description": "LivingRuntime Remote lets ChatGPT work on machines you control with bounded remote tools, durable jobs, checkpoints, and completion-driven continuation. It supports multi-host routing, explicit command approvals, scoped credential leases, and audited remote actions. SSH passwords and private keys stay on the user's Connector machine rather than in the public relay.",
     "category": "DEVELOPER_TOOLS"
   },
   "tools": {

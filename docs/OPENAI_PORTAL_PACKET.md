@@ -5,7 +5,7 @@ Use this file as the source of truth when creating the public **With MCP** submi
 ## Listing
 
 - **Plugin name:** LivingRuntime Remote
-- **Subtitle:** Bounded remote host tools
+- **Subtitle:** Durable work on your machines
 - **Category:** Developer Tools
 - **Developer name:** LivingRuntime
 - **Website:** https://remote.livingruntime.com/
@@ -16,11 +16,11 @@ Use this file as the source of truth when creating the public **With MCP** submi
 
 ### Short description
 
-Bounded remote host tools
+Durable work on your machines
 
 ### Long description
 
-LivingRuntime Remote lets ChatGPT and Codex operate development machines the user controls through bounded remote tools. It verifies connectivity, lists configured projects, reads and writes files only inside allowed roots, runs Git and allowlisted development commands, and inspects allowlisted services and logs. SSH passwords and private keys stay on the user's Connector machine rather than the public relay.
+LivingRuntime Remote lets ChatGPT and Codex work on machines the user controls through bounded remote tools, durable jobs, checkpoints, and completion-driven continuation. It supports multi-host routing, explicit command approvals, scoped credential leases, and audited file, Git, process, service, and diagnostic actions. SSH passwords and private keys stay on the user's Connector machine rather than the public relay.
 
 ## MCP
 
