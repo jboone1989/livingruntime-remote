@@ -338,6 +338,8 @@ class RelayServerTests(unittest.TestCase):
             tools["wait_llm_request"].meta["ui"]["visibility"],
             ["app"],
         )
+        self.assertTrue(tools["wait_llm_request"].annotations.read_only_hint)
+        self.assertFalse(tools["claim_llm_request"].annotations.read_only_hint)
         self.assertNotIn("resourceUri", tools["wait_llm_request"].meta["ui"])
         self.assertNotIn("resourceUri", tools["wait_long_job"].meta["ui"])
         self.assertEqual(
@@ -497,10 +499,11 @@ class RelayServerTests(unittest.TestCase):
         html = server.COGNITION_WIDGET_HTML
         self.assertIn('"tools/call"', html)
         self.assertIn('"wait_llm_request"', html)
-        self.assertIn("claim_seconds:120", html)
+        self.assertNotIn("claim_seconds:120", html)
         self.assertIn('"ui/message"', html)
         self.assertIn('"ui/update-model-context"', html)
-        self.assertIn("get_llm_request", html)
+        self.assertIn("claim_llm_request", html)
+        self.assertIn("get_llm_request_status", html)
         self.assertIn("complete_llm_request", html)
         self.assertIn("watch_agent_cognition", html)
         self.assertIn("Do not ask the user to type continue", html)

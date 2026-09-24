@@ -55,12 +55,13 @@ from jobs import (
     update_runtime as update_runtime_job,
 )
 from cognition import (
+    claim_request as claim_cognition_request,
     complete as complete_cognition_request,
     get as get_cognition_request,
     get_status as get_cognition_request_status,
     new_watcher_id as new_cognition_watcher_id,
     submit as submit_cognition_request,
-    wait_and_claim as wait_and_claim_cognition_request,
+    wait_pending as wait_pending_cognition_request,
 )
 from permissions import (
     approve as approve_dynamic_exec,
@@ -2030,7 +2031,7 @@ def watch_agent_cognition(agent_id: str) -> dict[str, Any]:
     name="wait_llm_request",
     annotations=ToolAnnotations(
         title="Wait for agent LLM request",
-        readOnlyHint=False,
+        readOnlyHint=True,
         destructiveHint=False,
         openWorldHint=False,
     ),
@@ -2039,14 +2040,11 @@ def wait_llm_request(
     agent_id: str,
     watcher_id: str,
     timeout_seconds: int = 30,
-    claim_seconds: int = 120,
 ) -> dict[str, Any]:
-    """App-side bounded wait that atomically claims one pending cognition request."""
-    result = wait_and_claim_cognition_request(
+    """App-side bounded read-only wait for one pending cognition request."""
+    result = wait_pending_cognition_request(
         agent_id=agent_id,
-        watcher_id=watcher_id,
         timeout_seconds=timeout_seconds,
-        claim_seconds=claim_seconds,
     )
     request = result.get("request")
     _audit("wait_llm_request", True, {
@@ -2054,6 +2052,36 @@ def wait_llm_request(
         "watcher_id": watcher_id,
         "request_id": None if not isinstance(request, dict) else request.get("request_id"),
         "timed_out": bool(result.get("timed_out")),
+    })
+    return result
+
+
+@server.tool(
+    name="claim_llm_request",
+    annotations=ToolAnnotations(
+        title="Claim durable LLM request",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def claim_llm_request(
+    request_id: str,
+    watcher_id: str,
+    claim_seconds: int = 120,
+) -> dict[str, Any]:
+    """Claim one request after a cognition watcher wakes ChatGPT."""
+    result = claim_cognition_request(
+        request_id=request_id,
+        watcher_id=watcher_id,
+        claim_seconds=claim_seconds,
+    )
+    _audit("claim_llm_request", True, {
+        "request_id": request_id,
+        "watcher_id": watcher_id,
+        "status": result.get("status"),
+        "attempts": result.get("attempts"),
     })
     return result
 

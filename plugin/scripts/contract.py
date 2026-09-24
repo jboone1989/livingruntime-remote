@@ -28,6 +28,7 @@ REMOTE_TOOLS = (
     "submit_llm_request",
     "watch_agent_cognition",
     "wait_llm_request",
+    "claim_llm_request",
     "get_llm_request",
     "get_llm_request_status",
     "complete_llm_request",

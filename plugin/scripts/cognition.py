@@ -333,6 +333,126 @@ def _candidate_rows(agent_id: str) -> list[dict[str, Any]]:
     return rows
 
 
+def peek_next(*, agent_id: str) -> dict[str, Any] | None:
+    """Read the next dispatchable request without mutating queue state."""
+    agent = _validate_agent_id(agent_id)
+    now = time.time()
+    rows = _candidate_rows(agent)
+
+    for row in rows:
+        if row.get("status") != "DISPATCHED":
+            continue
+        deadline = float(row.get("deadline_at") or 0.0)
+        if deadline and now >= deadline:
+            continue
+        claim = row.get("claim") if isinstance(row.get("claim"), dict) else {}
+        if float(claim.get("expires_at") or 0.0) > now:
+            return None
+
+    for row in rows:
+        deadline = float(row.get("deadline_at") or 0.0)
+        if deadline and now >= deadline:
+            continue
+        if row.get("status") != "DISPATCHED":
+            continue
+        claim = row.get("claim") if isinstance(row.get("claim"), dict) else {}
+        if float(claim.get("expires_at") or 0.0) <= now:
+            return {
+                "request_id": row.get("request_id"),
+                "agent_id": row.get("agent_id"),
+                "purpose": row.get("purpose"),
+                "status": "DISPATCHED",
+                "deadline_at": row.get("deadline_at"),
+                "reclaimable": True,
+            }
+
+    for row in rows:
+        deadline = float(row.get("deadline_at") or 0.0)
+        if deadline and now >= deadline:
+            continue
+        if row.get("status") != "PENDING":
+            continue
+        return {
+            "request_id": row.get("request_id"),
+            "agent_id": row.get("agent_id"),
+            "purpose": row.get("purpose"),
+            "status": "PENDING",
+            "deadline_at": row.get("deadline_at"),
+            "reclaimable": False,
+        }
+    return None
+
+
+def wait_pending(
+    *,
+    agent_id: str,
+    timeout_seconds: int = 30,
+) -> dict[str, Any]:
+    """Bounded, side-effect-free wait used by the ChatGPT widget."""
+    timeout = min(90, max(1, int(timeout_seconds)))
+    deadline = time.monotonic() + timeout
+    while True:
+        request = peek_next(agent_id=agent_id)
+        if request is not None:
+            return {"request": request, "timed_out": False}
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {"request": None, "timed_out": True}
+        time.sleep(min(0.5, remaining))
+
+
+def claim_request(
+    *,
+    request_id: str,
+    watcher_id: str,
+    claim_seconds: int = DEFAULT_CLAIM_SECONDS,
+) -> dict[str, Any]:
+    """Atomically claim one request after a widget-created assistant turn starts."""
+    rid = _validate_request_id(request_id)
+    watcher = _validate_watcher_id(watcher_id)
+    lease = int(claim_seconds)
+    if not 15 <= lease <= 600:
+        raise ValueError("claim_seconds must be within 15..600")
+    now = time.time()
+    with _queue_lock():
+        value = _refresh_timeout(_load(rid), now)
+        if value.get("status") == "COMPLETED":
+            raise RuntimeError("cognition request already completed")
+        if value.get("status") == "TIMED_OUT":
+            raise RuntimeError("cognition request already timed out")
+
+        for row in _candidate_rows(str(value.get("agent_id") or "")):
+            if row.get("request_id") == rid or row.get("status") != "DISPATCHED":
+                continue
+            row_deadline = float(row.get("deadline_at") or 0.0)
+            if row_deadline and now >= row_deadline:
+                continue
+            other_claim = row.get("claim") if isinstance(row.get("claim"), dict) else {}
+            if float(other_claim.get("expires_at") or 0.0) > now:
+                raise RuntimeError("another cognition request is already dispatched for this agent")
+
+        if value.get("status") == "DISPATCHED":
+            claim = value.get("claim") if isinstance(value.get("claim"), dict) else {}
+            expires = float(claim.get("expires_at") or 0.0)
+            if expires > now:
+                if claim.get("watcher_id") == watcher:
+                    return dict(value)
+                raise RuntimeError("cognition request is already claimed")
+
+        token = uuid.uuid4().hex
+        value["status"] = "DISPATCHED"
+        value["attempts"] = int(value.get("attempts") or 0) + 1
+        value["claim"] = {
+            "watcher_id": watcher,
+            "token": token,
+            "claimed_at": now,
+            "expires_at": now + lease,
+        }
+        value["updated_at"] = now
+        _save(value)
+        return dict(value)
+
+
 def claim_next(
     *,
     agent_id: str,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -62,6 +63,29 @@ class CognitionQueueTests(unittest.TestCase):
                 messages=[{"role": "user", "content": "different"}],
                 request_id="llmreq_conflict",
             )
+
+    def test_widget_wait_is_read_only_until_explicit_claim(self) -> None:
+        self.submit("llmreq_widget")
+
+        waited = cognition.wait_pending(agent_id="ferro", timeout_seconds=1)
+        self.assertFalse(waited["timed_out"])
+        self.assertEqual(waited["request"]["request_id"], "llmreq_widget")
+        stored = json.loads(
+            (self.root / "requests" / "llmreq_widget.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(stored["status"], "PENDING")
+        self.assertEqual(stored["attempts"], 0)
+        self.assertIsNone(stored["claim"])
+
+        claimed = cognition.claim_request(
+            request_id="llmreq_widget",
+            watcher_id="watcher_widget",
+            claim_seconds=30,
+        )
+        self.assertEqual(claimed["status"], "DISPATCHED")
+        self.assertEqual(claimed["attempts"], 1)
+        self.assertEqual(claimed["claim"]["watcher_id"], "watcher_widget")
+        self.assertTrue(claimed["claim"]["token"])
 
     def test_claim_serializes_agent_and_completion_records_provenance(self) -> None:
         first = self.submit("llmreq_one")

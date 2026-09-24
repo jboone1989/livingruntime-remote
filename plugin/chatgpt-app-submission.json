@@ -490,14 +490,26 @@
     },
     "wait_llm_request": {
       "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "The app-only wait only observes whether a dispatchable cognition request exists and does not mutate queue state.",
+        "open_world_justification": "Operates only on the user's private LivingRuntime Remote cognition queue.",
+        "destructive_justification": "Does not claim, complete, delete, or otherwise modify the request."
+      }
+    },
+    "claim_llm_request": {
+      "annotations": {
         "readOnlyHint": false,
         "openWorldHint": false,
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "The app-only wait atomically claims one pending request and therefore updates private queue lease state.",
+        "read_only_justification": "Claims one known cognition request after ChatGPT has been explicitly awakened, creating a bounded recoverable lease and claim token.",
         "open_world_justification": "Operates only on the user's private LivingRuntime Remote cognition queue.",
-        "destructive_justification": "Claiming is lease-based and recoverable after expiry; it does not destroy the request or modify external resources."
+        "destructive_justification": "The claim is lease-based, bounded, and recoverable after expiry; it does not alter project files, services, external accounts, or published content."
       }
     },
     "get_llm_request": {

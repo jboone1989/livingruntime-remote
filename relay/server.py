@@ -63,7 +63,8 @@ TOOL_TEXT = {
     "checkpoint_job": ("Checkpoint durable job", "Persist bounded progress, current step, next action, and status for a durable Remote job."),
     "submit_llm_request": ("Submit LLM request", "Persist a bounded agent cognition request for a ChatGPT cognition watcher."),
     "watch_agent_cognition": ("Watch agent cognition", "Attach a no-polling watcher for the next cognition request from a named agent."),
-    "wait_llm_request": ("Wait for agent LLM request", "App-only bounded wait that atomically claims the next pending cognition request."),
+    "wait_llm_request": ("Wait for agent LLM request", "App-only read-only bounded wait for the next pending cognition request."),
+    "claim_llm_request": ("Claim LLM request", "Claim one pending cognition request after a watcher wakes ChatGPT, returning the prompt and claim token needed to complete it."),
     "get_llm_request": ("Get LLM request", "Read one durable cognition request including prompt, response contract, and active claim."),
     "get_llm_request_status": ("Get LLM request status", "Read bounded status and provenance for one cognition request without returning its prompt."),
     "complete_llm_request": ("Complete LLM request", "Write a claimed ChatGPT cognition response back to the durable request so the calling agent can continue."),
@@ -531,14 +532,15 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
   function data(result) {
     return result?.structuredContent || result?.structured_content || result || null;
   }
-  async function followUp(agentId, requestId, purpose) {
+  async function followUp(agentId, requestId, purpose, watcherId) {
     const prompt =
       "LivingRuntime agent " + agentId + " submitted cognition request " + requestId +
-      " for " + (purpose || "general cognition") + ". Process it now: call get_llm_request with request_id=" +
-      requestId + ", reason over its messages and response_format, then call complete_llm_request using " +
-      "the active claim token returned by get_llm_request. After completion, re-arm the channel by calling " +
-      "watch_agent_cognition with agent_id=" + agentId + " before ending this turn, so the next request can " +
-      "wake this conversation. Do not ask the user to type continue.";
+      " for " + (purpose || "general cognition") + ". Process it now: first call claim_llm_request with request_id=" +
+      requestId + " and watcher_id=" + watcherId + ". Reason over the returned messages and response_format, then " +
+      "call complete_llm_request using the returned claim.token. If the request is already claimed or completed, " +
+      "inspect get_llm_request_status and do not duplicate work. After completion, re-arm the channel by calling " +
+      "watch_agent_cognition with agent_id=" + agentId + " before ending this turn, so the next request can wake " +
+      "this conversation. Do not ask the user to type continue.";
     try {
       await request("ui/message", {
         role:"user",
@@ -567,8 +569,7 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
           arguments:{
             agent_id:agentId,
             watcher_id:watcherId,
-            timeout_seconds:30,
-            claim_seconds:120
+            timeout_seconds:30
           }
         });
         const payload = data(result);
@@ -587,7 +588,7 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
               }
             }
           }).catch(()=>{});
-          await followUp(agentId, requestId, purpose);
+          await followUp(agentId, requestId, purpose, watcherId);
           setStatus("Request handed off", "ChatGPT can answer it; the next turn will re-arm this channel.");
           stopped = true;
           return;
@@ -1411,7 +1412,7 @@ def create_mcp(
         title=TOOL_TEXT["wait_llm_request"][0],
         description=TOOL_TEXT["wait_llm_request"][1],
         annotations=ToolAnnotations(
-            readOnlyHint=False,
+            readOnlyHint=True,
             destructiveHint=False,
             openWorldHint=False,
         ),
@@ -1421,7 +1422,6 @@ def create_mcp(
         agent_id: str,
         watcher_id: str,
         timeout_seconds: int = 30,
-        claim_seconds: int = 120,
     ) -> dict[str, Any]:
         return await relay.call(
             _principal("remote:read"),
@@ -1430,7 +1430,6 @@ def create_mcp(
                 "agent_id": agent_id,
                 "watcher_id": watcher_id,
                 "timeout_seconds": timeout_seconds,
-                "claim_seconds": claim_seconds,
             },
         )
 
@@ -1786,6 +1785,22 @@ def create_mcp(
                 "metadata": metadata,
                 "timeout_seconds": timeout_seconds,
                 "request_id": request_id,
+            },
+        )
+
+    @expose("claim_llm_request", False, False, False)
+    async def claim_llm_request(
+        request_id: str,
+        watcher_id: str,
+        claim_seconds: int = 120,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "claim_llm_request",
+            {
+                "request_id": request_id,
+                "watcher_id": watcher_id,
+                "claim_seconds": claim_seconds,
             },
         )
 
