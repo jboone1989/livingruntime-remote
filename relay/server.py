@@ -9,10 +9,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
-from mcp.server.apps import Apps, ResourceCsp
+from mcp.server.apps import APP_MIME_TYPE, Apps, ResourceCsp
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
+from mcp.server.mcpserver.resources import TextResource
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
@@ -25,10 +26,10 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.24"
-PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v1.html"
-LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v1.html"
-CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v1.html"
+VERSION = "0.4.25"
+PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
+LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
+CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v2.html"
 PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
@@ -880,38 +881,61 @@ def create_mcp(
                 return latest
 
     apps = Apps()
-    apps.add_html_resource(
+
+    def add_widget_resource(
+        uri: str,
+        widget_html: str,
+        *,
+        name: str,
+        title: str,
+        description: str,
+    ) -> None:
+        """Publish both MCP Apps metadata and ChatGPT compatibility aliases."""
+        csp = ResourceCsp(connect_domains=[], resource_domains=[])
+        apps.add_resource(
+            TextResource(
+                uri=uri,
+                name=name,
+                title=title,
+                description=description,
+                mime_type=APP_MIME_TYPE,
+                meta={
+                    "ui": {
+                        "csp": csp.model_dump(by_alias=True, exclude_none=True),
+                        "domain": PI_JOB_WIDGET_DOMAIN,
+                        "prefersBorder": True,
+                    },
+                    "openai/widgetCSP": {
+                        "connect_domains": [],
+                        "resource_domains": [],
+                    },
+                    "openai/widgetDomain": PI_JOB_WIDGET_DOMAIN,
+                    "openai/widgetPrefersBorder": True,
+                },
+                text=widget_html,
+            )
+        )
+
+    add_widget_resource(
         PI_JOB_WIDGET_URI,
         PI_JOB_WIDGET_HTML,
         name="pi-job-watch",
         title="Pi Remote job watcher",
         description="Wait for an existing Pi Remote detached job and continue this conversation when it finishes.",
-        csp=ResourceCsp(
-            connect_domains=[],
-            resource_domains=[],
-        ),
-        domain=PI_JOB_WIDGET_DOMAIN,
-        prefers_border=True,
     )
-    apps.add_html_resource(
+    add_widget_resource(
         LONG_JOB_WIDGET_URI,
         LONG_JOB_WIDGET_HTML,
         name="long-job-watch",
         title="Long-running job watcher",
         description="Watch a supervised long-running command without model-side polling and report stalled or terminal state back into the same conversation.",
-        csp=ResourceCsp(connect_domains=[], resource_domains=[]),
-        domain=PI_JOB_WIDGET_DOMAIN,
-        prefers_border=True,
     )
-    apps.add_html_resource(
+    add_widget_resource(
         CONTROL_PLANE_WIDGET_URI,
         CONTROL_PLANE_WIDGET_HTML,
         name="remote-control-plane",
         title="LivingRuntime Remote control plane",
         description="Read-only snapshot of connector health, hosts, durable jobs, approvals, credential handles, and recent activity.",
-        csp=ResourceCsp(connect_domains=[], resource_domains=[]),
-        domain=PI_JOB_WIDGET_DOMAIN,
-        prefers_border=True,
     )
 
     @apps.tool(

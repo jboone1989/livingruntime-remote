@@ -42,7 +42,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.24")
+            self.assertEqual(health.json()["version"], "0.4.25")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -372,33 +372,60 @@ class RelayServerTests(unittest.TestCase):
             for resource in resources
             if str(resource.uri) == server.PI_JOB_WIDGET_URI
         )
-        widget_meta = widget.model_dump(by_alias=True)["_meta"]["ui"]
+        widget_resource_meta = widget.model_dump(by_alias=True)["_meta"]
+        widget_meta = widget_resource_meta["ui"]
         self.assertEqual(widget_meta["domain"], server.PI_JOB_WIDGET_DOMAIN)
         self.assertEqual(
             widget_meta["csp"],
             {"connectDomains": [], "resourceDomains": []},
+        )
+        self.assertEqual(
+            widget_resource_meta["openai/widgetCSP"],
+            {"connect_domains": [], "resource_domains": []},
+        )
+        self.assertEqual(
+            widget_resource_meta["openai/widgetDomain"],
+            server.PI_JOB_WIDGET_DOMAIN,
         )
         long_widget = next(
             resource
             for resource in resources
             if str(resource.uri) == server.LONG_JOB_WIDGET_URI
         )
-        long_meta = long_widget.model_dump(by_alias=True)["_meta"]["ui"]
+        long_resource_meta = long_widget.model_dump(by_alias=True)["_meta"]
+        long_meta = long_resource_meta["ui"]
         self.assertEqual(long_meta["domain"], server.PI_JOB_WIDGET_DOMAIN)
         self.assertEqual(
             long_meta["csp"],
             {"connectDomains": [], "resourceDomains": []},
+        )
+        self.assertEqual(
+            long_resource_meta["openai/widgetCSP"],
+            {"connect_domains": [], "resource_domains": []},
+        )
+        self.assertEqual(
+            long_resource_meta["openai/widgetDomain"],
+            server.PI_JOB_WIDGET_DOMAIN,
         )
         control_widget = next(
             resource
             for resource in resources
             if str(resource.uri) == server.CONTROL_PLANE_WIDGET_URI
         )
-        control_meta = control_widget.model_dump(by_alias=True)["_meta"]["ui"]
+        control_resource_meta = control_widget.model_dump(by_alias=True)["_meta"]
+        control_meta = control_resource_meta["ui"]
         self.assertEqual(control_meta["domain"], server.PI_JOB_WIDGET_DOMAIN)
         self.assertEqual(
             control_meta["csp"],
             {"connectDomains": [], "resourceDomains": []},
+        )
+        self.assertEqual(
+            control_resource_meta["openai/widgetCSP"],
+            {"connect_domains": [], "resource_domains": []},
+        )
+        self.assertEqual(
+            control_resource_meta["openai/widgetDomain"],
+            server.PI_JOB_WIDGET_DOMAIN,
         )
 
     def test_pi_job_widget_uses_event_wait_and_same_conversation_followup(self):
