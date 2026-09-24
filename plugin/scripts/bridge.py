@@ -1346,7 +1346,7 @@ def remote_overview(include_resources: bool = False) -> dict[str, Any]:
             "risk": row.get("risk"),
             "executable": executable,
         })
-    jobs = runtime_jobs_snapshot(limit=25)
+    jobs = list_jobs(limit=25)["jobs"]
     credential_rows = credential_snapshot()
     credentials = [
         {
@@ -1909,7 +1909,7 @@ def create_job(
 )
 def get_job(job_id: str) -> dict[str, Any]:
     """Read one durable job including goal, current step, next action and checkpoints."""
-    result = get_runtime_job(job_id)
+    result = _reconcile_runtime_job(get_runtime_job(job_id))
     _audit("get_job", True, {"job_id": job_id, "status": result.get("status")})
     return result
 
@@ -1924,8 +1924,17 @@ def get_job(job_id: str) -> dict[str, Any]:
     ),
 )
 def list_jobs(status: str | None = None, limit: int = 50) -> dict[str, Any]:
-    """List the most recently updated durable jobs, optionally filtered by status."""
-    rows = runtime_jobs_snapshot(status=status, limit=limit)
+    """List durable jobs after reconciling supervised exec receipts."""
+    bounded_limit = min(200, max(1, int(limit)))
+    scan_limit = 200 if status is not None else bounded_limit
+    rows = [
+        _reconcile_runtime_job(row)
+        for row in runtime_jobs_snapshot(limit=scan_limit)
+    ]
+    rows.sort(key=lambda item: float(item.get("updated_at") or 0.0), reverse=True)
+    if status is not None:
+        rows = [row for row in rows if row.get("status") == status]
+    rows = rows[:bounded_limit]
     _audit("list_jobs", True, {"status": status, "count": len(rows)})
     return {"jobs": rows}
 
@@ -2354,6 +2363,23 @@ def _long_job_receipt(job: dict[str, Any]) -> dict[str, Any]:
     if not receipt.get("found"):
         raise RuntimeError("detached execution receipt is missing")
     return receipt
+
+
+def _reconcile_runtime_job(job: dict[str, Any]) -> dict[str, Any]:
+    """Repair stale supervised-exec state from its authoritative receipt."""
+    if bool(job.get("terminal")):
+        return job
+    backend = job.get("backend")
+    if not isinstance(backend, dict) or backend.get("type") != "exec":
+        return job
+    try:
+        return _sync_long_job(job, _long_job_receipt(job))
+    except Exception as exc:
+        result = dict(job)
+        runtime = dict(result.get("runtime") or {})
+        runtime["reconcile_error"] = str(exc)[:2000]
+        result["runtime"] = runtime
+        return result
 
 
 @server.tool(

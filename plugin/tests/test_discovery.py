@@ -287,6 +287,115 @@ class SchemaAndToolTests(unittest.TestCase):
         self.assertEqual(recovered["next_action"], "apply patch")
         self.assertEqual(listed["jobs"][0]["job_id"], created["job_id"])
 
+    def test_list_jobs_reconciles_terminal_exec_before_status_filter(self) -> None:
+        jobs_root = Path(self.tmp.name) / "jobs"
+        with patch.dict(
+            os.environ,
+            {"LIVINGRUNTIME_REMOTE_JOBS": str(jobs_root)},
+        ), patch.object(bridge, "_audit"):
+            created = jobs.create(
+                goal="Detached command",
+                project="ferro",
+                device="main",
+                backend={
+                    "type": "exec",
+                    "job_id": "dex_done",
+                    "cwd": "/home/ubuntu/wechat-traffic-agent",
+                    "executable": "python3",
+                },
+                status="RUNNING",
+            )
+            receipt = {
+                "found": True,
+                "status": "SUCCEEDED",
+                "observed_status": "SUCCEEDED",
+                "terminal": True,
+                "returncode": 0,
+                "worker_alive": False,
+                "child_alive": False,
+                "finished_at": 123.0,
+                "stdout_bytes": 12,
+                "stderr_bytes": 0,
+            }
+            with patch.object(bridge, "_long_job_receipt", return_value=receipt):
+                running = bridge.list_jobs(status="RUNNING")
+                succeeded = bridge.list_jobs(status="SUCCEEDED")
+
+            persisted = jobs.get(created["job_id"])
+
+        self.assertEqual(running["jobs"], [])
+        self.assertEqual([row["job_id"] for row in succeeded["jobs"]], [created["job_id"]])
+        self.assertEqual(persisted["status"], "SUCCEEDED")
+        self.assertTrue(persisted["terminal"])
+        self.assertEqual(persisted["runtime"]["returncode"], 0)
+        self.assertEqual(persisted["checkpoints"][-1]["source"], "backend")
+
+    def test_get_job_reconciles_terminal_exec_without_watcher(self) -> None:
+        jobs_root = Path(self.tmp.name) / "jobs"
+        with patch.dict(
+            os.environ,
+            {"LIVINGRUNTIME_REMOTE_JOBS": str(jobs_root)},
+        ), patch.object(bridge, "_audit"):
+            created = jobs.create(
+                goal="Detached command",
+                device="main",
+                backend={
+                    "type": "exec",
+                    "job_id": "dex_failed",
+                    "cwd": "/home/ubuntu",
+                    "executable": "python3",
+                },
+                status="RUNNING",
+            )
+            with patch.object(
+                bridge,
+                "_long_job_receipt",
+                return_value={
+                    "found": True,
+                    "status": "FAILED",
+                    "observed_status": "FAILED",
+                    "terminal": True,
+                    "returncode": 7,
+                    "worker_alive": False,
+                    "child_alive": False,
+                    "finished_at": 456.0,
+                    "stdout_bytes": 0,
+                    "stderr_bytes": 44,
+                },
+            ):
+                refreshed = bridge.get_job(created["job_id"])
+
+        self.assertEqual(refreshed["status"], "FAILED")
+        self.assertTrue(refreshed["terminal"])
+        self.assertEqual(refreshed["runtime"]["returncode"], 7)
+
+    def test_job_reconcile_is_fail_soft_when_receipt_is_temporarily_unavailable(self) -> None:
+        jobs_root = Path(self.tmp.name) / "jobs"
+        with patch.dict(
+            os.environ,
+            {"LIVINGRUNTIME_REMOTE_JOBS": str(jobs_root)},
+        ), patch.object(bridge, "_audit"):
+            created = jobs.create(
+                goal="Detached command",
+                device="main",
+                backend={
+                    "type": "exec",
+                    "job_id": "dex_unreachable",
+                    "cwd": "/home/ubuntu",
+                    "executable": "python3",
+                },
+                status="RUNNING",
+            )
+            with patch.object(
+                bridge,
+                "_long_job_receipt",
+                side_effect=RuntimeError("host temporarily unavailable"),
+            ):
+                listed = bridge.list_jobs(status="RUNNING")
+
+        self.assertEqual([row["job_id"] for row in listed["jobs"]], [created["job_id"]])
+        self.assertIn("temporarily unavailable", listed["jobs"][0]["runtime"]["reconcile_error"])
+
     def test_start_pi_step_creates_external_session_and_durable_backend_job(self) -> None:
         jobs_root = Path(self.tmp.name) / "jobs"
         session_root = Path(self.tmp.name) / "pi-sessions"
