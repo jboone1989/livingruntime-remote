@@ -347,7 +347,7 @@ try:
                 "stderr_tail": stderr_tail.decode("utf-8", errors="replace"),
             })
             if running:
-                payload["status"] = "STALLED" if progress_age >= stall_seconds else "RUNNING"
+                payload["status"] = "QUIET" if progress_age >= stall_seconds else "RUNNING"
                 payload["terminal"] = False
             save(payload)
             last_save = now

@@ -111,7 +111,7 @@ class DetachedRemoteAgentTests(unittest.TestCase):
                     pass
 
 
-    def test_supervisor_reports_stall_then_recovers_before_terminal_success(self) -> None:
+    def test_supervisor_reports_quiet_then_recovers_before_terminal_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             worker = root / "stall-worker.py"
@@ -148,17 +148,17 @@ class DetachedRemoteAgentTests(unittest.TestCase):
             )
             self.assertEqual(started.returncode, 0, started.stderr.decode())
             receipt = root / ".livingruntime" / "detached-exec" / f"{execution_id}.json"
-            saw_stalled = False
+            saw_quiet = False
             deadline = time.monotonic() + 5.0
             final = {}
             while time.monotonic() < deadline:
                 final = json.loads(receipt.read_text(encoding="utf-8"))
-                if final.get("status") == "STALLED":
-                    saw_stalled = True
+                if final.get("status") == "QUIET":
+                    saw_quiet = True
                 if final.get("terminal"):
                     break
                 time.sleep(0.05)
-            self.assertTrue(saw_stalled)
+            self.assertTrue(saw_quiet)
             self.assertEqual(final.get("status"), "SUCCEEDED")
             self.assertIn("resumed", final.get("stdout_tail", ""))
             self.assertGreaterEqual(float(final.get("last_progress_at") or 0), float(final.get("started_at") or 0))
