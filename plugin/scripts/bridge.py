@@ -54,6 +54,14 @@ from jobs import (
     sync_backend_status,
     update_runtime as update_runtime_job,
 )
+from cognition import (
+    complete as complete_cognition_request,
+    get as get_cognition_request,
+    get_status as get_cognition_request_status,
+    new_watcher_id as new_cognition_watcher_id,
+    submit as submit_cognition_request,
+    wait_and_claim as wait_and_claim_cognition_request,
+)
 from permissions import (
     approve as approve_dynamic_exec,
     classify as classify_dynamic_exec,
@@ -1950,6 +1958,174 @@ def checkpoint_job(
         "job_id": job_id,
         "status": result.get("status"),
         "checkpoint_count": len(result.get("checkpoints") or []),
+    })
+    return result
+
+
+@server.tool(
+    name="submit_llm_request",
+    annotations=ToolAnnotations(
+        title="Submit durable LLM request",
+        readOnlyHint=False,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def submit_llm_request(
+    agent_id: str,
+    purpose: str,
+    messages: list[dict[str, Any]],
+    response_format: dict[str, Any] | None = None,
+    options: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+    timeout_seconds: int = 300,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    """Persist an LLM request for a ChatGPT cognition watcher."""
+    result = submit_cognition_request(
+        agent_id=agent_id,
+        purpose=purpose,
+        messages=messages,
+        response_format=response_format,
+        options=options,
+        metadata=metadata,
+        timeout_seconds=timeout_seconds,
+        request_id=request_id,
+    )
+    _audit("submit_llm_request", True, {
+        "request_id": result["request_id"],
+        "agent_id": result["agent_id"],
+        "purpose": result["purpose"],
+        "status": result["status"],
+    })
+    return result
+
+
+@server.tool(
+    name="watch_agent_cognition",
+    annotations=ToolAnnotations(
+        title="Watch agent cognition requests",
+        readOnlyHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def watch_agent_cognition(agent_id: str) -> dict[str, Any]:
+    """Create a watcher lease that can wait for this agent's next LLM request."""
+    watcher_id = new_cognition_watcher_id(agent_id)
+    result = {
+        "agentId": str(agent_id).strip(),
+        "watcherId": watcher_id,
+        "watchRecommended": True,
+        "status": "WATCHING",
+    }
+    _audit("watch_agent_cognition", True, {
+        "agent_id": result["agentId"],
+        "watcher_id": watcher_id,
+    })
+    return result
+
+
+@server.tool(
+    name="wait_llm_request",
+    annotations=ToolAnnotations(
+        title="Wait for agent LLM request",
+        readOnlyHint=False,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def wait_llm_request(
+    agent_id: str,
+    watcher_id: str,
+    timeout_seconds: int = 30,
+    claim_seconds: int = 120,
+) -> dict[str, Any]:
+    """App-side bounded wait that atomically claims one pending cognition request."""
+    result = wait_and_claim_cognition_request(
+        agent_id=agent_id,
+        watcher_id=watcher_id,
+        timeout_seconds=timeout_seconds,
+        claim_seconds=claim_seconds,
+    )
+    request = result.get("request")
+    _audit("wait_llm_request", True, {
+        "agent_id": agent_id,
+        "watcher_id": watcher_id,
+        "request_id": None if not isinstance(request, dict) else request.get("request_id"),
+        "timed_out": bool(result.get("timed_out")),
+    })
+    return result
+
+
+@server.tool(
+    name="get_llm_request",
+    annotations=ToolAnnotations(
+        title="Get durable LLM request",
+        readOnlyHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def get_llm_request(request_id: str) -> dict[str, Any]:
+    """Read a durable cognition request including its prompt and current claim."""
+    result = get_cognition_request(request_id)
+    _audit("get_llm_request", True, {
+        "request_id": request_id,
+        "status": result.get("status"),
+    })
+    return result
+
+
+@server.tool(
+    name="get_llm_request_status",
+    annotations=ToolAnnotations(
+        title="Get LLM request status",
+        readOnlyHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def get_llm_request_status(request_id: str) -> dict[str, Any]:
+    """Read a bounded status/provenance summary without returning the prompt."""
+    result = get_cognition_request_status(request_id)
+    _audit("get_llm_request_status", True, {
+        "request_id": request_id,
+        "status": result.get("status"),
+    })
+    return result
+
+
+@server.tool(
+    name="complete_llm_request",
+    annotations=ToolAnnotations(
+        title="Complete durable LLM request",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def complete_llm_request(
+    request_id: str,
+    response_text: str,
+    claim_token: str,
+    model: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Complete a claimed request and release the blocked calling agent."""
+    result = complete_cognition_request(
+        request_id=request_id,
+        response_text=response_text,
+        claim_token=claim_token,
+        provider="livingruntime-chatgpt",
+        model=model,
+        session_id=session_id,
+    )
+    _audit("complete_llm_request", True, {
+        "request_id": request_id,
+        "status": result.get("status"),
+        "model": model,
     })
     return result
 

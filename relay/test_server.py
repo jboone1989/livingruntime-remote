@@ -326,6 +326,19 @@ class RelayServerTests(unittest.TestCase):
             tools["wait_long_job"].meta["ui"]["visibility"],
             ["app"],
         )
+        self.assertEqual(
+            tools["watch_agent_cognition"].meta["ui"]["resourceUri"],
+            server.COGNITION_WIDGET_URI,
+        )
+        self.assertEqual(
+            tools["watch_agent_cognition"].meta["ui"]["visibility"],
+            ["model", "app"],
+        )
+        self.assertEqual(
+            tools["wait_llm_request"].meta["ui"]["visibility"],
+            ["app"],
+        )
+        self.assertNotIn("resourceUri", tools["wait_llm_request"].meta["ui"])
         self.assertNotIn("resourceUri", tools["wait_long_job"].meta["ui"])
         self.assertEqual(
             tools["watch_pi_job"].meta["ui"]["resourceUri"],
@@ -412,6 +425,26 @@ class RelayServerTests(unittest.TestCase):
             long_resource_meta["openai/widgetDomain"],
             server.PI_JOB_WIDGET_DOMAIN,
         )
+        cognition_widget = next(
+            resource
+            for resource in resources
+            if str(resource.uri) == server.COGNITION_WIDGET_URI
+        )
+        cognition_resource_meta = cognition_widget.model_dump(by_alias=True)["_meta"]
+        cognition_meta = cognition_resource_meta["ui"]
+        self.assertEqual(cognition_meta["domain"], server.PI_JOB_WIDGET_DOMAIN)
+        self.assertEqual(
+            cognition_meta["csp"],
+            {"connectDomains": [], "resourceDomains": []},
+        )
+        self.assertEqual(
+            cognition_resource_meta["openai/widgetCSP"],
+            {"connect_domains": [], "resource_domains": []},
+        )
+        self.assertEqual(
+            cognition_resource_meta["openai/widgetDomain"],
+            server.PI_JOB_WIDGET_DOMAIN,
+        )
         control_widget = next(
             resource
             for resource in resources
@@ -458,6 +491,19 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn("progressAgeSeconds", html)
         self.assertIn('"ui/message"', html)
         self.assertIn('"ui/update-model-context"', html)
+        self.assertNotIn("setInterval(", html)
+
+    def test_cognition_widget_waits_claims_and_rearms_same_conversation(self):
+        html = server.COGNITION_WIDGET_HTML
+        self.assertIn('"tools/call"', html)
+        self.assertIn('"wait_llm_request"', html)
+        self.assertIn("claim_seconds:120", html)
+        self.assertIn('"ui/message"', html)
+        self.assertIn('"ui/update-model-context"', html)
+        self.assertIn("get_llm_request", html)
+        self.assertIn("complete_llm_request", html)
+        self.assertIn("watch_agent_cognition", html)
+        self.assertIn("Do not ask the user to type continue", html)
         self.assertNotIn("setInterval(", html)
 
     def test_control_plane_widget_is_read_only_snapshot_ui(self):

@@ -29,6 +29,7 @@ NAME = "LivingRuntime Remote"
 VERSION = "0.4.26"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
+COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v1.html"
 CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v3.html"
 PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
 IDENTITY_SCOPES = ["openid", "email"]
@@ -60,6 +61,12 @@ TOOL_TEXT = {
     "get_job": ("Get durable job", "Read one durable Remote job including progress, backend, next action, and checkpoints."),
     "list_jobs": ("List durable jobs", "List recent durable Remote jobs, optionally filtered by status."),
     "checkpoint_job": ("Checkpoint durable job", "Persist bounded progress, current step, next action, and status for a durable Remote job."),
+    "submit_llm_request": ("Submit LLM request", "Persist a bounded agent cognition request for a ChatGPT cognition watcher."),
+    "watch_agent_cognition": ("Watch agent cognition", "Attach a no-polling watcher for the next cognition request from a named agent."),
+    "wait_llm_request": ("Wait for agent LLM request", "App-only bounded wait that atomically claims the next pending cognition request."),
+    "get_llm_request": ("Get LLM request", "Read one durable cognition request including prompt, response contract, and active claim."),
+    "get_llm_request_status": ("Get LLM request status", "Read bounded status and provenance for one cognition request without returning its prompt."),
+    "complete_llm_request": ("Complete LLM request", "Write a claimed ChatGPT cognition response back to the durable request so the calling agent can continue."),
     "start_long_job": ("Start supervised long job", "Start a command under the durable long-job supervisor and return immediately with a watcher-ready job ID."),
     "watch_long_job": ("Watch supervised long job", "Attach the no-polling watcher to an existing supervised long-running command."),
     "get_long_job": ("Get supervised long job", "Refresh one supervised long-running command from its durable remote receipt."),
@@ -461,6 +468,168 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
     try {
       await request("ui/initialize", {
         appInfo:{name:"livingruntime-remote-long-job-watch",version:"1.0.0"},
+        appCapabilities:{},
+        protocolVersion:"2026-01-26"
+      });
+      notify("ui/notifications/initialized");
+      connected=true;
+      if (!latestOutput && window.openai?.toolOutput) latestOutput=window.openai.toolOutput;
+      await watch(latestOutput);
+    } catch (error) {
+      setStatus("Widget initialization failed",String(error?.message || error));
+    }
+  }
+  void connect();
+})();
+</script>
+</body>
+</html>"""
+
+COGNITION_WIDGET_HTML = r"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { margin:0; padding:12px; font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--color-text-primary,inherit); background:transparent; }
+  .card { border:1px solid var(--color-border-secondary,rgba(127,127,127,.35)); border-radius:12px; padding:12px 14px; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .dot { width:8px; height:8px; border-radius:999px; background:var(--color-text-info,#4f7cff); flex:0 0 auto; }
+  #detail { margin-top:6px; color:var(--color-text-secondary,#777); white-space:pre-wrap; }
+  code { font-family:var(--font-mono,ui-monospace,monospace); font-size:12px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="row"><span class="dot"></span><strong id="status">Preparing cognition watcher…</strong></div>
+  <div id="detail"></div>
+</div>
+<script>
+(() => {
+  const pending = new Map();
+  let nextId = 1;
+  let connected = false;
+  let latestOutput = null;
+  let activeWatcher = null;
+  let stopped = false;
+  const statusEl = document.getElementById("status");
+  const detailEl = document.getElementById("detail");
+
+  function request(method, params) {
+    const id = nextId++;
+    window.parent.postMessage({jsonrpc:"2.0",id,method,params},"*");
+    return new Promise((resolve,reject)=>pending.set(id,{resolve,reject}));
+  }
+  function notify(method, params={}) {
+    window.parent.postMessage({jsonrpc:"2.0",method,params},"*");
+  }
+  function setStatus(status, detail="") {
+    statusEl.textContent = status;
+    detailEl.textContent = detail;
+  }
+  function data(result) {
+    return result?.structuredContent || result?.structured_content || result || null;
+  }
+  async function followUp(agentId, requestId, purpose) {
+    const prompt =
+      "LivingRuntime agent " + agentId + " submitted cognition request " + requestId +
+      " for " + (purpose || "general cognition") + ". Process it now: call get_llm_request with request_id=" +
+      requestId + ", reason over its messages and response_format, then call complete_llm_request using " +
+      "the active claim token returned by get_llm_request. After completion, re-arm the channel by calling " +
+      "watch_agent_cognition with agent_id=" + agentId + " before ending this turn, so the next request can " +
+      "wake this conversation. Do not ask the user to type continue.";
+    try {
+      await request("ui/message", {
+        role:"user",
+        content:[{type:"text",text:prompt}]
+      });
+      return;
+    } catch (error) {
+      const openai = typeof window !== "undefined" ? window.openai : undefined;
+      if (openai?.sendFollowUpMessage) {
+        await openai.sendFollowUpMessage({prompt,scrollToBottom:false});
+        return;
+      }
+      throw error;
+    }
+  }
+  async function watch(output) {
+    const agentId = output?.agentId;
+    const watcherId = output?.watcherId;
+    if (!connected || !agentId || !watcherId || activeWatcher === watcherId || stopped) return;
+    activeWatcher = watcherId;
+    setStatus("Cognition channel armed", "Agent " + agentId + " · waiting for the next LLM request");
+    try {
+      while (!stopped) {
+        const result = await request("tools/call", {
+          name:"wait_llm_request",
+          arguments:{
+            agent_id:agentId,
+            watcher_id:watcherId,
+            timeout_seconds:30,
+            claim_seconds:120
+          }
+        });
+        const payload = data(result);
+        const llmRequest = payload?.request || null;
+        if (llmRequest?.request_id) {
+          const requestId = llmRequest.request_id;
+          const purpose = llmRequest.purpose || null;
+          setStatus("Cognition request received", "Request " + requestId + " · handing it to ChatGPT");
+          await request("ui/update-model-context", {
+            structuredContent:{
+              livingRuntimeCognitionRequest:{
+                agentId,
+                requestId,
+                purpose,
+                status:llmRequest.status || "DISPATCHED"
+              }
+            }
+          }).catch(()=>{});
+          await followUp(agentId, requestId, purpose);
+          setStatus("Request handed off", "ChatGPT can answer it; the next turn will re-arm this channel.");
+          stopped = true;
+          return;
+        }
+        if (!payload?.timed_out && !payload?.timedOut) {
+          throw new Error("cognition wait returned without a request or timeout");
+        }
+        setStatus("Cognition channel armed", "Agent " + agentId + " · Remote watcher heartbeat received");
+      }
+    } catch (error) {
+      const message = String(error?.message || error);
+      setStatus("Cognition watcher stopped", message);
+      try {
+        await request("ui/message", {
+          role:"user",
+          content:[{type:"text",text:
+            "LivingRuntime cognition watcher for agent " + agentId + " stopped: " + message +
+            ". Check device_status and re-arm watch_agent_cognition before assuming the agent has no pending request."
+          }]
+        });
+      } catch (_) {}
+    }
+  }
+  window.addEventListener("message",(event)=>{
+    if (event.source !== window.parent) return;
+    const message = event.data;
+    if (!message || message.jsonrpc !== "2.0") return;
+    if (message.id !== undefined && pending.has(message.id)) {
+      const waiter=pending.get(message.id); pending.delete(message.id);
+      if (message.error) waiter.reject(message.error); else waiter.resolve(message.result);
+      return;
+    }
+    if (message.method === "ui/notifications/tool-result") {
+      latestOutput = message.params?.structuredContent || null;
+      void watch(latestOutput);
+    }
+    if (message.method === "ui/notifications/request-teardown") stopped=true;
+  },{passive:true});
+  async function connect() {
+    try {
+      await request("ui/initialize", {
+        appInfo:{name:"livingruntime-remote-agent-cognition-watch",version:"1.0.0"},
         appCapabilities:{},
         protocolVersion:"2026-01-26"
       });
@@ -941,6 +1110,13 @@ def create_mcp(
         description="Watch a supervised long-running command without model-side polling and report stalled or terminal state back into the same conversation.",
     )
     add_widget_resource(
+        COGNITION_WIDGET_URI,
+        COGNITION_WIDGET_HTML,
+        name="agent-cognition-watch",
+        title="Agent cognition watcher",
+        description="Wait for a durable agent LLM request and hand it into this ChatGPT conversation without model-side polling.",
+    )
+    add_widget_resource(
         CONTROL_PLANE_WIDGET_URI,
         CONTROL_PLANE_WIDGET_HTML,
         name="remote-control-plane",
@@ -1066,6 +1242,26 @@ def create_mcp(
             _principal("remote:read"),
             "watch_long_job",
             {"job_id": job_id},
+        )
+
+    @apps.tool(
+        resource_uri=COGNITION_WIDGET_URI,
+        visibility=["model", "app"],
+        name="watch_agent_cognition",
+        title=TOOL_TEXT["watch_agent_cognition"][0],
+        description=TOOL_TEXT["watch_agent_cognition"][1],
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        meta=READ,
+    )
+    async def watch_agent_cognition(agent_id: str) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:read"),
+            "watch_agent_cognition",
+            {"agent_id": agent_id},
         )
 
     @apps.tool(
@@ -1208,6 +1404,34 @@ def create_mcp(
             _principal("remote:read"),
             "wait_long_job",
             {"job_id": job_id, "timeout_seconds": timeout_seconds},
+        )
+
+    @server.tool(
+        name="wait_llm_request",
+        title=TOOL_TEXT["wait_llm_request"][0],
+        description=TOOL_TEXT["wait_llm_request"][1],
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        meta={**READ, "ui": {"visibility": ["app"]}},
+    )
+    async def wait_llm_request(
+        agent_id: str,
+        watcher_id: str,
+        timeout_seconds: int = 30,
+        claim_seconds: int = 120,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:read"),
+            "wait_llm_request",
+            {
+                "agent_id": agent_id,
+                "watcher_id": watcher_id,
+                "timeout_seconds": timeout_seconds,
+                "claim_seconds": claim_seconds,
+            },
         )
 
     @server.tool(
@@ -1536,6 +1760,68 @@ def create_mcp(
                 "current_step": current_step,
                 "next_action": next_action,
                 "status": status,
+            },
+        )
+
+    @expose("submit_llm_request", False, False, False)
+    async def submit_llm_request(
+        agent_id: str,
+        purpose: str,
+        messages: list[dict[str, Any]],
+        response_format: dict[str, Any] | None = None,
+        options: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        timeout_seconds: int = 300,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "submit_llm_request",
+            {
+                "agent_id": agent_id,
+                "purpose": purpose,
+                "messages": messages,
+                "response_format": response_format,
+                "options": options,
+                "metadata": metadata,
+                "timeout_seconds": timeout_seconds,
+                "request_id": request_id,
+            },
+        )
+
+    @expose("get_llm_request", True, False, False)
+    async def get_llm_request(request_id: str) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:read"),
+            "get_llm_request",
+            {"request_id": request_id},
+        )
+
+    @expose("get_llm_request_status", True, False, False)
+    async def get_llm_request_status(request_id: str) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:read"),
+            "get_llm_request_status",
+            {"request_id": request_id},
+        )
+
+    @expose("complete_llm_request", False, False, False)
+    async def complete_llm_request(
+        request_id: str,
+        response_text: str,
+        claim_token: str,
+        model: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "complete_llm_request",
+            {
+                "request_id": request_id,
+                "response_text": response_text,
+                "claim_token": claim_token,
+                "model": model,
+                "session_id": session_id,
             },
         )
 

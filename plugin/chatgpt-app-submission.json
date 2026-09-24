@@ -464,6 +464,78 @@
         "destructive_justification": "Does not modify files, stop processes, or change the command."
       }
     },
+    "submit_llm_request": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Persists a bounded cognition request in the user's private LivingRuntime Remote queue.",
+        "open_world_justification": "Does not contact an arbitrary external service; it only records the request for the paired private cognition channel.",
+        "destructive_justification": "Creates durable queue state but does not modify project files, processes, services, or external accounts."
+      }
+    },
+    "watch_agent_cognition": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Arms a watcher UI for the named agent without changing the agent or its queued requests.",
+        "open_world_justification": "Waits only on the user's private LivingRuntime Remote cognition channel.",
+        "destructive_justification": "Does not alter files, services, processes, or external resources."
+      }
+    },
+    "wait_llm_request": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "The app-only wait atomically claims one pending request and therefore updates private queue lease state.",
+        "open_world_justification": "Operates only on the user's private LivingRuntime Remote cognition queue.",
+        "destructive_justification": "Claiming is lease-based and recoverable after expiry; it does not destroy the request or modify external resources."
+      }
+    },
+    "get_llm_request": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads one durable cognition request, including its prompt, response contract, and active claim.",
+        "open_world_justification": "Reads only private LivingRuntime Remote queue state.",
+        "destructive_justification": "Does not mutate the request or any external resource."
+      }
+    },
+    "get_llm_request_status": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads a bounded status and provenance summary without returning the request prompt.",
+        "open_world_justification": "Reads only private LivingRuntime Remote queue metadata.",
+        "destructive_justification": "Does not mutate the request or any external resource."
+      }
+    },
+    "complete_llm_request": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Writes the claimed ChatGPT response and provenance into the durable request so the waiting agent can continue.",
+        "open_world_justification": "Writes only private LivingRuntime Remote queue state.",
+        "destructive_justification": "Completion is claim-token guarded and idempotent for an identical response; it does not modify project files or external resources."
+      }
+    },
     "get_long_job": {
       "annotations": {
         "readOnlyHint": true,
