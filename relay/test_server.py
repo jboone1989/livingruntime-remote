@@ -282,6 +282,7 @@ class RelayServerTests(unittest.TestCase):
             "wait_pi_job_completion",
             "bind_openai_pi_continuation",
             "continue_openai_pi_job",
+            "claim_llm_request_for_watcher",
         } | set(REMOTE_TOOLS)
         self.assertEqual(set(tools), expected)
         for tool in tools.values():
@@ -558,9 +559,10 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn("handedOffRequestId", html)
         self.assertIn("reclaimable", html)
         self.assertIn("watcher remains armed for the next queued request", html)
-        self.assertIn("do not call watch_agent_cognition again", html)
+        self.assertIn("do not call watch_agent_cognition", html)
+        self.assertIn("again and do not ask the user to type continue", html)
         self.assertNotIn("the next turn will re-arm this channel", html)
-        self.assertIn("Do not ask the user to type continue", html)
+        self.assertIn("do not ask the user to type continue", html)
         self.assertNotIn("setInterval(", html)
 
     def test_control_plane_widget_is_read_only_snapshot_ui(self):
