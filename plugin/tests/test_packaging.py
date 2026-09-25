@@ -85,8 +85,18 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(stop["server"], "livingruntime_remote")
         self.assertEqual(stop["tool"], "continue_openai_pi_job")
         self.assertEqual(stop["input"]["session_id"], "${session_id}")
-        self.assertEqual(stop["input"]["timeout_seconds"], 540)
-        self.assertEqual(stop["timeout"], 600)
+        self.assertEqual(stop["input"]["timeout_seconds"], 30)
+        self.assertEqual(stop["input"]["stop_hook_active"], "${stop_hook_active}")
+        self.assertEqual(stop["timeout"], 30)
+
+        interrupt = hooks["hooks"]["Interrupt"][0]["hooks"][0]
+        self.assertEqual(interrupt["type"], "mcp_tool")
+        self.assertEqual(interrupt["server"], "livingruntime_remote")
+        self.assertEqual(interrupt["tool"], "continue_openai_pi_job")
+        self.assertEqual(interrupt["input"]["session_id"], "${session_id}")
+        self.assertTrue(interrupt["input"]["interrupted"])
+        self.assertEqual(interrupt["input"]["timeout_seconds"], 3)
+        self.assertEqual(interrupt["timeout"], 3)
 
     def test_submission_covers_public_tools_and_review_case_contract(self) -> None:
         submission = json.loads((self.root / "chatgpt-app-submission.json").read_text(encoding="utf-8"))

@@ -36,6 +36,7 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 - logs
 - apply_patch
 - diagnostics
+- start_pi_agent
 - start_pi_step
 - watch_pi_job
 - wait_pi_job_completion
@@ -62,7 +63,11 @@ Long tasks can be represented independently of a model turn with `create_job`. T
 
 Job state is private local control-plane data under `~/.livingruntime/jobs` by default and is written owner-only.
 
-`start_pi_step` is the preferred external-controller path for long development work. ChatGPT supplies a bounded batch of structured Pi actions; Pi executes the batch in a detached worker while making zero model calls. The first step creates a durable Goal and an external-controller Pi session. Later steps pass the same `runtime_job_id`; the Goal reuses the same Pi session while each child Pi job is replaceable.
+`start_pi_agent` is the preferred development path. It sends the goal into a normal Pi API-mode AgentSession and starts a detached `prompt-api` job. Pi remains the orchestrator and uses `livingruntime-chatgpt/chatgpt-web` as an ordinary custom model provider. Provider calls are bridged through the durable cognition queue; ChatGPT returns text or structured Pi tool calls, while Pi itself executes tools and decides when its native loop is complete.
+
+`start_pi_step` is retained for deterministic external-controller work where Pi model calls must remain zero.
+
+On the external-controller compatibility path, ChatGPT supplies a bounded batch of structured Pi actions; Pi executes the batch in a detached worker while making zero model calls. The first step creates a durable Goal and an external-controller Pi session. Later steps pass the same `runtime_job_id`; the Goal reuses the same Pi session while each child Pi job is replaceable.
 
 A child Pi step reaching `SUCCEEDED` moves the durable Goal to `WAITING`, not `SUCCEEDED`. A failed or cancelled child moves the Goal to `BLOCKED`. Only the controller may terminalize the overall Goal through `checkpoint_job` after acceptance evidence is satisfied. Detached `external-actions` reject Pi `bash`; commands and tests continue through the normal Remote `exec` permission layer.
 

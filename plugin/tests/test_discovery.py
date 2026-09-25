@@ -124,6 +124,7 @@ class DiscoveryTests(unittest.TestCase):
             "get_long_job": (True, False, False),
             "wait_long_job": (True, False, False),
             "cancel_long_job": (False, True, False),
+            "start_pi_agent": (False, True, False),
             "start_pi_step": (False, True, False),
             "watch_pi_job": (True, False, False),
             "wait_pi_job_completion": (True, False, False),
@@ -395,6 +396,87 @@ class SchemaAndToolTests(unittest.TestCase):
 
         self.assertEqual([row["job_id"] for row in listed["jobs"]], [created["job_id"]])
         self.assertIn("temporarily unavailable", listed["jobs"][0]["runtime"]["reconcile_error"])
+
+    def test_start_pi_agent_uses_native_api_session_and_chatgpt_provider(self) -> None:
+        jobs_root = Path(self.tmp.name) / "jobs"
+        session_root = Path(self.tmp.name) / "pi-sessions"
+        job_root = Path(self.tmp.name) / "pi-jobs"
+        session_file = session_root / "session.jsonl"
+        calls = []
+
+        def fake_pi(command, payload, timeout_seconds=30):
+            calls.append((command, payload))
+            if command == "create":
+                session_root.mkdir(parents=True, exist_ok=True)
+                session_file.write_text("{}\n", encoding="utf-8")
+                return {
+                    "sessionId": "session-agent-1",
+                    "sessionFile": str(session_file),
+                    "cwd": "/home/ubuntu/wechat-traffic-agent",
+                    "controllerMode": "api",
+                    "piLlmCalls": 0,
+                }
+            if command == "job-start":
+                return {
+                    "job": {
+                        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                        "status": "QUEUED",
+                        "kind": "prompt-api",
+                    },
+                    "launch": {"detached": True, "pid": 22345},
+                }
+            raise AssertionError(command)
+
+        with patch.dict(
+            os.environ,
+            {"LIVINGRUNTIME_REMOTE_JOBS": str(jobs_root)},
+        ), patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(
+            bridge,
+            "_pi_runtime_settings",
+            return_value=("main", "/home/ubuntu/src/pi-remote-runtime", str(session_root), str(job_root)),
+        ), patch.object(
+            bridge, "_pi_control_command", side_effect=fake_pi
+        ), patch.object(
+            bridge, "_audit"
+        ):
+            result = bridge.start_pi_agent("Inspect README and report.", "ferro")
+            durable = bridge.get_job(result["runtimeJobId"])
+
+        self.assertEqual(result["controllerMode"], "api")
+        self.assertEqual(result["provider"], "livingruntime-chatgpt")
+        self.assertEqual(result["model"], "chatgpt-web")
+        self.assertEqual(result["jobId"], "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        self.assertEqual(durable["backend"]["type"], "pi-agent")
+        self.assertEqual(durable["backend"]["controller_mode"], "api")
+        self.assertEqual(durable["backend"]["provider"], "livingruntime-chatgpt")
+        self.assertEqual([call[0] for call in calls], ["create", "job-start"])
+        launch_payload = calls[1][1]
+        self.assertEqual(launch_payload["kind"], "prompt-api")
+        self.assertEqual(launch_payload["provider"], "livingruntime-chatgpt")
+        self.assertEqual(launch_payload["modelId"], "chatgpt-web")
+        self.assertEqual(launch_payload["text"], "Inspect README and report.")
+        self.assertEqual(launch_payload["credentialBindings"], {})
+
+    def test_pi_agent_completion_finishes_the_durable_goal(self) -> None:
+        jobs_root = Path(self.tmp.name) / "jobs"
+        with patch.dict(os.environ, {"LIVINGRUNTIME_REMOTE_JOBS": str(jobs_root)}), patch.object(bridge, "_audit"):
+            goal = jobs.create(goal="Native Pi goal", project="ferro", device="main")
+            jobs.attach_backend(
+                goal["job_id"],
+                {"type": "pi-agent", "job_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"},
+            )
+            with patch.object(
+                bridge,
+                "_pi_job_command",
+                return_value={"terminal": True, "timedOut": False, "state": {"status": "SUCCEEDED"}},
+            ):
+                waited = bridge.wait_pi_job_completion("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", timeout_seconds=5)
+            durable = bridge.get_job(goal["job_id"])
+        self.assertEqual(waited["runtimeGoalStatus"], "SUCCEEDED")
+        self.assertTrue(waited["runtimeGoalTerminal"])
+        self.assertEqual(durable["status"], "SUCCEEDED")
 
     def test_start_pi_step_creates_external_session_and_durable_backend_job(self) -> None:
         jobs_root = Path(self.tmp.name) / "jobs"
@@ -723,11 +805,7 @@ class SchemaAndToolTests(unittest.TestCase):
             with patch.object(
                 bridge,
                 "_pi_job_command",
-                return_value={
-                    "terminal": True,
-                    "timedOut": False,
-                    "state": {"status": "SUCCEEDED"},
-                },
+                return_value={"status": "SUCCEEDED"},
             ):
                 decision = bridge.continue_openai_pi_job("session-a", timeout_seconds=5)
             self.assertEqual(decision["decision"], "block")
@@ -738,6 +816,51 @@ class SchemaAndToolTests(unittest.TestCase):
                 bridge.continue_openai_pi_job("session-a", timeout_seconds=1),
                 {"continue": True},
             )
+
+    def test_openai_interrupt_cancels_pi_and_terminalizes_goal_by_user(self) -> None:
+        with patch.object(bridge.Path, "home", return_value=Path(self.tmp.name)):
+            bound = bridge.bind_openai_pi_continuation(
+                "session-stop", "job-stop", "/home/ubuntu/src/pi-remote", None
+            )
+            runtime_job_id = bound["runtimeJobId"]
+            calls = []
+            with patch.object(
+                bridge,
+                "_pi_job_command",
+                side_effect=lambda command, *args, **kwargs: (
+                    calls.append(command)
+                    or {"status": "CANCEL_REQUESTED", "cancelSignalSent": True}
+                ),
+            ):
+                decision = bridge.continue_openai_pi_job(
+                    "session-stop",
+                    timeout_seconds=3,
+                    interrupted=True,
+                )
+            self.assertEqual(calls, ["job-cancel"])
+            self.assertFalse(decision["continue"])
+            self.assertTrue(decision["cancelledByUser"])
+            self.assertEqual(
+                bridge.get_job(runtime_job_id)["status"],
+                "CANCELLED_BY_USER",
+            )
+            self.assertEqual(
+                bridge.continue_openai_pi_job("session-stop", timeout_seconds=1),
+                {"continue": True},
+            )
+
+    def test_recursive_stop_hook_never_reblocks(self) -> None:
+        with patch.object(bridge.Path, "home", return_value=Path(self.tmp.name)):
+            bridge.bind_openai_pi_continuation(
+                "session-recursive", "job-recursive", "/home/ubuntu/src/pi-remote", None
+            )
+            result = bridge.continue_openai_pi_job(
+                "session-recursive",
+                timeout_seconds=1,
+                stop_hook_active=True,
+            )
+            self.assertFalse(result["continue"])
+            self.assertIn("exhausted", result["stopReason"])
 
 
     def test_exec_refuses_long_synchronous_wait_and_points_to_supervisor(self) -> None:

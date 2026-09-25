@@ -46,6 +46,7 @@ REMOTE_TOOLS = (
     "logs",
     "apply_patch",
     "diagnostics",
+    "start_pi_agent",
     "start_pi_step",
     "watch_pi_job",
     "wait_pi_job_completion",

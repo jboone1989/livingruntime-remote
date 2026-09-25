@@ -13,9 +13,9 @@ MAX_CHECKPOINTS = 100
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 STATUSES = frozenset({
     "PENDING", "RUNNING", "STALLED", "WAITING", "BLOCKED",
-    "SUCCEEDED", "FAILED", "CANCELLED",
+    "SUCCEEDED", "FAILED", "CANCELLED", "CANCELLED_BY_USER",
 })
-TERMINAL_STATUSES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED"})
+TERMINAL_STATUSES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED", "CANCELLED_BY_USER"})
 
 
 def jobs_root() -> Path:
@@ -383,6 +383,8 @@ def _normalize_backend(backend: dict[str, Any] | None) -> dict[str, Any] | None:
         "session_file",
         "session_id",
         "controller_mode",
+        "provider",
+        "model",
         "cwd",
         "executable",
     ):

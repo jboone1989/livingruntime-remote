@@ -1985,6 +1985,7 @@ def submit_llm_request(
     agent_id: str,
     purpose: str,
     messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
     response_format: dict[str, Any] | None = None,
     options: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -1996,6 +1997,7 @@ def submit_llm_request(
         agent_id=agent_id,
         purpose=purpose,
         messages=messages,
+        tools=tools,
         response_format=response_format,
         options=options,
         metadata=metadata,
@@ -2145,8 +2147,9 @@ def get_llm_request_status(request_id: str) -> dict[str, Any]:
 )
 def complete_llm_request(
     request_id: str,
-    response_text: str,
     claim_token: str,
+    response_text: str | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
     model: str | None = None,
     session_id: str | None = None,
 ) -> dict[str, Any]:
@@ -2154,6 +2157,7 @@ def complete_llm_request(
     result = complete_cognition_request(
         request_id=request_id,
         response_text=response_text,
+        tool_calls=tool_calls,
         claim_token=claim_token,
         provider="livingruntime-chatgpt",
         model=model,
@@ -2585,7 +2589,7 @@ def _pi_job_command(
     job_root: str | None = None,
     timeout_seconds: int = 30,
 ) -> dict[str, Any]:
-    if command not in {"job-status", "job-wait"}:
+    if command not in {"job-status", "job-wait", "job-cancel"}:
         raise ValueError("unsupported Pi job command")
     job_id = str(job_id).strip()
     pi_remote_dir = str(pi_remote_dir).strip()
@@ -2620,6 +2624,139 @@ def _pi_job_command(
     if not isinstance(parsed, dict):
         raise RuntimeError("Pi Remote job command returned non-object JSON")
     return parsed
+
+
+@server.tool(
+    name="start_pi_agent",
+    annotations=ToolAnnotations(
+        title="Start native Pi agent",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+def start_pi_agent(
+    goal: str,
+    project: str,
+    session_file: str | None = None,
+) -> dict[str, Any]:
+    """Start Pi's native agent loop with ChatGPT exposed as its model provider."""
+    goal = str(goal).strip()
+    project = str(project).strip()
+    if not goal or len(goal.encode("utf-8")) > 64 * 1024:
+        raise ValueError("goal must be a bounded non-empty string")
+    if not project or len(project) > 256:
+        raise ValueError("project must be a bounded non-empty project alias")
+
+    cfg = _config()
+    selected = host_for(cfg, project=project)
+    runtime_device, runtime_dir, session_root, job_root = _pi_runtime_settings()
+    if selected["id"] != runtime_device:
+        raise RuntimeError(
+            f"Pi runtime is configured on device {runtime_device}, but project {project} is on {selected['id']}"
+        )
+    repo_path = resolve_path(cfg, None, project=project)
+
+    if session_file is None:
+        session = _pi_control_command(
+            "create",
+            {
+                "repoPath": repo_path,
+                "sessionDir": session_root,
+                "controllerMode": "api",
+            },
+            timeout_seconds=30,
+        )
+        session_file = str(session.get("sessionFile") or "")
+    else:
+        raw_session = Path(str(session_file)).expanduser()
+        resolved_session = raw_session.resolve(strict=True)
+        resolved_root = Path(session_root).expanduser().resolve(strict=False)
+        try:
+            resolved_session.relative_to(resolved_root)
+        except ValueError:
+            raise PermissionError("session_file is outside the configured Pi session root") from None
+        session_file = str(resolved_session)
+        session = _pi_control_command(
+            "state",
+            {"sessionFile": session_file},
+            timeout_seconds=15,
+        )
+
+    if not session_file:
+        raise RuntimeError("Pi session creation returned no session file")
+    if session.get("controllerMode") != "api":
+        raise RuntimeError("native Pi agent requires an API-controller session")
+    if os.path.realpath(str(session.get("cwd") or "")) != os.path.realpath(repo_path):
+        raise RuntimeError("Pi session workspace does not match the requested project")
+
+    launched = _pi_control_command(
+        "job-start",
+        {
+            "kind": "prompt-api",
+            "sessionFile": session_file,
+            "provider": "livingruntime-chatgpt",
+            "modelId": "chatgpt-web",
+            "text": goal,
+            "credentialBindings": {},
+            "jobRoot": job_root,
+        },
+        timeout_seconds=30,
+    )
+    state = launched.get("job")
+    if not isinstance(state, dict):
+        raise RuntimeError("Pi job-start returned no job state")
+    pi_job_id = str(state.get("id") or "")
+    if not pi_job_id:
+        raise RuntimeError("Pi job-start returned no job id")
+
+    backend = {
+        "type": "pi-agent",
+        "job_id": pi_job_id,
+        "pi_remote_dir": runtime_dir,
+        "job_root": job_root,
+        "session_file": session_file,
+        "session_id": session.get("sessionId"),
+        "controller_mode": "api",
+        "provider": "livingruntime-chatgpt",
+        "model": "chatgpt-web",
+    }
+    runtime_job = create_runtime_job(
+        goal=goal,
+        project=project,
+        device=runtime_device,
+        backend=backend,
+        status="RUNNING",
+    )
+    runtime_job = checkpoint_runtime_job(
+        runtime_job["job_id"],
+        summary="Pi native agent loop started with ChatGPT as its cognition provider.",
+        current_step="Pi native agent loop running",
+        next_action="Keep the Pi watcher attached; Pi owns planning, tool execution, and loop continuation.",
+        status="RUNNING",
+        source="runtime",
+    )
+    _audit("start_pi_agent", True, {
+        "runtime_job_id": runtime_job["job_id"],
+        "pi_job_id": pi_job_id,
+        "project": project,
+        "device": runtime_device,
+        "session_id": session.get("sessionId"),
+    })
+    return {
+        "runtimeJobId": runtime_job["job_id"],
+        "jobId": pi_job_id,
+        "piRemoteDir": runtime_dir,
+        "jobRoot": job_root,
+        "sessionFile": session_file,
+        "sessionId": session.get("sessionId"),
+        "state": state,
+        "terminal": state.get("status") in {"SUCCEEDED", "FAILED", "CANCELLED"},
+        "controllerMode": "api",
+        "provider": "livingruntime-chatgpt",
+        "model": "chatgpt-web",
+    }
 
 
 @server.tool(
@@ -2802,7 +2939,7 @@ def watch_pi_job(
 ) -> dict[str, Any]:
     """Inspect an existing Pi Remote detached job before arming OpenAI continuation."""
     state = _pi_job_command("job-status", job_id, pi_remote_dir, job_root, timeout_seconds=15)
-    runtime_job = find_by_backend("pi-step", job_id) or find_by_backend("pi", job_id)
+    runtime_job = find_by_backend("pi-agent", job_id) or find_by_backend("pi-step", job_id) or find_by_backend("pi", job_id)
     return {
         "jobId": job_id,
         "runtimeJobId": None if runtime_job is None else runtime_job["job_id"],
@@ -2834,7 +2971,7 @@ def wait_pi_job_completion(
         "job-wait", job_id, pi_remote_dir, job_root, timeout_seconds=timeout_seconds
     )
     state = result.get("state") if isinstance(result.get("state"), dict) else {}
-    runtime_job = find_by_backend("pi-step", job_id) or find_by_backend("pi", job_id)
+    runtime_job = find_by_backend("pi-agent", job_id) or find_by_backend("pi-step", job_id) or find_by_backend("pi", job_id)
     if runtime_job is not None and (
         bool(result.get("terminal"))
         or state.get("status") in {"SUCCEEDED", "FAILED", "CANCELLED"}
@@ -2868,7 +3005,7 @@ def wait_pi_job_completion(
                     status="BLOCKED",
                     source="backend",
                 )
-        elif backend_type == "pi" and not runtime_job.get("terminal") and backend_status:
+        elif backend_type in {"pi", "pi-agent"} and not runtime_job.get("terminal") and backend_status:
             runtime_job = sync_backend_status(
                 runtime_job["job_id"],
                 backend_status=backend_status,
@@ -2912,23 +3049,30 @@ def bind_openai_pi_continuation(
         raise ValueError("job_root path is too long")
     if project is not None or device is not None:
         host_for(_config(), project=project, host_id=device)
-    runtime_job = ensure_backend_job(
-        backend_type="pi",
-        backend_job_id=job_id,
-        goal=goal,
-        project=project,
-        device=device,
-        backend_details={
-            "pi_remote_dir": pi_remote_dir,
-            "job_root": job_root,
-        },
+    runtime_job = (
+        find_by_backend("pi-agent", job_id)
+        or find_by_backend("pi-step", job_id)
+        or find_by_backend("pi", job_id)
     )
+    if runtime_job is None:
+        runtime_job = ensure_backend_job(
+            backend_type="pi",
+            backend_job_id=job_id,
+            goal=goal,
+            project=project,
+            device=device,
+            backend_details={"pi_remote_dir": pi_remote_dir, "job_root": job_root},
+        )
+    if runtime_job.get("terminal"):
+        _clear_openai_continuation(session_id)
+        return {"runtimeJobId": runtime_job["job_id"], "armed": False, "goalTerminal": True}
     _save_openai_continuation(session_id, {
         "session_id": session_id,
         "job_id": job_id,
         "runtime_job_id": runtime_job["job_id"],
         "pi_remote_dir": pi_remote_dir,
         "job_root": job_root,
+        "remaining_continuations": 1,
         "updated_at": time.time(),
     })
     return {
@@ -2955,65 +3099,86 @@ def bind_openai_pi_continuation(
 def continue_openai_pi_job(
     session_id: str,
     timeout_seconds: int = 540,
+    interrupted: bool = False,
+    stop_hook_active: bool = False,
 ) -> dict[str, Any]:
-    """Codex/Work Stop-hook helper that waits for Pi and requests a new continuation turn."""
+    """Honor user interrupt first; otherwise allow at most one automatic continuation."""
     binding = _load_openai_continuation(session_id)
     if binding is None:
         return {"continue": True}
 
-    deadline = time.monotonic() + min(540, max(1, int(timeout_seconds)))
-    latest: dict[str, Any] | None = None
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        latest = _pi_job_command(
-            "job-wait",
+    runtime_job_id = binding.get("runtime_job_id")
+    if interrupted:
+        _clear_openai_continuation(session_id)
+        cancel = _pi_job_command(
+            "job-cancel",
             str(binding["job_id"]),
             str(binding["pi_remote_dir"]),
             binding.get("job_root"),
-            timeout_seconds=min(90, max(1, int(remaining))),
+            timeout_seconds=3,
         )
-        state = latest.get("state") if isinstance(latest.get("state"), dict) else {}
-        terminal = bool(latest.get("terminal")) or state.get("status") in {
-            "SUCCEEDED", "FAILED", "CANCELLED"
+        if runtime_job_id:
+            try:
+                current = get_runtime_job(str(runtime_job_id))
+                if not current.get("terminal"):
+                    checkpoint_runtime_job(
+                        str(runtime_job_id),
+                        summary="User interrupted the OpenAI turn; Pi continuation and worker were cancelled.",
+                        current_step="Cancelled by user",
+                        next_action="None. A new user request is required to resume this goal.",
+                        status="CANCELLED_BY_USER",
+                        source="user",
+                    )
+            except KeyError:
+                pass
+        return {"continue": False, "cancelledByUser": True, "cancel": cancel}
+
+    if bool(stop_hook_active):
+        _clear_openai_continuation(session_id)
+        return {
+            "continue": False,
+            "stopReason": "Automatic continuation budget exhausted for this turn.",
         }
-        if terminal:
-            _clear_openai_continuation(session_id)
-            status = str(state.get("status") or "terminal")
-            runtime_job_id = binding.get("runtime_job_id")
-            if runtime_job_id:
+
+    state = _pi_job_command(
+        "job-status",
+        str(binding["job_id"]),
+        str(binding["pi_remote_dir"]),
+        binding.get("job_root"),
+        timeout_seconds=min(15, max(1, int(timeout_seconds))),
+    )
+    status = str(state.get("status") or "")
+    if status in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+        _clear_openai_continuation(session_id)
+        if runtime_job_id:
+            current = get_runtime_job(str(runtime_job_id))
+            if current.get("status") != "CANCELLED_BY_USER":
                 sync_backend_status(
                     str(runtime_job_id),
                     backend_status=status,
-                    summary=(
-                        f"Pi Remote job {binding['job_id']} completed with status {status}."
-                    ),
+                    summary=f"Pi Remote job {binding['job_id']} completed with status {status}.",
                 )
-            return {
-                "decision": "block",
-                "reason": (
-                    f"Pi Remote job {binding['job_id']} completed with status {status}. "
-                    + (
-                        f"Durable LivingRuntime job {runtime_job_id} is checkpointed. "
-                        if runtime_job_id else ""
-                    )
-                    +
-                    "Continue this same development task now: inspect the durable Pi job/session "
-                    "result, review changes and tests, then proceed to the next required step "
-                    "without asking the user to say continue."
-                ),
-            }
-        if not latest.get("timedOut"):
-            break
+            else:
+                return {"continue": False, "stopReason": "Goal was cancelled by the user."}
+        if status == "CANCELLED":
+            return {"continue": False, "stopReason": "Pi job was cancelled."}
+        if int(binding.get("remaining_continuations") or 0) <= 0:
+            return {"continue": False, "stopReason": "Continuation budget exhausted."}
+        return {
+            "decision": "block",
+            "reason": (
+                f"Pi Remote job {binding['job_id']} completed with status {status}. "
+                "Inspect the durable Pi result once, report the outcome, and do not start "
+                "more work unless the goal is still explicitly unfinished."
+            ),
+        }
 
     return {
-        "decision": "block",
-        "reason": (
-            f"Pi Remote job {binding['job_id']} is still running after the bounded wait. "
-            "Do not poll it from the model. End this continuation so the OpenAI Stop hook "
-            "can resume waiting event-driven on the next stop."
-        ),
+        "continue": True,
+        "job_id": binding["job_id"],
+        "status": status,
+        "watch_mode": "apps_sdk_widget",
+        "message": "Pi is still running; the watcher owns completion notification.",
     }
 
 

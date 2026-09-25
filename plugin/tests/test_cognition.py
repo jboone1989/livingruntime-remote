@@ -13,6 +13,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import cognition  # noqa: E402
+import cognition_cli  # noqa: E402
 
 
 class CognitionQueueTests(unittest.TestCase):
@@ -116,9 +117,16 @@ class CognitionQueueTests(unittest.TestCase):
         self.assertEqual(done["response"]["provider"], "livingruntime-chatgpt")
         self.assertEqual(done["response"]["model"], "gpt-5.6-sol")
         self.assertEqual(done["response"]["session_id"], "session-test")
+        self.assertEqual(done["response"]["tool_calls"], [])
+        digest_payload = json.dumps(
+            {"text": "answer", "tool_calls": []},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
         self.assertEqual(
             done["response"]["sha256"],
-            hashlib.sha256(b"answer").hexdigest(),
+            hashlib.sha256(digest_payload).hexdigest(),
         )
 
         second = cognition.claim_next(agent_id="ferro", watcher_id="watcher_2")
@@ -167,6 +175,79 @@ class CognitionQueueTests(unittest.TestCase):
         self.assertEqual(claimed["request_id"], "llmreq_other")
         ferro = cognition.get("llmreq_ferro")
         self.assertEqual(ferro["status"], "PENDING")
+
+    def test_pi_request_preserves_tool_schemas_and_completion_can_return_tool_calls(self) -> None:
+        created = cognition.submit(
+            agent_id="pi-remote",
+            purpose="pi.agent.model-call",
+            messages=[{"role": "user", "content": "Inspect README."}],
+            tools=[
+                {
+                    "name": "read",
+                    "description": "Read a file.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                }
+            ],
+            request_id="llmreq_pi_tool",
+        )
+        self.assertEqual(created["tools"][0]["name"], "read")
+        claimed = cognition.claim_request(
+            request_id=created["request_id"],
+            watcher_id="watcher_pi",
+            claim_seconds=30,
+        )
+        done = cognition.complete(
+            request_id=created["request_id"],
+            claim_token=claimed["claim"]["token"],
+            tool_calls=[
+                {
+                    "id": "call_read_1",
+                    "name": "read",
+                    "arguments": {"path": "README.md"},
+                }
+            ],
+        )
+        self.assertEqual(done["status"], "COMPLETED")
+        self.assertEqual(done["response"]["text"], "")
+        self.assertEqual(done["response"]["tool_calls"][0]["name"], "read")
+        self.assertEqual(done["response"]["tool_calls"][0]["arguments"]["path"], "README.md")
+
+    def test_completion_rejects_empty_model_output(self) -> None:
+        created = self.submit("llmreq_empty")
+        claimed = cognition.claim_request(
+            request_id=created["request_id"], watcher_id="watcher_empty", claim_seconds=30
+        )
+        with self.assertRaisesRegex(ValueError, "response must contain"):
+            cognition.complete(
+                request_id=created["request_id"],
+                claim_token=claimed["claim"]["token"],
+                response_text="",
+                tool_calls=[],
+            )
+
+    def test_transport_cli_forwards_pi_tool_contract_and_waits_for_same_request(self) -> None:
+        payload = {
+            "agent_id": "pi-remote",
+            "purpose": "pi.agent.model-call",
+            "messages": [{"role": "user", "content": "Inspect README."}],
+            "tools": [{"name": "read", "description": "Read", "parameters": {}}],
+            "timeout_seconds": 45,
+        }
+        with patch.object(
+            cognition_cli, "submit", return_value={"request_id": "llmreq_cli"}
+        ) as submit_mock, patch.object(
+            cognition_cli,
+            "wait_response",
+            return_value={"request_id": "llmreq_cli", "status": "COMPLETED"},
+        ) as wait_mock:
+            result = cognition_cli.submit_wait(payload)
+        self.assertEqual(result["status"], "COMPLETED")
+        self.assertEqual(submit_mock.call_args.kwargs["tools"][0]["name"], "read")
+        wait_mock.assert_called_once_with("llmreq_cli", timeout_seconds=45)
 
 
 if __name__ == "__main__":

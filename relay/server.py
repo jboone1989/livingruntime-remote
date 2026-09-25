@@ -81,6 +81,7 @@ TOOL_TEXT = {
     "systemd": ("Manage allowlisted service", "Inspect or control an explicitly allowlisted systemd unit on the connected host."),
     "apply_patch": ("Apply file patch", "Apply a unified diff to a file inside an allowed workspace, optionally guarded by an expected SHA-256."),
     "diagnostics": ("Run Remote diagnostics", "Collect bounded LivingRuntime Remote diagnostics for connectivity, configuration, and tool-health troubleshooting."),
+    "start_pi_agent": ("Start native Pi agent", "Send a goal into Pi exactly like a user prompt. Pi owns its native agent loop and calls ChatGPT through the LivingRuntime cognition provider whenever it needs model inference."),
     "start_pi_step": ("Start detached Pi step", "Run a bounded batch of structured Pi file/search/edit actions in an external-controller session, persist it as a durable job, and attach the Pi watcher. Pi does not call an LLM."),
 }
 
@@ -536,9 +537,12 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
     const prompt =
       "LivingRuntime agent " + agentId + " submitted cognition request " + requestId +
       " for " + (purpose || "general cognition") + ". Process it now: first call claim_llm_request with request_id=" +
-      requestId + " and watcher_id=" + watcherId + ". Reason over the returned messages and response_format, then " +
-      "call complete_llm_request using the returned claim.token. If the request is already claimed or completed, " +
-      "inspect get_llm_request_status and do not duplicate work. After completion, re-arm the channel by calling " +
+      requestId + " and watcher_id=" + watcherId + ". Reason over the returned messages, tools, and response_format. " +
+      "You are acting as Pi's model provider, not as its harness: do not execute a returned Pi tool through Remote. " +
+      "If Pi should use a tool, call complete_llm_request with tool_calls=[{id,name,arguments}] and the returned claim.token; " +
+      "Pi will execute that tool inside its native agent loop and send the tool result back in the next model request. " +
+      "If no tool is needed, complete with response_text. If the request is already claimed or completed, inspect " +
+      "get_llm_request_status and do not duplicate work. After completion, re-arm the channel by calling " +
       "watch_agent_cognition with agent_id=" + agentId + " before ending this turn, so the next request can wake " +
       "this conversation. Do not ask the user to type continue.";
     try {
@@ -1128,6 +1132,34 @@ def create_mcp(
     @apps.tool(
         resource_uri=PI_JOB_WIDGET_URI,
         visibility=["model", "app"],
+        name="start_pi_agent",
+        title=TOOL_TEXT["start_pi_agent"][0],
+        description=TOOL_TEXT["start_pi_agent"][1],
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=True,
+            openWorldHint=False,
+        ),
+        meta=WRITE,
+    )
+    async def start_pi_agent(
+        goal: str,
+        project: str,
+        session_file: str | None = None,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "start_pi_agent",
+            {
+                "goal": goal,
+                "project": project,
+                "session_file": session_file,
+            },
+        )
+
+    @apps.tool(
+        resource_uri=PI_JOB_WIDGET_URI,
+        visibility=["model", "app"],
         name="start_pi_step",
         title=TOOL_TEXT["start_pi_step"][0],
         description=TOOL_TEXT["start_pi_step"][1],
@@ -1496,6 +1528,19 @@ def create_mcp(
             raise ValueError("pi_remote_dir must be a bounded non-empty path")
         if job_root is not None and len(job_root) > 4096:
             raise ValueError("job_root path is too long")
+        connector = await relay.call(
+            user_sub,
+            "bind_openai_pi_continuation",
+            {
+                "session_id": session_id,
+                "job_id": job_id,
+                "pi_remote_dir": pi_remote_dir,
+                "job_root": job_root,
+            },
+        )
+        if connector.get("armed") is False:
+            relay.store.clear_continuation(user_sub, session_id)
+            return connector
         binding = relay.store.bind_continuation(
             user_sub, session_id, job_id, pi_remote_dir, job_root
         )
@@ -1505,7 +1550,8 @@ def create_mcp(
                 "additionalContext": (
                     f"Pi Remote continuation is armed for job {binding['job_id']} in this OpenAI session."
                 ),
-            }
+            },
+            **({"runtimeJobId": connector.get("runtimeJobId")} if connector.get("runtimeJobId") else {}),
         }
 
     @server.tool(
@@ -1525,6 +1571,8 @@ def create_mcp(
     async def continue_openai_pi_job(
         session_id: str,
         timeout_seconds: int = 540,
+        interrupted: bool = False,
+        stop_hook_active: bool = False,
     ) -> dict[str, Any]:
         user_sub = _principal("remote:read")
         session_id = str(session_id).strip()
@@ -1534,42 +1582,25 @@ def create_mcp(
         if binding is None:
             return {"continue": True}
 
-        # The public ChatGPT app already has an Apps SDK widget that waits for
-        # terminal state and sends a same-conversation follow-up. Do not duplicate
-        # that wait inside the Stop hook: a 540s MCP call makes the UI look hung
-        # and, on a serial Connector, can monopolize the device.
-        state = await pi_job_command(
-            user_sub,
-            "job-status",
-            str(binding["job_id"]),
-            str(binding["pi_remote_dir"]),
-            binding.get("job_root"),
-            timeout_seconds=15,
-        )
-        terminal = state.get("status") in {"SUCCEEDED", "FAILED", "CANCELLED"}
-        if terminal:
+        if interrupted:
+            # User interrupt has highest priority. Remove the hosted continuation
+            # before any remote cleanup so a slow/offline Connector cannot cause
+            # the stopped turn to be resurrected.
             relay.store.clear_continuation(user_sub, session_id)
-            status = str(state.get("status") or "terminal")
-            return {
-                "decision": "block",
-                "reason": (
-                    f"Pi Remote job {binding['job_id']} completed with status {status}. "
-                    "Continue this same development task now: inspect the durable Pi job/session "
-                    "result, review changes and tests, then proceed to the next required step "
-                    "without asking the user to say continue."
-                ),
-            }
 
-        return {
-            "continue": True,
-            "job_id": binding["job_id"],
-            "status": state.get("status"),
-            "watch_mode": "apps_sdk_widget",
-            "message": (
-                "Pi is still running. The Apps SDK watcher owns the long wait and "
-                "will send a same-conversation follow-up on completion or watcher failure."
-            ),
-        }
+        result = await relay.call(
+            user_sub,
+            "continue_openai_pi_job",
+            {
+                "session_id": session_id,
+                "timeout_seconds": min(30, max(1, int(timeout_seconds))),
+                "interrupted": bool(interrupted),
+                "stop_hook_active": bool(stop_hook_active),
+            },
+        )
+        if interrupted or stop_hook_active or result.get("decision") == "block" or result.get("continue") is False:
+            relay.store.clear_continuation(user_sub, session_id)
+        return result
 
     def expose(name: str, read_only: bool, open_world: bool, destructive: bool):
         meta = READ if read_only else WRITE
@@ -1767,6 +1798,7 @@ def create_mcp(
         agent_id: str,
         purpose: str,
         messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
         response_format: dict[str, Any] | None = None,
         options: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
@@ -1780,6 +1812,7 @@ def create_mcp(
                 "agent_id": agent_id,
                 "purpose": purpose,
                 "messages": messages,
+                "tools": tools,
                 "response_format": response_format,
                 "options": options,
                 "metadata": metadata,
@@ -1823,8 +1856,9 @@ def create_mcp(
     @expose("complete_llm_request", False, False, False)
     async def complete_llm_request(
         request_id: str,
-        response_text: str,
         claim_token: str,
+        response_text: str | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
         model: str | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
@@ -1833,8 +1867,9 @@ def create_mcp(
             "complete_llm_request",
             {
                 "request_id": request_id,
-                "response_text": response_text,
                 "claim_token": claim_token,
+                "response_text": response_text,
+                "tool_calls": tool_calls,
                 "model": model,
                 "session_id": session_id,
             },

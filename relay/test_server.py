@@ -340,6 +340,12 @@ class RelayServerTests(unittest.TestCase):
         )
         self.assertTrue(tools["wait_llm_request"].annotations.read_only_hint)
         self.assertFalse(tools["claim_llm_request"].annotations.read_only_hint)
+        self.assertIn(
+            "tools", (tools["submit_llm_request"].parameters or {}).get("properties", {})
+        )
+        self.assertIn(
+            "tool_calls", (tools["complete_llm_request"].parameters or {}).get("properties", {})
+        )
         self.assertNotIn("resourceUri", tools["wait_llm_request"].meta["ui"])
         self.assertNotIn("resourceUri", tools["wait_long_job"].meta["ui"])
         self.assertEqual(
@@ -350,6 +356,16 @@ class RelayServerTests(unittest.TestCase):
             tools["watch_pi_job"].meta["ui"]["visibility"],
             ["model", "app"],
         )
+        self.assertEqual(
+            tools["start_pi_agent"].meta["ui"]["resourceUri"],
+            server.PI_JOB_WIDGET_URI,
+        )
+        self.assertEqual(
+            tools["start_pi_agent"].meta["ui"]["visibility"],
+            ["model", "app"],
+        )
+        self.assertTrue(tools["start_pi_agent"].annotations.destructive_hint)
+        self.assertFalse(tools["start_pi_agent"].annotations.open_world_hint)
         self.assertEqual(
             tools["start_pi_step"].meta["ui"]["resourceUri"],
             server.PI_JOB_WIDGET_URI,
@@ -524,10 +540,11 @@ class RelayServerTests(unittest.TestCase):
         source = inspect.getsource(server.create_mcp)
         self.assertIn("bind_openai_pi_continuation", source)
         self.assertIn("continue_openai_pi_job", source)
-        self.assertIn('"job-status"', source)
-        self.assertIn('"watch_mode": "apps_sdk_widget"', source)
-        self.assertIn('"continue": True', source)
-        self.assertIn('"decision": "block"', source)
+        self.assertIn('"interrupted": bool(interrupted)', source)
+        self.assertIn('"stop_hook_active": bool(stop_hook_active)', source)
+        self.assertIn('if interrupted:', source)
+        self.assertIn('"continue_openai_pi_job"', source)
+        self.assertIn("relay.call(", source)
         self.assertIn("clear_continuation", source)
 
 

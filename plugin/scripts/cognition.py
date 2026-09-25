@@ -99,6 +99,44 @@ def _normalize_messages(messages: Any) -> list[dict[str, str]]:
     return normalized
 
 
+def _normalize_tools(tools: Any) -> list[dict[str, Any]]:
+    if tools is None:
+        return []
+    if not isinstance(tools, list):
+        raise ValueError("tools must be a list")
+    if len(tools) > 64:
+        raise ValueError("tools contains too many entries")
+    normalized: list[dict[str, Any]] = []
+    total = 0
+    for index, row in enumerate(tools):
+        if not isinstance(row, dict):
+            raise ValueError(f"tools[{index}] must be an object")
+        name = _bounded_text(
+            row.get("name"), field=f"tools[{index}].name", maximum=256, required=True
+        ) or ""
+        description = _bounded_text(
+            row.get("description") or "",
+            field=f"tools[{index}].description",
+            maximum=8192,
+        ) or ""
+        parameters = row.get("parameters") if row.get("parameters") is not None else {}
+        if not isinstance(parameters, dict):
+            raise ValueError(f"tools[{index}].parameters must be an object")
+        try:
+            encoded = json.dumps(
+                parameters, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        except (TypeError, ValueError):
+            raise ValueError(f"tools[{index}].parameters must be JSON serializable") from None
+        total += len(name.encode("utf-8")) + len(description.encode("utf-8")) + len(encoded)
+        if total > 131072:
+            raise ValueError("tool payload exceeds maximum size")
+        normalized.append(
+            {"name": name, "description": description, "parameters": json.loads(encoded)}
+        )
+    return normalized
+
+
 def _normalize_response_format(value: Any) -> dict[str, Any]:
     if value is None:
         return {"type": "text"}
@@ -153,6 +191,7 @@ def _canonical_payload(
     agent_id: str,
     purpose: str,
     messages: list[dict[str, str]],
+    tools: list[dict[str, Any]],
     response_format: dict[str, Any],
     options: dict[str, Any],
     metadata: dict[str, Any],
@@ -162,6 +201,7 @@ def _canonical_payload(
         "agent_id": agent_id,
         "purpose": purpose,
         "messages": messages,
+        "tools": tools,
         "response_format": response_format,
         "options": options,
         "metadata": metadata,
@@ -236,6 +276,7 @@ def submit(
     agent_id: str,
     purpose: str,
     messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
     response_format: dict[str, Any] | None = None,
     options: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -245,6 +286,7 @@ def submit(
     agent = _validate_agent_id(agent_id)
     purpose_text = _bounded_text(purpose, field="purpose", maximum=512, required=True) or ""
     normalized_messages = _normalize_messages(messages)
+    normalized_tools = _normalize_tools(tools)
     normalized_format = _normalize_response_format(response_format)
     normalized_options = _normalize_options(options)
     normalized_metadata = _normalize_metadata(metadata)
@@ -255,6 +297,7 @@ def submit(
         agent_id=agent,
         purpose=purpose_text,
         messages=normalized_messages,
+        tools=normalized_tools,
         response_format=normalized_format,
         options=normalized_options,
         metadata=normalized_metadata,
@@ -525,26 +568,65 @@ def wait_and_claim(
         time.sleep(min(0.5, remaining))
 
 
+def _normalize_tool_calls(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 64:
+        raise ValueError("tool_calls must be a list with at most 64 entries")
+    normalized: list[dict[str, Any]] = []
+    total = 0
+    for index, row in enumerate(value):
+        if not isinstance(row, dict):
+            raise ValueError(f"tool_calls[{index}] must be an object")
+        call_id = _bounded_text(row.get("id"), field=f"tool_calls[{index}].id", maximum=256, required=True) or ""
+        name = _bounded_text(row.get("name"), field=f"tool_calls[{index}].name", maximum=256, required=True) or ""
+        arguments = row.get("arguments") if row.get("arguments") is not None else {}
+        if not isinstance(arguments, dict):
+            raise ValueError(f"tool_calls[{index}].arguments must be an object")
+        encoded = json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        total += len(call_id.encode("utf-8")) + len(name.encode("utf-8")) + len(encoded)
+        if total > MAX_RESPONSE_BYTES:
+            raise ValueError("tool call payload exceeds maximum response size")
+        normalized.append({"id": call_id, "name": name, "arguments": json.loads(encoded)})
+    return normalized
+
+
+def _response_digest(text: str, tool_calls: list[dict[str, Any]]) -> str:
+    encoded = json.dumps(
+        {"text": text, "tool_calls": tool_calls},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(encoded) > MAX_RESPONSE_BYTES:
+        raise ValueError("response payload exceeds maximum size")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def complete(
     *,
     request_id: str,
-    response_text: str,
     claim_token: str,
+    response_text: str | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
     provider: str = "livingruntime-chatgpt",
     model: str | None = None,
     session_id: str | None = None,
 ) -> dict[str, Any]:
-    text = _bounded_text(response_text, field="response_text", maximum=MAX_RESPONSE_BYTES, required=True) or ""
+    text = _bounded_text(response_text or "", field="response_text", maximum=MAX_RESPONSE_BYTES) or ""
+    normalized_tool_calls = _normalize_tool_calls(tool_calls)
+    if not text.strip() and not normalized_tool_calls:
+        raise ValueError("response must contain response_text or tool_calls")
     token = _bounded_text(claim_token, field="claim_token", maximum=128, required=True) or ""
     provider_name = _bounded_text(provider, field="provider", maximum=128, required=True) or ""
     model_name = _bounded_text(model, field="model", maximum=256)
     session = _bounded_text(session_id, field="session_id", maximum=256)
+    digest = _response_digest(text, normalized_tool_calls)
     now = time.time()
     with _queue_lock():
         value = _refresh_timeout(_load(request_id), now)
         if value.get("status") == "COMPLETED":
             existing = value.get("response") if isinstance(value.get("response"), dict) else {}
-            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
             if existing.get("sha256") == digest:
                 return dict(value)
             raise RuntimeError("completed request response conflict")
@@ -555,9 +637,9 @@ def complete(
         claim = value.get("claim") if isinstance(value.get("claim"), dict) else {}
         if claim.get("token") != token:
             raise RuntimeError("claim token mismatch")
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         value["response"] = {
             "text": text,
+            "tool_calls": normalized_tool_calls,
             "provider": provider_name,
             "model": model_name,
             "session_id": session,

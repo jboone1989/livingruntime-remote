@@ -428,6 +428,18 @@
         "destructive_justification": "Does not create, modify, or delete GitHub resources or local credential material."
       }
     },
+    "start_pi_agent": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Starts a normal Pi API-mode AgentSession and durable prompt job for the supplied development goal.",
+        "open_world_justification": "The control-plane call stays inside the user's paired Remote host. Pi tool execution remains subject to Pi and host-local project boundaries rather than being executed by the ChatGPT provider transport.",
+        "destructive_justification": "Pi's native coding loop may edit or write files in the selected configured project, so the tool is explicitly marked destructive."
+      }
+    },
     "start_pi_step": {
       "annotations": {
         "readOnlyHint": false,
