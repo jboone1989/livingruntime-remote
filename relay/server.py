@@ -26,7 +26,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.27"
+VERSION = "0.4.28"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
 COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v3.html"
@@ -534,17 +534,18 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
   function data(result) {
     return result?.structuredContent || result?.structured_content || result || null;
   }
-  async function followUp(agentId, requestId, purpose, watcherId) {
+  async function followUp(agentId, requestId, purpose, watcherId, claimToken) {
     const prompt =
       "LivingRuntime agent " + agentId + " submitted cognition request " + requestId +
-      " for " + (purpose || "general cognition") + ". Process it now: first call claim_llm_request with request_id=" +
-      requestId + " and watcher_id=" + watcherId + ". Reason over the returned messages, tools, and response_format. " +
-      "You are acting as Pi's model provider, not as its harness: do not execute a returned Pi tool through Remote. " +
-      "If Pi should use a tool, call complete_llm_request with tool_calls=[{id,name,arguments}] and the returned claim.token; " +
-      "Pi will execute that tool inside its native agent loop and send the tool result back in the next model request. " +
-      "If no tool is needed, complete with response_text. If the request is already claimed or completed, inspect " +
-      "get_llm_request_status and do not duplicate work. The watcher remains armed after this request, so do not " +
-      "create a second watcher merely to continue the channel. Do not ask the user to type continue.";
+      " for " + (purpose || "general cognition") + ". The watcher already claimed this request atomically. " +
+      "Call get_llm_request with request_id=" + requestId + " to read the messages, tools, and response_format. " +
+      "Reason over them as the model provider, then call complete_llm_request with request_id=" + requestId +
+      " and claim_token=" + claimToken + ". You are acting as Pi's model provider, not as its harness: do not execute " +
+      "a returned Pi tool through Remote. If Pi should use a tool, complete with tool_calls=[{id,name,arguments}]; " +
+      "Pi will execute it inside its native agent loop and send the result in a later model request. If no tool is " +
+      "needed, complete with response_text. If the request is already completed, inspect get_llm_request_status and " +
+      "do not duplicate work. This watcher stays armed for subsequent requests, so do not call watch_agent_cognition " +
+      "again and do not ask the user to type continue.";
     try {
       await request("ui/message", {
         role:"user",
@@ -593,17 +594,28 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
           }
           handedOffRequestId = requestId;
           setStatus("Cognition request received", "Request " + requestId + " · handing it to ChatGPT");
+          const claimResult = await request("tools/call", {
+            name:"claim_llm_request_for_watcher",
+            arguments:{
+              request_id:requestId,
+              watcher_id:watcherId,
+              claim_seconds:300
+            }
+          });
+          const claimed = data(claimResult);
+          const claimToken = claimed?.claim?.token;
+          if (!claimToken) throw new Error("cognition watcher claim returned no token");
           await request("ui/update-model-context", {
             structuredContent:{
               livingRuntimeCognitionRequest:{
                 agentId,
                 requestId,
                 purpose,
-                status:llmRequest.status || "DISPATCHED"
+                status:"DISPATCHED"
               }
             }
           }).catch(()=>{});
-          await followUp(agentId, requestId, purpose, watcherId);
+          await followUp(agentId, requestId, purpose, watcherId, claimToken);
           setStatus(
             "Request handed off",
             "ChatGPT can answer " + requestId + "; watcher remains armed for the next queued request."
@@ -1502,6 +1514,34 @@ def create_mcp(
                 "agent_id": agent_id,
                 "watcher_id": watcher_id,
                 "timeout_seconds": timeout_seconds,
+            },
+        )
+
+    @server.tool(
+        name="claim_llm_request_for_watcher",
+        title="Claim agent LLM request for watcher",
+        description=(
+            "App-only atomic claim used by the cognition watcher before it hands a request to ChatGPT."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        meta={**WRITE, "ui": {"visibility": ["app"]}},
+    )
+    async def claim_llm_request_for_watcher(
+        request_id: str,
+        watcher_id: str,
+        claim_seconds: int = 300,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "claim_llm_request",
+            {
+                "request_id": request_id,
+                "watcher_id": watcher_id,
+                "claim_seconds": claim_seconds,
             },
         )
 

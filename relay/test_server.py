@@ -42,7 +42,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.27")
+            self.assertEqual(health.json()["version"], "0.4.28")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -340,6 +340,13 @@ class RelayServerTests(unittest.TestCase):
             ["app"],
         )
         self.assertTrue(tools["wait_llm_request"].annotations.read_only_hint)
+        self.assertEqual(
+            tools["claim_llm_request_for_watcher"].meta["ui"]["visibility"],
+            ["app"],
+        )
+        self.assertFalse(
+            tools["claim_llm_request_for_watcher"].annotations.read_only_hint
+        )
         self.assertFalse(tools["claim_llm_request"].annotations.read_only_hint)
         self.assertIn(
             "tools", (tools["submit_llm_request"].parameters or {}).get("properties", {})
@@ -538,6 +545,8 @@ class RelayServerTests(unittest.TestCase):
         html = server.COGNITION_WIDGET_HTML
         self.assertIn('"tools/call"', html)
         self.assertIn('"wait_llm_request"', html)
+        self.assertIn('"claim_llm_request_for_watcher"', html)
+        self.assertIn("claim_seconds:300", html)
         self.assertNotIn("claim_seconds:120", html)
         self.assertIn('"ui/message"', html)
         self.assertIn('"ui/update-model-context"', html)
@@ -548,6 +557,8 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn("watcher remains armed", html)
         self.assertIn("handedOffRequestId", html)
         self.assertIn("reclaimable", html)
+        self.assertIn("watcher remains armed for the next queued request", html)
+        self.assertIn("do not call watch_agent_cognition again", html)
         self.assertNotIn("the next turn will re-arm this channel", html)
         self.assertIn("Do not ask the user to type continue", html)
         self.assertNotIn("setInterval(", html)
