@@ -42,7 +42,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.26")
+            self.assertEqual(health.json()["version"], "0.4.27")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -277,6 +277,7 @@ class RelayServerTests(unittest.TestCase):
             "create_pairing_code",
             "device_status",
             "disconnect_device",
+            "start_pi_agent",
             "watch_pi_job",
             "wait_pi_job_completion",
             "bind_openai_pi_continuation",
@@ -481,6 +482,15 @@ class RelayServerTests(unittest.TestCase):
         )
         self.assertEqual(
             control_resource_meta["openai/widgetDomain"],
+            server.PI_JOB_WIDGET_DOMAIN,
+        )
+        legacy_control_widget = next(
+            resource
+            for resource in resources
+            if str(resource.uri) == server.CONTROL_PLANE_WIDGET_LEGACY_URI
+        )
+        self.assertEqual(
+            legacy_control_widget.model_dump(by_alias=True)["_meta"]["openai/widgetDomain"],
             server.PI_JOB_WIDGET_DOMAIN,
         )
 
