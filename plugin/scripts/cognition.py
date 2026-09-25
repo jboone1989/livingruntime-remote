@@ -196,6 +196,7 @@ def _canonical_payload(
     options: dict[str, Any],
     metadata: dict[str, Any],
     timeout_seconds: int,
+    dispatch_timeout_seconds: int | None,
 ) -> dict[str, Any]:
     return {
         "agent_id": agent_id,
@@ -206,6 +207,7 @@ def _canonical_payload(
         "options": options,
         "metadata": metadata,
         "timeout_seconds": timeout_seconds,
+        "dispatch_timeout_seconds": dispatch_timeout_seconds,
     }
 
 
@@ -263,9 +265,17 @@ def _refresh_timeout(value: dict[str, Any], now: float | None = None) -> dict[st
         return value
     deadline = float(value.get("deadline_at") or 0.0)
     if deadline and now >= deadline:
+        prior_status = str(value.get("status") or "")
         value["status"] = "TIMED_OUT"
         value["finished_at"] = now
         value["updated_at"] = now
+        value["timeout_phase"] = (
+            "DISPATCH"
+            if prior_status == "PENDING"
+            and value.get("dispatch_timeout_seconds") is not None
+            and int(value.get("attempts") or 0) == 0
+            else "RESPONSE"
+        )
         value["claim"] = None
         _save(value)
     return value
@@ -281,6 +291,7 @@ def submit(
     options: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    dispatch_timeout_seconds: int | None = None,
     request_id: str | None = None,
 ) -> dict[str, Any]:
     agent = _validate_agent_id(agent_id)
@@ -293,6 +304,13 @@ def submit(
     timeout = int(timeout_seconds)
     if not 5 <= timeout <= 3600:
         raise ValueError("timeout_seconds must be within 5..3600")
+    dispatch_timeout = (
+        None if dispatch_timeout_seconds is None else int(dispatch_timeout_seconds)
+    )
+    if dispatch_timeout is not None and not 1 <= dispatch_timeout <= timeout:
+        raise ValueError(
+            "dispatch_timeout_seconds must be within 1..timeout_seconds"
+        )
     payload = _canonical_payload(
         agent_id=agent,
         purpose=purpose_text,
@@ -302,6 +320,7 @@ def submit(
         options=normalized_options,
         metadata=normalized_metadata,
         timeout_seconds=timeout,
+        dispatch_timeout_seconds=dispatch_timeout,
     )
     digest = _payload_hash(payload)
     rid = _validate_request_id(request_id) if request_id else "llmreq_" + uuid.uuid4().hex[:24]
@@ -326,7 +345,13 @@ def submit(
             "response": None,
             "created_at": now,
             "updated_at": now,
-            "deadline_at": now + timeout,
+            "dispatch_deadline_at": (
+                None if dispatch_timeout is None else now + dispatch_timeout
+            ),
+            "deadline_at": now + (
+                dispatch_timeout if dispatch_timeout is not None else timeout
+            ),
+            "timeout_phase": None,
             "finished_at": None,
         }
         _save(value)
@@ -351,6 +376,9 @@ def get_status(request_id: str) -> dict[str, Any]:
         "created_at": value.get("created_at"),
         "updated_at": value.get("updated_at"),
         "deadline_at": value.get("deadline_at"),
+        "dispatch_deadline_at": value.get("dispatch_deadline_at"),
+        "response_deadline_at": value.get("response_deadline_at"),
+        "timeout_phase": value.get("timeout_phase"),
         "finished_at": value.get("finished_at"),
         "claimed_by": claim.get("watcher_id"),
         "provider": response.get("provider"),
@@ -377,10 +405,11 @@ def _candidate_rows(agent_id: str) -> list[dict[str, Any]]:
 
 
 def peek_next(*, agent_id: str) -> dict[str, Any] | None:
-    """Read the next dispatchable request without mutating queue state."""
+    """Read the next dispatchable request while settling expired lifecycle state."""
     agent = _validate_agent_id(agent_id)
     now = time.time()
-    rows = _candidate_rows(agent)
+    with _queue_lock():
+        rows = [_refresh_timeout(row, now) for row in _candidate_rows(agent)]
 
     for row in rows:
         if row.get("status") != "DISPATCHED":
@@ -491,6 +520,13 @@ def claim_request(
             "claimed_at": now,
             "expires_at": now + lease,
         }
+        if value.get("dispatch_timeout_seconds") is not None:
+            response_timeout = int(
+                value.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS
+            )
+            value["response_deadline_at"] = now + response_timeout
+            value["deadline_at"] = value["response_deadline_at"]
+            value["timeout_phase"] = None
         value["updated_at"] = now
         _save(value)
         return dict(value)
@@ -539,6 +575,13 @@ def claim_next(
                 "claimed_at": now,
                 "expires_at": now + lease,
             }
+            if row.get("dispatch_timeout_seconds") is not None:
+                response_timeout = int(
+                    row.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS
+                )
+                row["response_deadline_at"] = now + response_timeout
+                row["deadline_at"] = row["response_deadline_at"]
+                row["timeout_phase"] = None
             row["updated_at"] = now
             _save(row)
             return dict(row)

@@ -3,17 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from typing import Any
 
-from cognition import (
-    complete,
-    get,
-    get_status,
-    submit,
-    wait_response,
-)
+from cognition import complete, get, get_status, submit, wait_response
 
 
-def _stdin_object() -> dict:
+def _stdin_object() -> dict[str, Any]:
     raw = sys.stdin.read()
     if not raw.strip():
         raise ValueError("JSON request body required on stdin")
@@ -23,8 +18,43 @@ def _stdin_object() -> dict:
     return value
 
 
-def _print(value: dict) -> None:
+def _print(value: dict[str, Any]) -> None:
     print(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
+def submit_or_call(
+    payload: dict[str, Any],
+    *,
+    wait: bool,
+    wait_timeout_seconds: int | None = None,
+) -> dict[str, Any]:
+    request = submit(**payload)
+    if not wait:
+        return request
+    return wait_response(
+        str(request["request_id"]),
+        timeout_seconds=wait_timeout_seconds,
+    )
+
+
+def complete_request(
+    *,
+    request_id: str,
+    claim_token: str,
+    body: dict[str, Any],
+    provider: str,
+    model: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    return complete(
+        request_id=request_id,
+        response_text=body.get("response_text"),
+        tool_calls=body.get("tool_calls"),
+        claim_token=claim_token,
+        provider=provider,
+        model=model,
+        session_id=session_id,
+    )
 
 
 def main() -> int:
@@ -54,14 +84,11 @@ def main() -> int:
     args = parser.parse_args()
     if args.command in {"submit", "call"}:
         payload = _stdin_object()
-        request = submit(**payload)
-        should_wait = args.command == "call" or bool(getattr(args, "wait", False))
-        if should_wait:
-            request = wait_response(
-                request["request_id"],
-                timeout_seconds=getattr(args, "wait_timeout_seconds", None),
-            )
-        _print(request)
+        _print(submit_or_call(
+            payload,
+            wait=args.command == "call" or bool(getattr(args, "wait", False)),
+            wait_timeout_seconds=getattr(args, "wait_timeout_seconds", None),
+        ))
         return 0
     if args.command == "status":
         _print(get_status(args.request_id))
@@ -70,12 +97,10 @@ def main() -> int:
         _print(get(args.request_id))
         return 0
     if args.command == "complete":
-        body = _stdin_object()
-        response_text = body.get("response_text")
-        _print(complete(
+        _print(complete_request(
             request_id=args.request_id,
-            response_text=response_text,
             claim_token=args.claim_token,
+            body=_stdin_object(),
             provider=args.provider,
             model=args.model,
             session_id=args.session_id,
@@ -88,5 +113,11 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, separators=(",", ":")), file=sys.stderr)
+        print(
+            json.dumps(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                separators=(",", ":"),
+            ),
+            file=sys.stderr,
+        )
         raise

@@ -30,6 +30,7 @@ def submit_wait(payload: dict[str, Any]) -> dict[str, Any]:
         options=payload.get("options"),
         metadata=payload.get("metadata"),
         timeout_seconds=payload.get("timeout_seconds", 300),
+        dispatch_timeout_seconds=payload.get("dispatch_timeout_seconds"),
         request_id=payload.get("request_id"),
     )
     return wait_response(

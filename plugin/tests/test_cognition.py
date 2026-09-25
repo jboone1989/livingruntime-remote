@@ -14,6 +14,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import cognition  # noqa: E402
 import cognition_cli  # noqa: E402
+import cognitionctl  # noqa: E402
 
 
 class CognitionQueueTests(unittest.TestCase):
@@ -168,6 +169,70 @@ class CognitionQueueTests(unittest.TestCase):
         self.assertEqual(timed_out["status"], "TIMED_OUT")
         self.assertEqual(timed_out["finished_at"], 1006.0)
 
+    def test_unclaimed_request_uses_short_dispatch_deadline(self) -> None:
+        with patch.object(cognition.time, "time", return_value=1000.0):
+            created = cognition.submit(
+                agent_id="ferro",
+                purpose="interactive-fallback",
+                messages=[{"role": "user", "content": "hello"}],
+                timeout_seconds=300,
+                dispatch_timeout_seconds=15,
+                request_id="llmreq_dispatch_grace",
+            )
+        self.assertEqual(created["deadline_at"], 1015.0)
+        self.assertEqual(created["dispatch_deadline_at"], 1015.0)
+        self.assertEqual(created["timeout_seconds"], 300)
+
+        with patch.object(cognition.time, "time", return_value=1016.0):
+            timed_out = cognition.get("llmreq_dispatch_grace")
+        self.assertEqual(timed_out["status"], "TIMED_OUT")
+        self.assertEqual(timed_out["timeout_phase"], "DISPATCH")
+
+    def test_claim_extends_dispatch_grace_to_full_response_window(self) -> None:
+        with patch.object(cognition.time, "time", return_value=1000.0):
+            cognition.submit(
+                agent_id="ferro",
+                purpose="interactive-fallback",
+                messages=[{"role": "user", "content": "hello"}],
+                timeout_seconds=300,
+                dispatch_timeout_seconds=15,
+                request_id="llmreq_claim_extends",
+            )
+        with patch.object(cognition.time, "time", return_value=1005.0):
+            claimed = cognition.claim_request(
+                request_id="llmreq_claim_extends",
+                watcher_id="watcher_live",
+                claim_seconds=120,
+            )
+        self.assertEqual(claimed["status"], "DISPATCHED")
+        self.assertEqual(claimed["dispatch_deadline_at"], 1015.0)
+        self.assertEqual(claimed["response_deadline_at"], 1305.0)
+        self.assertEqual(claimed["deadline_at"], 1305.0)
+
+        with patch.object(cognition.time, "time", return_value=1016.0):
+            still_live = cognition.get("llmreq_claim_extends")
+        self.assertEqual(still_live["status"], "DISPATCHED")
+
+    def test_peek_settles_expired_unclaimed_request_for_observability(self) -> None:
+        with patch.object(cognition.time, "time", return_value=1000.0):
+            cognition.submit(
+                agent_id="ferro",
+                purpose="interactive-fallback",
+                messages=[{"role": "user", "content": "hello"}],
+                timeout_seconds=300,
+                dispatch_timeout_seconds=5,
+                request_id="llmreq_peek_expired",
+            )
+        with patch.object(cognition.time, "time", return_value=1006.0):
+            self.assertIsNone(cognition.peek_next(agent_id="ferro"))
+        stored = json.loads(
+            (self.root / "requests" / "llmreq_peek_expired.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(stored["status"], "TIMED_OUT")
+        self.assertEqual(stored["timeout_phase"], "DISPATCH")
+
     def test_agent_queues_are_isolated(self) -> None:
         self.submit("llmreq_ferro", agent_id="ferro")
         self.submit("llmreq_other", agent_id="other-agent")
@@ -248,6 +313,45 @@ class CognitionQueueTests(unittest.TestCase):
         self.assertEqual(result["status"], "COMPLETED")
         self.assertEqual(submit_mock.call_args.kwargs["tools"][0]["name"], "read")
         wait_mock.assert_called_once_with("llmreq_cli", timeout_seconds=45)
+
+    def test_transport_cli_forwards_optional_dispatch_grace(self) -> None:
+        payload = {
+            "agent_id": "ferro",
+            "purpose": "general_text",
+            "messages": [{"role": "user", "content": "hello"}],
+            "timeout_seconds": 300,
+            "dispatch_timeout_seconds": 15,
+        }
+        with patch.object(
+            cognition_cli, "submit", return_value={"request_id": "llmreq_cli_grace"}
+        ) as submit_mock, patch.object(
+            cognition_cli,
+            "wait_response",
+            return_value={"request_id": "llmreq_cli_grace", "status": "COMPLETED"},
+        ):
+            cognition_cli.submit_wait(payload)
+        self.assertEqual(
+            submit_mock.call_args.kwargs["dispatch_timeout_seconds"], 15
+        )
+
+    def test_compat_cognitionctl_preserves_structured_tool_calls(self) -> None:
+        with patch.object(
+            cognitionctl,
+            "complete",
+            return_value={"request_id": "llmreq_compat", "status": "COMPLETED"},
+        ) as complete_mock:
+            result = cognitionctl.complete_request(
+                request_id="llmreq_compat",
+                claim_token="token",
+                body={"tool_calls": [{"id": "c1", "name": "read", "arguments": {}}]},
+                provider="livingruntime-chatgpt",
+                model="chatgpt-web",
+                session_id="session",
+            )
+        self.assertEqual(result["status"], "COMPLETED")
+        self.assertEqual(
+            complete_mock.call_args.kwargs["tool_calls"][0]["name"], "read"
+        )
 
 
 if __name__ == "__main__":
