@@ -29,7 +29,7 @@ NAME = "LivingRuntime Remote"
 VERSION = "0.4.27"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
-COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v2.html"
+COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v3.html"
 CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v4.html"
 CONTROL_PLANE_WIDGET_LEGACY_URI = "ui://livingruntime-remote/control-plane-v3.html"
 PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
@@ -543,9 +543,8 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
       "If Pi should use a tool, call complete_llm_request with tool_calls=[{id,name,arguments}] and the returned claim.token; " +
       "Pi will execute that tool inside its native agent loop and send the tool result back in the next model request. " +
       "If no tool is needed, complete with response_text. If the request is already claimed or completed, inspect " +
-      "get_llm_request_status and do not duplicate work. After completion, re-arm the channel by calling " +
-      "watch_agent_cognition with agent_id=" + agentId + " before ending this turn, so the next request can wake " +
-      "this conversation. Do not ask the user to type continue.";
+      "get_llm_request_status and do not duplicate work. The watcher remains armed after this request, so do not " +
+      "create a second watcher merely to continue the channel. Do not ask the user to type continue.";
     try {
       await request("ui/message", {
         role:"user",
@@ -566,6 +565,7 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
     const watcherId = output?.watcherId;
     if (!connected || !agentId || !watcherId || activeWatcher === watcherId || stopped) return;
     activeWatcher = watcherId;
+    let handedOffRequestId = null;
     setStatus("Cognition channel armed", "Agent " + agentId + " · waiting for the next LLM request");
     try {
       while (!stopped) {
@@ -582,6 +582,16 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
         if (llmRequest?.request_id) {
           const requestId = llmRequest.request_id;
           const purpose = llmRequest.purpose || null;
+          const reclaimable = Boolean(llmRequest.reclaimable);
+          if (requestId === handedOffRequestId && !reclaimable) {
+            setStatus(
+              "Request handed off",
+              "Request " + requestId + " is waiting for ChatGPT to claim it; watcher remains armed."
+            );
+            await new Promise(resolve=>setTimeout(resolve,1000));
+            continue;
+          }
+          handedOffRequestId = requestId;
           setStatus("Cognition request received", "Request " + requestId + " · handing it to ChatGPT");
           await request("ui/update-model-context", {
             structuredContent:{
@@ -594,9 +604,12 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
             }
           }).catch(()=>{});
           await followUp(agentId, requestId, purpose, watcherId);
-          setStatus("Request handed off", "ChatGPT can answer it; the next turn will re-arm this channel.");
-          stopped = true;
-          return;
+          setStatus(
+            "Request handed off",
+            "ChatGPT can answer " + requestId + "; watcher remains armed for the next queued request."
+          );
+          await new Promise(resolve=>setTimeout(resolve,500));
+          continue;
         }
         if (!payload?.timed_out && !payload?.timedOut) {
           throw new Error("cognition wait returned without a request or timeout");

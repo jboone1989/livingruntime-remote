@@ -532,6 +532,10 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn("get_llm_request_status", html)
         self.assertIn("complete_llm_request", html)
         self.assertIn("watch_agent_cognition", html)
+        self.assertIn("watcher remains armed", html)
+        self.assertIn("handedOffRequestId", html)
+        self.assertIn("reclaimable", html)
+        self.assertNotIn("the next turn will re-arm this channel", html)
         self.assertIn("Do not ask the user to type continue", html)
         self.assertNotIn("setInterval(", html)
 
