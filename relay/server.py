@@ -26,11 +26,12 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.26"
+VERSION = "0.4.27"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
 COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v2.html"
-CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v3.html"
+CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v4.html"
+CONTROL_PLANE_WIDGET_LEGACY_URI = "ui://livingruntime-remote/control-plane-v3.html"
 PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
@@ -678,6 +679,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     <div class="row"><strong>LivingRuntime Remote Control Plane</strong><button id="refresh">Refresh</button></div>
     <div id="headline" class="muted">Loading snapshot…</div>
   </div>
+  <div class="section"><h3>Execution truth</h3><div id="execution" class="grid"></div></div>
   <div class="section"><h3>Hosts</h3><div id="devices" class="grid"></div></div>
   <div class="section"><h3>Durable jobs</h3><div id="jobs" class="grid"></div></div>
   <div class="section"><h3>Permissions & credentials</h3><div id="security" class="grid"></div></div>
@@ -709,6 +711,18 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     const online = connector.online !== false;
     q("headline").innerHTML = '<span class="badge '+(online?'ok':'bad')+'"><span class="dot"></span>'+(online?'Connector online':'Connector offline')+'</span> · v'+esc(latest.version || latest.overview?.version || "?");
     const overview = latest.overview || latest;
+    const execution = overview?.execution || {};
+    const state = execution.state || "UNKNOWN";
+    const stateClass = state==="RUNNING_EXECUTION" || state==="RECENT_ACTIVITY" ? "ok" : (state==="STALLED" || state==="BLOCKED" ? "bad" : "warn");
+    const active = execution.active_jobs || [];
+    const lastActivity = execution.last_real_activity_at;
+    const warning = execution.ui_warning ? '<div class="item"><strong>UI may be stale</strong><div class="muted">'+esc(execution.ui_warning)+'</div></div>' : '';
+    q("execution").innerHTML =
+      '<div class="item"><span class="badge '+stateClass+'"><span class="dot"></span>'+esc(state)+'</span><div>'+esc(execution.message||"No execution receipt yet.")+'</div></div>'+
+      '<div class="item"><strong>'+esc(execution.active_job_count||0)+'</strong> active durable jobs<div class="muted">'+esc(execution.worker_alive_count||0)+' live workers/children</div></div>'+
+      '<div class="item"><strong>Last real activity</strong><div>'+esc(lastActivity?formatTs(lastActivity):"none recorded")+'</div><div class="muted">'+esc(execution.last_tool||"—")+(execution.last_target?' · '+esc(execution.last_target):'')+'</div></div>'+
+      warning+
+      active.slice(0,4).map(j=>'<div class="item"><strong>'+esc(j.status)+'</strong> <code>'+esc(j.job_id)+'</code><div>'+esc(j.current_step||j.goal||"")+'</div><div class="muted">worker '+esc(j.worker_alive||j.child_alive?"alive":"not alive")+' · heartbeat '+esc(j.heartbeat_age_seconds ?? "?")+'s</div></div>').join("");
     const devices = overview?.devices?.devices || [];
     q("devices").innerHTML = devices.length ? devices.map(d=>{
       const inv=d.inventory||{}; const mem=inv.memory||{};
@@ -724,13 +738,19 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     const activity=overview?.activity||[];
     q("activity").innerHTML = activity.length ? activity.slice().reverse().slice(0,12).map(a=>'<div class="item"><span class="badge '+(a.ok?'ok':'bad')+'"><span class="dot"></span>'+esc(a.tool)+'</span><div class="muted" title="'+esc(a.ts)+'">'+esc(formatTs(a.ts))+'</div></div>').join("") : '<span class="muted">No recent activity.</span>';
   }
+  let refreshTimer = null;
   async function refresh() {
     if (!connected) return;
+    if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
     q("headline").textContent="Refreshing…";
     try {
       const result=await request("tools/call",{name:"remote_overview",arguments:{include_resources:false}});
       render(data(result));
-    } catch (e) { q("headline").textContent="Refresh failed: "+String(e?.message||e); }
+    } catch (e) {
+      q("headline").textContent="Refresh failed: "+String(e?.message||e);
+    } finally {
+      if (connected) refreshTimer = setTimeout(()=>void refresh(), 10000);
+    }
   }
   q("refresh").addEventListener("click",()=>void refresh());
   window.addEventListener("message", event=>{
@@ -741,7 +761,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
   (async()=>{try{
     await request("ui/initialize",{appInfo:{name:"livingruntime-remote-control-plane",version:"1.0.0"},appCapabilities:{},protocolVersion:"2026-01-26"});
     notify("ui/notifications/initialized"); connected=true;
-    render(window.openai?.toolOutput||latest);
+    render(window.openai?.toolOutput||latest);\n    refreshTimer = setTimeout(()=>void refresh(), 1000);
   }catch(e){q("headline").textContent="Widget initialization failed: "+String(e?.message||e);}})();
 })();
 </script>
@@ -1122,11 +1142,18 @@ def create_mcp(
         description="Wait for a durable agent LLM request and hand it into this ChatGPT conversation without model-side polling.",
     )
     add_widget_resource(
+        CONTROL_PLANE_WIDGET_LEGACY_URI,
+        CONTROL_PLANE_WIDGET_HTML,
+        name="remote-control-plane-v3",
+        title="LivingRuntime Remote control plane",
+        description="Backward-compatible execution-truth dashboard for existing ChatGPT sessions.",
+    )
+    add_widget_resource(
         CONTROL_PLANE_WIDGET_URI,
         CONTROL_PLANE_WIDGET_HTML,
         name="remote-control-plane",
         title="LivingRuntime Remote control plane",
-        description="Read-only snapshot of connector health, hosts, durable jobs, approvals, credential handles, and recent activity.",
+        description="Read-only execution-truth snapshot of connector health, real server activity, durable jobs, approvals, credential handles, and recent activity.",
     )
 
     @apps.tool(

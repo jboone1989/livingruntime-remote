@@ -43,6 +43,11 @@ from credentials import (
     resolve_secret_for_lease,
     revoke_lease as revoke_credential_lease_runtime,
 )
+from execution_status import (
+    record_tool_event as record_execution_tool_event,
+    snapshot as execution_status_snapshot,
+    tracked_cognition_request_id,
+)
 from jobs import (
     attach_backend as attach_runtime_backend,
     checkpoint as checkpoint_runtime_job,
@@ -797,13 +802,24 @@ def _units(project: str | None = None, device: str | None = None) -> set[str]:
 
 
 def _audit(tool: str, ok: bool, detail: dict[str, Any]) -> None:
+    observed_at = time.time()
     directory = os.path.join(os.path.expanduser("~"), ".livingruntime")
     os.makedirs(directory, exist_ok=True)
     with open(os.path.join(directory, "remote-audit.jsonl"), "a", encoding="utf-8") as fh:
         fh.write(json.dumps(
-            {"ts": time.time(), "tool": tool, "ok": ok, "detail": detail},
+            {"ts": observed_at, "tool": tool, "ok": ok, "detail": detail},
             ensure_ascii=False, sort_keys=True,
         ) + "\n")
+    try:
+        record_execution_tool_event(
+            tool,
+            ok,
+            detail,
+            observed_at=observed_at,
+        )
+    except Exception:
+        # Execution telemetry must never make a real Remote tool fail.
+        pass
 
 
 def _ssh(
@@ -1347,6 +1363,17 @@ def remote_overview(include_resources: bool = False) -> dict[str, Any]:
             "executable": executable,
         })
     jobs = list_jobs(limit=25)["jobs"]
+    cognition_status = None
+    cognition_request_id = tracked_cognition_request_id()
+    if cognition_request_id:
+        try:
+            cognition_status = get_cognition_request_status(cognition_request_id)
+        except (OSError, ValueError, RuntimeError):
+            cognition_status = None
+    execution = execution_status_snapshot(
+        jobs=jobs,
+        cognition_status=cognition_status,
+    )
     credential_rows = credential_snapshot()
     credentials = [
         {
@@ -1367,6 +1394,7 @@ def remote_overview(include_resources: bool = False) -> dict[str, Any]:
         "generated_at": time.time(),
         "devices": devices,
         "jobs": jobs,
+        "execution": execution,
         "permissions": {
             "pending": pending_permissions,
             "active_count": len(permission_state.get("grants") or []),

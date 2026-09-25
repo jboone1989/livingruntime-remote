@@ -529,8 +529,13 @@ class RelayServerTests(unittest.TestCase):
         html = server.CONTROL_PLANE_WIDGET_HTML
         self.assertIn("LivingRuntime Remote Control Plane", html)
         self.assertIn('"remote_overview"', html)
+        self.assertIn("Execution truth", html)
         self.assertIn("Durable jobs", html)
         self.assertIn("Permissions & credentials", html)
+        self.assertIn("ui_warning", html)
+        self.assertIn("last_real_activity_at", html)
+        self.assertIn("setTimeout(()=>void refresh(), 10000)", html)
+        self.assertNotIn("setInterval(", html)
         self.assertIn("formatTs", html)
         self.assertIn("toLocaleString", html)
         self.assertNotIn("approve_exec_permission", html)

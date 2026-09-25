@@ -766,6 +766,7 @@ class SchemaAndToolTests(unittest.TestCase):
             {
                 "LIVINGRUNTIME_REMOTE_JOBS": str(jobs_root),
                 "LIVINGRUNTIME_REMOTE_CREDENTIALS": str(credentials_root),
+                "LIVINGRUNTIME_REMOTE_EXECUTION_STATE": str(Path(self.tmp.name) / "execution-state.json"),
             },
         ), patch.object(bridge, "_config_path", return_value=str(self.config)), patch.object(
             bridge, "_ssh", self._ssh
@@ -790,6 +791,9 @@ class SchemaAndToolTests(unittest.TestCase):
         self.assertEqual(len(result["jobs"]), 1)
         self.assertEqual(len(result["credentials"]), 1)
         self.assertEqual(result["permissions"]["pending"], [])
+        self.assertEqual(result["execution"]["source_of_truth"], "server_receipt")
+        self.assertEqual(result["execution"]["state"], "RUNNING_EXECUTION")
+        self.assertEqual(result["execution"]["active_job_count"], 1)
         self.assertNotIn("never-return-this-value", json.dumps(result))
 
     def test_openai_continuation_binding_and_terminal_resume(self) -> None:
