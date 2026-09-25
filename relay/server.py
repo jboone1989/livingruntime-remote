@@ -1897,7 +1897,7 @@ def create_mcp(
     async def complete_llm_request(
         request_id: str,
         claim_token: str,
-        response_text: str | None = None,
+        response_text: str | dict[str, Any] | list[Any] | int | float | bool | None = None,
         tool_calls: list[dict[str, Any]] | None = None,
         model: str | None = None,
         session_id: str | None = None,

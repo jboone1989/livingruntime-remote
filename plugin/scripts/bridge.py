@@ -2163,6 +2163,22 @@ def get_llm_request_status(request_id: str) -> dict[str, Any]:
     return result
 
 
+def _normalize_cognition_response_text(
+    value: str | dict[str, Any] | list[Any] | int | float | bool | None,
+) -> str | None:
+    """Preserve text responses and serialize structured model output as JSON."""
+    if value is None or isinstance(value, str):
+        return value
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("response_text must be JSON-serializable") from exc
+
+
 @server.tool(
     name="complete_llm_request",
     annotations=ToolAnnotations(
@@ -2176,7 +2192,7 @@ def get_llm_request_status(request_id: str) -> dict[str, Any]:
 def complete_llm_request(
     request_id: str,
     claim_token: str,
-    response_text: str | None = None,
+    response_text: str | dict[str, Any] | list[Any] | int | float | bool | None = None,
     tool_calls: list[dict[str, Any]] | None = None,
     model: str | None = None,
     session_id: str | None = None,
@@ -2184,7 +2200,7 @@ def complete_llm_request(
     """Complete a claimed request and release the blocked calling agent."""
     result = complete_cognition_request(
         request_id=request_id,
-        response_text=response_text,
+        response_text=_normalize_cognition_response_text(response_text),
         tool_calls=tool_calls,
         claim_token=claim_token,
         provider="livingruntime-chatgpt",

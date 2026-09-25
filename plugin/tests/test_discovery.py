@@ -69,6 +69,20 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(schema.get("type"), "object")
             self.assertTrue(by_name[name].description)
 
+    def test_complete_llm_request_accepts_structured_response_text(self) -> None:
+        tools = asyncio.run(bridge.server.list_tools())
+        complete = next(tool for tool in tools if tool.name == "complete_llm_request")
+        schema = (complete.inputSchema or {}).get("properties", {}).get("response_text", {})
+        variants = schema.get("anyOf") or []
+        types = {item.get("type") for item in variants if isinstance(item, dict)}
+        self.assertIn("string", types)
+        self.assertIn("object", types)
+        self.assertIn("array", types)
+        self.assertEqual(
+            bridge._normalize_cognition_response_text({"answer": "ok"}),
+            '{"answer":"ok"}',
+        )
+
     def test_capabilities_handshake_shape(self) -> None:
         snapshot = bridge.capabilities()
         self.assertEqual(snapshot["identity"], REMOTE_IDENTITY)

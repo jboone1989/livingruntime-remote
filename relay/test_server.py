@@ -347,6 +347,19 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn(
             "tool_calls", (tools["complete_llm_request"].parameters or {}).get("properties", {})
         )
+        response_schema = (
+            (tools["complete_llm_request"].parameters or {})
+            .get("properties", {})
+            .get("response_text", {})
+        )
+        response_types = {
+            item.get("type")
+            for item in response_schema.get("anyOf", [])
+            if isinstance(item, dict)
+        }
+        self.assertIn("string", response_types)
+        self.assertIn("object", response_types)
+        self.assertIn("array", response_types)
         self.assertNotIn("resourceUri", tools["wait_llm_request"].meta["ui"])
         self.assertNotIn("resourceUri", tools["wait_long_job"].meta["ui"])
         self.assertEqual(
