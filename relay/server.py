@@ -1933,7 +1933,20 @@ def create_mcp(
             {"request_id": request_id},
         )
 
-    @expose("complete_llm_request", False, False, False)
+    @apps.tool(
+        resource_uri=COGNITION_WIDGET_URI,
+        visibility=["model", "app"],
+        name="complete_llm_request",
+        title=TOOL_TEXT["complete_llm_request"][0],
+        description=TOOL_TEXT["complete_llm_request"][1],
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+        meta=WRITE,
+    )
     async def complete_llm_request(
         request_id: str,
         claim_token: str,
@@ -1942,8 +1955,9 @@ def create_mcp(
         model: str | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
-        return await relay.call(
-            _principal("remote:write"),
+        user_sub = _principal("remote:write")
+        result = await relay.call(
+            user_sub,
             "complete_llm_request",
             {
                 "request_id": request_id,
@@ -1954,6 +1968,19 @@ def create_mcp(
                 "session_id": session_id,
             },
         )
+        agent_id = str(result.get("agent_id") or "").strip()
+        if not agent_id:
+            return result
+        watcher = await relay.call(
+            user_sub,
+            "watch_agent_cognition",
+            {"agent_id": agent_id},
+        )
+        return {
+            **result,
+            **watcher,
+            "watcherAutoRearmed": True,
+        }
 
     @expose("get_long_job", True, False, False)
     async def get_long_job(job_id: str) -> dict[str, Any]:

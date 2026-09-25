@@ -355,6 +355,14 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn(
             "tool_calls", (tools["complete_llm_request"].parameters or {}).get("properties", {})
         )
+        self.assertEqual(
+            tools["complete_llm_request"].meta["ui"]["resourceUri"],
+            server.COGNITION_WIDGET_URI,
+        )
+        self.assertEqual(
+            tools["complete_llm_request"].meta["ui"]["visibility"],
+            ["model", "app"],
+        )
         response_schema = (
             (tools["complete_llm_request"].parameters or {})
             .get("properties", {})
