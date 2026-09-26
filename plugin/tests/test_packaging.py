@@ -133,6 +133,18 @@ class PackagingTests(unittest.TestCase):
         self.assertTrue((self.root / "scripts" / "install-connector.sh").exists())
         self.assertTrue((self.root / "docs" / "livingruntime-remote-release-checklist.md").exists())
 
+    def test_cognition_completion_is_registered_for_model_and_app(self) -> None:
+        source = (
+            self.root.parent / "relay" / "server.py"
+        ).read_text(encoding="utf-8")
+        function_at = source.index("async def complete_llm_request(")
+        decorators = source[max(0, function_at - 1200):function_at]
+        self.assertIn('@apps.tool(', decorators)
+        self.assertIn(
+            '@expose("complete_llm_request", False, False, False)',
+            decorators,
+        )
+
     def test_plugin_tree_has_no_embedded_secrets(self) -> None:
         forbidden = ["BEGIN PRIVATE " + "KEY", "BEGIN OPENSSH PRIVATE " + "KEY", "sk-proj" + "-", "password" + "="]
         for path in self.root.rglob("*"):

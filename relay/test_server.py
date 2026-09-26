@@ -284,13 +284,14 @@ class RelayServerTests(unittest.TestCase):
             "continue_openai_pi_job",
             "claim_llm_request_for_watcher",
         } | set(REMOTE_TOOLS)
-        self.assertEqual(set(tools), expected - {"complete_llm_request"})
+        self.assertEqual(set(tools), expected)
         app_bindings = {
             binding.kwargs["name"]: binding
             for extension in mcp._extensions
             for binding in extension.tools()
         }
         self.assertIn("complete_llm_request", app_bindings)
+        self.assertIn("complete_llm_request", tools)
         complete_binding = app_bindings["complete_llm_request"]
         for tool in tools.values():
             self.assertTrue(tool.title, tool.name)

@@ -1973,6 +1973,7 @@ def create_mcp(
         ),
         meta=WRITE,
     )
+    @expose("complete_llm_request", False, False, False)
     async def complete_llm_request(
         request_id: str,
         claim_token: str,
