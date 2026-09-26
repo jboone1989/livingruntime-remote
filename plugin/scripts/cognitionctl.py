@@ -68,6 +68,10 @@ def main() -> int:
     call_p = sub.add_parser("call")
     call_p.add_argument("--wait-timeout-seconds", type=int, default=None)
 
+    wait_p = sub.add_parser("wait")
+    wait_p.add_argument("request_id")
+    wait_p.add_argument("--wait-timeout-seconds", type=int, default=None)
+
     status_p = sub.add_parser("status")
     status_p.add_argument("request_id")
 
@@ -88,6 +92,12 @@ def main() -> int:
             payload,
             wait=args.command == "call" or bool(getattr(args, "wait", False)),
             wait_timeout_seconds=getattr(args, "wait_timeout_seconds", None),
+        ))
+        return 0
+    if args.command == "wait":
+        _print(wait_response(
+            args.request_id,
+            timeout_seconds=args.wait_timeout_seconds,
         ))
         return 0
     if args.command == "status":

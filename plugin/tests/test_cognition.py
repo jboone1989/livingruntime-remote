@@ -418,6 +418,39 @@ class CognitionQueueTests(unittest.TestCase):
             complete_mock.call_args.kwargs["tool_calls"][0]["name"], "read"
         )
 
+    def test_compat_cognitionctl_wait_resumes_existing_request_without_submit(self) -> None:
+        completed = {
+            "request_id": "llmreq_resume",
+            "status": "COMPLETED",
+            "response": {"text": "done"},
+        }
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "cognitionctl.py",
+                "wait",
+                "llmreq_resume",
+                "--wait-timeout-seconds",
+                "5",
+            ],
+        ), patch.object(
+            cognitionctl,
+            "wait_response",
+            return_value=completed,
+        ) as wait_mock, patch.object(
+            cognitionctl,
+            "submit",
+            side_effect=AssertionError("wait must not resubmit"),
+        ), patch.object(
+            cognitionctl,
+            "_print",
+        ) as print_mock:
+            self.assertEqual(cognitionctl.main(), 0)
+
+        wait_mock.assert_called_once_with("llmreq_resume", timeout_seconds=5)
+        print_mock.assert_called_once_with(completed)
+
 
 if __name__ == "__main__":
     unittest.main()
