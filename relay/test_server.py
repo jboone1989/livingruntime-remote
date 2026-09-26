@@ -42,7 +42,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.30")
+            self.assertEqual(health.json()["version"], "0.4.31")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -432,6 +432,11 @@ class RelayServerTests(unittest.TestCase):
             tools["continue_openai_pi_job"].annotations.read_only_hint
         )
         resources = asyncio.run(mcp.list_resources())
+        resource_uris = {str(resource.uri) for resource in resources}
+        self.assertTrue(server.PI_JOB_WIDGET_URI.endswith("pi-job-watch-v3.html"))
+        self.assertTrue(server.LONG_JOB_WIDGET_URI.endswith("long-job-watch-v3.html"))
+        self.assertIn(server.PI_JOB_WIDGET_LEGACY_URI, resource_uris)
+        self.assertIn(server.LONG_JOB_WIDGET_LEGACY_URI, resource_uris)
         widget = next(
             resource
             for resource in resources

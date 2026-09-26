@@ -26,9 +26,11 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.30"
-PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
-LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
+VERSION = "0.4.31"
+PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v3.html"
+PI_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
+LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v3.html"
+LONG_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
 COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v3.html"
 CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v4.html"
 CONTROL_PLANE_WIDGET_LEGACY_URI = "ui://livingruntime-remote/control-plane-v3.html"
@@ -1215,11 +1217,25 @@ def create_mcp(
         )
 
     add_widget_resource(
+        PI_JOB_WIDGET_LEGACY_URI,
+        PI_JOB_WIDGET_HTML,
+        name="pi-job-watch-v2",
+        title="Pi Remote job watcher",
+        description="Backward-compatible watcher resource for existing Pi Remote task cards.",
+    )
+    add_widget_resource(
         PI_JOB_WIDGET_URI,
         PI_JOB_WIDGET_HTML,
         name="pi-job-watch",
         title="Pi Remote job watcher",
         description="Wait for an existing Pi Remote detached job and continue this conversation when it finishes.",
+    )
+    add_widget_resource(
+        LONG_JOB_WIDGET_LEGACY_URI,
+        LONG_JOB_WIDGET_HTML,
+        name="long-job-watch-v2",
+        title="Long-running job watcher",
+        description="Backward-compatible watcher resource for existing supervised long-job task cards.",
     )
     add_widget_resource(
         LONG_JOB_WIDGET_URI,
