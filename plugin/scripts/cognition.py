@@ -404,9 +404,12 @@ def _candidate_rows(agent_id: str) -> list[dict[str, Any]]:
     return rows
 
 
-def peek_next(*, agent_id: str) -> dict[str, Any] | None:
+def peek_next(
+    *, agent_id: str, watcher_id: str | None = None
+) -> dict[str, Any] | None:
     """Read the next dispatchable request while settling expired lifecycle state."""
     agent = _validate_agent_id(agent_id)
+    watcher = None if watcher_id is None else _validate_watcher_id(watcher_id)
     now = time.time()
     with _queue_lock():
         rows = [_refresh_timeout(row, now) for row in _candidate_rows(agent)]
@@ -419,6 +422,16 @@ def peek_next(*, agent_id: str) -> dict[str, Any] | None:
             continue
         claim = row.get("claim") if isinstance(row.get("claim"), dict) else {}
         if float(claim.get("expires_at") or 0.0) > now:
+            if watcher is not None and claim.get("watcher_id") == watcher:
+                return {
+                    "request_id": row.get("request_id"),
+                    "agent_id": row.get("agent_id"),
+                    "purpose": row.get("purpose"),
+                    "status": "DISPATCHED",
+                    "deadline_at": row.get("deadline_at"),
+                    "reclaimable": False,
+                    "owned_by_watcher": True,
+                }
             return None
 
     for row in rows:
@@ -436,6 +449,7 @@ def peek_next(*, agent_id: str) -> dict[str, Any] | None:
                 "status": "DISPATCHED",
                 "deadline_at": row.get("deadline_at"),
                 "reclaimable": True,
+                "owned_by_watcher": False,
             }
 
     for row in rows:
@@ -451,6 +465,7 @@ def peek_next(*, agent_id: str) -> dict[str, Any] | None:
             "status": "PENDING",
             "deadline_at": row.get("deadline_at"),
             "reclaimable": False,
+            "owned_by_watcher": False,
         }
     return None
 
@@ -458,13 +473,14 @@ def peek_next(*, agent_id: str) -> dict[str, Any] | None:
 def wait_pending(
     *,
     agent_id: str,
+    watcher_id: str | None = None,
     timeout_seconds: int = 30,
 ) -> dict[str, Any]:
     """Bounded, side-effect-free wait used by the ChatGPT widget."""
     timeout = min(90, max(1, int(timeout_seconds)))
     deadline = time.monotonic() + timeout
     while True:
-        request = peek_next(agent_id=agent_id)
+        request = peek_next(agent_id=agent_id, watcher_id=watcher_id)
         if request is not None:
             return {"request": request, "timed_out": False}
         remaining = deadline - time.monotonic()

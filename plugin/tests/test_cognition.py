@@ -233,6 +233,46 @@ class CognitionQueueTests(unittest.TestCase):
         self.assertEqual(stored["status"], "TIMED_OUT")
         self.assertEqual(stored["timeout_phase"], "DISPATCH")
 
+    def test_same_watcher_can_resume_its_active_claim_after_widget_reload(self) -> None:
+        created = self.submit("llmreq_resume_same_watcher")
+        claimed = cognition.claim_request(
+            request_id=created["request_id"],
+            watcher_id="watcher_session_a",
+            claim_seconds=300,
+        )
+        same = cognition.peek_next(
+            agent_id="ferro",
+            watcher_id="watcher_session_a",
+        )
+        self.assertEqual(same["request_id"], created["request_id"])
+        self.assertEqual(same["status"], "DISPATCHED")
+        self.assertTrue(same["owned_by_watcher"])
+        self.assertFalse(same["reclaimable"])
+
+        other = cognition.peek_next(
+            agent_id="ferro",
+            watcher_id="watcher_session_b",
+        )
+        self.assertIsNone(other)
+
+        resumed = cognition.wait_pending(
+            agent_id="ferro",
+            watcher_id="watcher_session_a",
+            timeout_seconds=1,
+        )
+        self.assertFalse(resumed["timed_out"])
+        self.assertEqual(resumed["request"]["request_id"], created["request_id"])
+
+        same_claim = cognition.claim_request(
+            request_id=created["request_id"],
+            watcher_id="watcher_session_a",
+            claim_seconds=300,
+        )
+        self.assertEqual(
+            same_claim["claim"]["token"],
+            claimed["claim"]["token"],
+        )
+
     def test_agent_queues_are_isolated(self) -> None:
         self.submit("llmreq_ferro", agent_id="ferro")
         self.submit("llmreq_other", agent_id="other-agent")

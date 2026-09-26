@@ -26,7 +26,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.28"
+VERSION = "0.4.29"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
 COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v3.html"
@@ -192,8 +192,9 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
     activeJob = jobId;
     const initialStatus = output?.state?.status || "UNKNOWN";
     setStatus(
-      output?.terminal ? "Pi already finished: " + initialStatus : "Pi is working…",
-      "Job " + jobId + " · state " + initialStatus + " · Remote watcher attached"
+      output?.terminal ? "WAITING_FOR_CHATGPT_SESSION" : "ARMED",
+      "Pi job " + jobId + " · server state " + initialStatus +
+      (output?.terminal ? " · terminal result ready for ChatGPT" : " · watcher attached")
     );
 
     try {
@@ -213,10 +214,10 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
           const durableId = data.runtimeJobId || runtimeJobId;
           const durableStatus = data.runtimeGoalStatus || output?.runtimeGoalStatus || null;
           setStatus(
-            "Pi finished: " + (state.status || "terminal"),
+            "WAITING_FOR_CHATGPT_SESSION",
             durableId
-              ? "Durable goal " + durableId + " · " + (durableStatus || "awaiting controller")
-              : "Sending a follow-up into this ChatGPT conversation…"
+              ? "Pi server state " + (state.status || "terminal") + " · durable goal " + durableId + " · " + (durableStatus || "awaiting controller")
+              : "Pi server state " + (state.status || "terminal") + " · handing the terminal result to ChatGPT"
           );
           await request("ui/update-model-context", {
             structuredContent: {
@@ -230,7 +231,7 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
             }
           }).catch(() => {});
           await sendFollowUp(jobId, state, durableId, durableStatus);
-          setStatus("Follow-up sent", "ChatGPT can continue from the completed Pi job.");
+          setStatus("WAITING_FOR_CHATGPT_SESSION", "Terminal Pi result handed to ChatGPT.");
           stopped = true;
           return;
         }
@@ -238,17 +239,14 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
           throw new Error("Pi job wait returned without terminal state or timeout");
         }
         setStatus(
-          "Pi is still working…",
-          "Job " + jobId + " · Remote connected · watcher heartbeat received"
+          "ARMED",
+          "Pi job " + jobId + " · server state " + (data?.state?.status || "UNKNOWN") + " · watcher heartbeat received"
         );
       }
     } catch (error) {
       const message = String(error?.message || error);
       const disconnected = /offline|device|connect|timeout/i.test(message);
-      setStatus(
-        disconnected ? "Remote connection lost" : "Watcher stopped",
-        message
-      );
+      setStatus("DISCONNECTED", (disconnected ? "Remote connection lost · " : "Watcher stopped · ") + message);
       const prompt =
         "LivingRuntime Remote watcher for Pi job " + jobId + " stopped: " + message +
         ". Check device_status and the durable Pi job state before assuming Pi is still running.";
@@ -278,8 +276,16 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
     }
     if (message.method === "ui/notifications/request-teardown") {
       stopped = true;
+      connected = false;
+      setStatus("DISCONNECTED", "Watcher widget was destroyed. Server process state is independent.");
     }
   }, { passive: true });
+
+  window.addEventListener("pagehide",()=>{
+    stopped=true;
+    connected=false;
+    setStatus("DISCONNECTED","Watcher widget is no longer attached. Durable server state is unchanged.");
+  },{once:true});
 
   async function connect() {
     try {
@@ -389,7 +395,7 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
     const jobId = jobIdFrom(output);
     if (!connected || !jobId || activeJob === jobId || stopped) return;
     activeJob = jobId;
-    setStatus("Long job watcher attached", "Job " + jobId + " · waiting for heartbeat");
+    setStatus("ARMED", "Long job " + jobId + " · watcher attached; server process state is checked separately");
     try {
       while (!stopped) {
         const result = await request("tools/call", {
@@ -402,29 +408,29 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
         const status = job.status || state.observed_status || state.status || "UNKNOWN";
 
         if (data?.terminal || job.terminal) {
-          setStatus("Long job finished: " + status, describe(data));
+          setStatus("WAITING_FOR_CHATGPT_SESSION", "Server state " + status + " · " + describe(data));
           await request("ui/update-model-context", {
             structuredContent:{longJobCompletion:{jobId,status,terminal:true}}
           }).catch(()=>{});
           await followUp(jobId,status);
-          setStatus("Follow-up sent", "ChatGPT can continue from the durable receipt.");
+          setStatus("WAITING_FOR_CHATGPT_SESSION", "Terminal durable receipt handed to ChatGPT.");
           stopped = true;
           return;
         }
         if (status === "STALLED") {
-          setStatus("Long job stalled", describe(data));
+          setStatus("WAITING_FOR_CHATGPT_SESSION", "Server state STALLED · " + describe(data));
           await request("ui/update-model-context", {
             structuredContent:{longJobCompletion:{jobId,status:"STALLED",terminal:false}}
           }).catch(()=>{});
           await followUp(jobId,"STALLED");
-          setStatus("Stall reported", "ChatGPT can inspect and recover the job.");
+          setStatus("WAITING_FOR_CHATGPT_SESSION", "Stall receipt handed to ChatGPT for recovery.");
           stopped = true;
           return;
         }
         if (!data?.timedOut) {
           throw new Error("long-job wait returned without terminal/stalled state or timeout");
         }
-        setStatus("Long job is working…", describe(data));
+        setStatus("ARMED", describe(data));
         await request("ui/update-model-context", {
           structuredContent:{
             longJobProgress:{
@@ -438,7 +444,7 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
       }
     } catch (error) {
       const message = String(error?.message || error);
-      setStatus("Long-job watcher stopped", message);
+      setStatus("DISCONNECTED", message);
       try {
         await request("ui/message", {
           role:"user",
@@ -464,8 +470,18 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
       latestOutput = message.params?.structuredContent || null;
       void watch(latestOutput);
     }
-    if (message.method === "ui/notifications/request-teardown") stopped=true;
+    if (message.method === "ui/notifications/request-teardown") {
+      stopped=true;
+      connected=false;
+      setStatus("DISCONNECTED","Watcher widget was destroyed. Server process state is independent.");
+    }
   },{passive:true});
+
+  window.addEventListener("pagehide",()=>{
+    stopped=true;
+    connected=false;
+    setStatus("DISCONNECTED","Watcher widget is no longer attached. Durable server state is unchanged.");
+  },{once:true});
 
   async function connect() {
     try {
@@ -567,7 +583,7 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
     if (!connected || !agentId || !watcherId || activeWatcher === watcherId || stopped) return;
     activeWatcher = watcherId;
     let handedOffRequestId = null;
-    setStatus("Cognition channel armed", "Agent " + agentId + " · waiting for the next LLM request");
+    setStatus("ARMED", "Agent " + agentId + " · waiting for the next durable cognition request");
     try {
       while (!stopped) {
         const result = await request("tools/call", {
@@ -586,14 +602,14 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
           const reclaimable = Boolean(llmRequest.reclaimable);
           if (requestId === handedOffRequestId && !reclaimable) {
             setStatus(
-              "Request handed off",
-              "Request " + requestId + " is waiting for ChatGPT to claim it; watcher remains armed."
+              "WAITING_FOR_CHATGPT_SESSION",
+              "Request " + requestId + " is already dispatched and is waiting for ChatGPT to finish it."
             );
             await new Promise(resolve=>setTimeout(resolve,1000));
             continue;
           }
           handedOffRequestId = requestId;
-          setStatus("Cognition request received", "Request " + requestId + " · handing it to ChatGPT");
+          setStatus("WAITING_FOR_CHATGPT_SESSION", "Request " + requestId + " · handing durable cognition to ChatGPT");
           const claimResult = await request("tools/call", {
             name:"claim_llm_request_for_watcher",
             arguments:{
@@ -617,8 +633,8 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
           }).catch(()=>{});
           await followUp(agentId, requestId, purpose, watcherId, claimToken);
           setStatus(
-            "Request handed off",
-            "ChatGPT can answer " + requestId + "; watcher remains armed for the next queued request."
+            "WAITING_FOR_CHATGPT_SESSION",
+            "Request " + requestId + " is owned by this watcher and waiting for the ChatGPT response."
           );
           await new Promise(resolve=>setTimeout(resolve,500));
           continue;
@@ -626,11 +642,11 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
         if (!payload?.timed_out && !payload?.timedOut) {
           throw new Error("cognition wait returned without a request or timeout");
         }
-        setStatus("Cognition channel armed", "Agent " + agentId + " · Remote watcher heartbeat received");
+        setStatus("ARMED", "Agent " + agentId + " · no cognition backlog · watcher heartbeat received");
       }
     } catch (error) {
       const message = String(error?.message || error);
-      setStatus("Cognition watcher stopped", message);
+      setStatus("DISCONNECTED", message);
       try {
         await request("ui/message", {
           role:"user",
@@ -655,8 +671,18 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
       latestOutput = message.params?.structuredContent || null;
       void watch(latestOutput);
     }
-    if (message.method === "ui/notifications/request-teardown") stopped=true;
+    if (message.method === "ui/notifications/request-teardown") {
+      stopped=true;
+      connected=false;
+      setStatus("DISCONNECTED","Watcher widget was destroyed. Pending cognition remains durable on the server.");
+    }
   },{passive:true});
+  window.addEventListener("pagehide",()=>{
+    stopped=true;
+    connected=false;
+    setStatus("DISCONNECTED","Watcher widget is no longer attached. Durable server state is unchanged.");
+  },{once:true});
+
   async function connect() {
     try {
       await request("ui/initialize", {
@@ -738,7 +764,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     const overview = latest.overview || latest;
     const execution = overview?.execution || {};
     const state = execution.state || "UNKNOWN";
-    const stateClass = state==="RUNNING_EXECUTION" || state==="RECENT_ACTIVITY" ? "ok" : (state==="STALLED" || state==="BLOCKED" ? "bad" : "warn");
+    const stateClass = state==="RUNNING" || state==="RECENT_ACTIVITY" ? "ok" : (state==="STALLED" || state==="BLOCKED" ? "bad" : "warn");
     const active = execution.active_jobs || [];
     const lastActivity = execution.last_real_activity_at;
     const warning = execution.ui_warning ? '<div class="item"><strong>UI may be stale</strong><div class="muted">'+esc(execution.ui_warning)+'</div></div>' : '';

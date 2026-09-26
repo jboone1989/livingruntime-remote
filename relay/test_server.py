@@ -42,7 +42,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.28")
+            self.assertEqual(health.json()["version"], "0.4.29")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -284,7 +284,14 @@ class RelayServerTests(unittest.TestCase):
             "continue_openai_pi_job",
             "claim_llm_request_for_watcher",
         } | set(REMOTE_TOOLS)
-        self.assertEqual(set(tools), expected)
+        self.assertEqual(set(tools), expected - {"complete_llm_request"})
+        app_bindings = {
+            binding.kwargs["name"]: binding
+            for extension in mcp._extensions
+            for binding in extension.tools()
+        }
+        self.assertIn("complete_llm_request", app_bindings)
+        complete_binding = app_bindings["complete_llm_request"]
         for tool in tools.values():
             self.assertTrue(tool.title, tool.name)
             self.assertTrue(tool.description, tool.name)
@@ -352,30 +359,21 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn(
             "tools", (tools["submit_llm_request"].parameters or {}).get("properties", {})
         )
-        self.assertIn(
-            "tool_calls", (tools["complete_llm_request"].parameters or {}).get("properties", {})
-        )
+        complete_params = inspect.signature(complete_binding.fn).parameters
+        self.assertIn("tool_calls", complete_params)
+        self.assertIn("response_text", complete_params)
         self.assertEqual(
-            tools["complete_llm_request"].meta["ui"]["resourceUri"],
+            complete_binding.meta["ui"]["resourceUri"],
             server.COGNITION_WIDGET_URI,
         )
         self.assertEqual(
-            tools["complete_llm_request"].meta["ui"]["visibility"],
+            complete_binding.meta["ui"]["visibility"],
             ["model", "app"],
         )
-        response_schema = (
-            (tools["complete_llm_request"].parameters or {})
-            .get("properties", {})
-            .get("response_text", {})
-        )
-        response_types = {
-            item.get("type")
-            for item in response_schema.get("anyOf", [])
-            if isinstance(item, dict)
-        }
-        self.assertIn("string", response_types)
-        self.assertIn("object", response_types)
-        self.assertIn("array", response_types)
+        response_annotation = str(complete_params["response_text"].annotation)
+        self.assertIn("str", response_annotation)
+        self.assertIn("dict", response_annotation)
+        self.assertIn("list", response_annotation)
         self.assertNotIn("resourceUri", tools["wait_llm_request"].meta["ui"])
         self.assertNotIn("resourceUri", tools["wait_long_job"].meta["ui"])
         self.assertEqual(
@@ -534,6 +532,11 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn("runtime_job_id=", html)
         self.assertIn("Durable LivingRuntime goal", html)
         self.assertIn("Remote connection lost", html)
+        self.assertIn('"ARMED"', html)
+        self.assertIn('"WAITING_FOR_CHATGPT_SESSION"', html)
+        self.assertIn('"DISCONNECTED"', html)
+        self.assertIn('"pagehide"', html)
+        self.assertNotIn("Pi is working", html)
         self.assertNotIn("setInterval(", html)
         self.assertNotIn("job-status", html)
 
@@ -548,6 +551,11 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn("progressAgeSeconds", html)
         self.assertIn('"ui/message"', html)
         self.assertIn('"ui/update-model-context"', html)
+        self.assertIn('"ARMED"', html)
+        self.assertIn('"WAITING_FOR_CHATGPT_SESSION"', html)
+        self.assertIn('"DISCONNECTED"', html)
+        self.assertIn('"pagehide"', html)
+        self.assertNotIn("Long job is working", html)
         self.assertNotIn("setInterval(", html)
 
     def test_cognition_widget_waits_claims_and_rearms_same_conversation(self):
@@ -563,10 +571,13 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn("get_llm_request_status", html)
         self.assertIn("complete_llm_request", html)
         self.assertIn("watch_agent_cognition", html)
-        self.assertIn("watcher remains armed", html)
         self.assertIn("handedOffRequestId", html)
         self.assertIn("reclaimable", html)
-        self.assertIn("watcher remains armed for the next queued request", html)
+        self.assertIn('"ARMED"', html)
+        self.assertIn('"WAITING_FOR_CHATGPT_SESSION"', html)
+        self.assertIn('"DISCONNECTED"', html)
+        self.assertIn('"pagehide"', html)
+        self.assertNotIn("Cognition channel armed", html)
         self.assertIn("do not call watch_agent_cognition", html)
         self.assertIn("again and do not ask the user to type continue", html)
         self.assertNotIn("the next turn will re-arm this channel", html)
@@ -586,6 +597,8 @@ class RelayServerTests(unittest.TestCase):
         self.assertNotIn("setInterval(", html)
         self.assertIn("formatTs", html)
         self.assertIn("toLocaleString", html)
+        self.assertIn('state==="RUNNING"', html)
+        self.assertNotIn("RUNNING_EXECUTION", html)
         self.assertNotIn("approve_exec_permission", html)
         self.assertNotIn("lease_credential", html)
 

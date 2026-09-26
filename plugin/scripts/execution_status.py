@@ -245,12 +245,17 @@ def snapshot(
         age = max(0.0, now - float(last_activity_at))
 
     job_states = {str(row.get("status") or "").upper() for row in active_jobs}
+    metadata_only_running = any(
+        row["status"] in {"RUNNING", "PENDING"}
+        and not (row["worker_alive"] or row["child_alive"])
+        for row in summaries
+    )
     if "STALLED" in job_states:
         state = "STALLED"
         message = "A durable job is stalled; inspect its heartbeat/progress receipt."
-    elif workers_alive or "RUNNING" in job_states or "PENDING" in job_states:
-        state = "RUNNING_EXECUTION"
-        message = "Server-side work is actively running."
+    elif workers_alive:
+        state = "RUNNING"
+        message = "A server-side worker or child process is alive."
     elif cognition_state in COGNITION_PENDING_STATES:
         state = "WAITING_FOR_COGNITION"
         message = "An agent cognition request exists and is waiting for ChatGPT to claim it."
@@ -263,6 +268,12 @@ def snapshot(
     elif "WAITING" in job_states:
         state = "WAITING"
         message = "A durable job is waiting; no worker is currently executing."
+    elif metadata_only_running:
+        state = "WAITING"
+        message = (
+            "A durable job is marked running/pending, but no live server process is "
+            "currently observed. Treat the receipt as waiting until liveness returns."
+        )
     elif age is not None and age <= RECENT_ACTIVITY_SECONDS:
         state = "RECENT_ACTIVITY"
         message = "A real Remote tool completed recently; no durable worker is currently running."
@@ -286,6 +297,7 @@ def snapshot(
         "message": message,
         "active_job_count": len(active_jobs),
         "worker_alive_count": workers_alive,
+        "running_requires_live_process": True,
         "active_jobs": summaries,
         "last_real_activity_at": last_activity_at,
         "last_real_activity_age_seconds": None if age is None else round(age, 3),

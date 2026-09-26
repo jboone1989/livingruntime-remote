@@ -293,12 +293,12 @@ class SchemaAndToolTests(unittest.TestCase):
                 "Logs inspected; patch is next.",
                 current_step="inspect logs",
                 next_action="apply patch",
-                status="RUNNING",
+                status="WAITING",
             )
             recovered = bridge.get_job(created["job_id"])
-            listed = bridge.list_jobs(status="RUNNING")
+            listed = bridge.list_jobs(status="WAITING")
 
-        self.assertEqual(checkpointed["status"], "RUNNING")
+        self.assertEqual(checkpointed["status"], "WAITING")
         self.assertEqual(recovered["next_action"], "apply patch")
         self.assertEqual(listed["jobs"][0]["job_id"], created["job_id"])
 
@@ -317,6 +317,16 @@ class SchemaAndToolTests(unittest.TestCase):
                     "job_id": "dex_done",
                     "cwd": "/home/ubuntu/wechat-traffic-agent",
                     "executable": "python3",
+                },
+                status="PENDING",
+            )
+            jobs.update_runtime(
+                created["job_id"],
+                runtime={
+                    "backend_status": "RUNNING",
+                    "observed_status": "RUNNING",
+                    "worker_alive": True,
+                    "child_alive": False,
                 },
                 status="RUNNING",
             )
@@ -360,6 +370,16 @@ class SchemaAndToolTests(unittest.TestCase):
                     "cwd": "/home/ubuntu",
                     "executable": "python3",
                 },
+                status="PENDING",
+            )
+            jobs.update_runtime(
+                created["job_id"],
+                runtime={
+                    "backend_status": "RUNNING",
+                    "observed_status": "RUNNING",
+                    "worker_alive": True,
+                    "child_alive": False,
+                },
                 status="RUNNING",
             )
             with patch.object(
@@ -399,6 +419,16 @@ class SchemaAndToolTests(unittest.TestCase):
                     "cwd": "/home/ubuntu",
                     "executable": "python3",
                 },
+                status="PENDING",
+            )
+            jobs.update_runtime(
+                created["job_id"],
+                runtime={
+                    "backend_status": "RUNNING",
+                    "observed_status": "RUNNING",
+                    "worker_alive": True,
+                    "child_alive": False,
+                },
                 status="RUNNING",
             )
             with patch.object(
@@ -410,6 +440,32 @@ class SchemaAndToolTests(unittest.TestCase):
 
         self.assertEqual([row["job_id"] for row in listed["jobs"]], [created["job_id"]])
         self.assertIn("temporarily unavailable", listed["jobs"][0]["runtime"]["reconcile_error"])
+
+    def test_pi_running_requires_process_alive_receipt(self) -> None:
+        jobs_root = Path(self.tmp.name) / "jobs"
+        with patch.dict(os.environ, {"LIVINGRUNTIME_REMOTE_JOBS": str(jobs_root)}):
+            goal = jobs.create(goal="Pi liveness truth", project="ferro", device="main")
+            goal = jobs.attach_backend(
+                goal["job_id"],
+                {
+                    "type": "pi-agent",
+                    "job_id": "pi-liveness",
+                    "pi_remote_dir": "/home/ubuntu/src/pi-remote-runtime",
+                },
+            )
+            stale = bridge._sync_pi_runtime_job(
+                goal,
+                {"status": "RUNNING", "processAlive": False},
+            )
+            self.assertEqual(stale["status"], "PENDING")
+            self.assertFalse(stale["runtime"]["worker_alive"])
+
+            live = bridge._sync_pi_runtime_job(
+                stale,
+                {"status": "RUNNING", "processAlive": True},
+            )
+            self.assertEqual(live["status"], "RUNNING")
+            self.assertTrue(live["runtime"]["worker_alive"])
 
     def test_start_pi_agent_uses_native_api_session_and_chatgpt_provider(self) -> None:
         jobs_root = Path(self.tmp.name) / "jobs"
@@ -546,7 +602,8 @@ class SchemaAndToolTests(unittest.TestCase):
             self.assertEqual(result["jobId"], "11111111-1111-4111-8111-111111111111")
             self.assertTrue(result["runtimeJobId"].startswith("lrjob_"))
             durable = bridge.get_job(result["runtimeJobId"])
-            self.assertEqual(durable["status"], "RUNNING")
+            self.assertEqual(durable["status"], "PENDING")
+            self.assertFalse(durable["runtime"]["worker_alive"])
             self.assertEqual(durable["backend"]["type"], "pi-step")
             self.assertEqual(durable["backend"]["job_id"], result["jobId"])
             self.assertEqual(durable["backend"]["session_file"], str(session_file))
@@ -806,8 +863,10 @@ class SchemaAndToolTests(unittest.TestCase):
         self.assertEqual(len(result["credentials"]), 1)
         self.assertEqual(result["permissions"]["pending"], [])
         self.assertEqual(result["execution"]["source_of_truth"], "server_receipt")
-        self.assertEqual(result["execution"]["state"], "RUNNING_EXECUTION")
+        self.assertEqual(result["execution"]["state"], "WAITING")
         self.assertEqual(result["execution"]["active_job_count"], 1)
+        self.assertEqual(result["execution"]["worker_alive_count"], 0)
+        self.assertTrue(result["execution"]["running_requires_live_process"])
         self.assertNotIn("never-return-this-value", json.dumps(result))
 
     def test_openai_continuation_binding_and_terminal_resume(self) -> None:
@@ -819,7 +878,7 @@ class SchemaAndToolTests(unittest.TestCase):
                 bound["hookSpecificOutput"]["hookEventName"], "PostToolUse"
             )
             runtime_job_id = bound["runtimeJobId"]
-            self.assertEqual(bridge.get_job(runtime_job_id)["status"], "RUNNING")
+            self.assertEqual(bridge.get_job(runtime_job_id)["status"], "PENDING")
             with patch.object(
                 bridge,
                 "_pi_job_command",

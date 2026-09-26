@@ -2057,7 +2057,8 @@ def watch_agent_cognition(agent_id: str) -> dict[str, Any]:
         "agentId": str(agent_id).strip(),
         "watcherId": watcher_id,
         "watchRecommended": True,
-        "status": "WATCHING",
+        "status": "ARMED",
+        "watcherState": "ARMED",
     }
     _audit("watch_agent_cognition", True, {
         "agent_id": result["agentId"],
@@ -2083,7 +2084,13 @@ def wait_llm_request(
     """App-side bounded read-only wait for one pending cognition request."""
     result = wait_pending_cognition_request(
         agent_id=agent_id,
+        watcher_id=watcher_id,
         timeout_seconds=timeout_seconds,
+    )
+    result["watcherState"] = (
+        "WAITING_FOR_CHATGPT_SESSION"
+        if isinstance(result.get("request"), dict)
+        else "ARMED"
     )
     request = result.get("request")
     _audit("wait_llm_request", True, {
@@ -2219,13 +2226,18 @@ def complete_llm_request(
 def _long_job_runtime(receipt: dict[str, Any]) -> dict[str, Any]:
     status = str(receipt.get("status") or "UNKNOWN").upper()
     observed = str(receipt.get("observed_status") or status).upper()
+    live = bool(receipt.get("worker_alive")) or bool(receipt.get("child_alive"))
     runtime: dict[str, Any] = {
         "backend_status": status,
         "observed_status": observed,
         "progress_state": (
             "STALLED"
             if observed in {"STALLED", "HEARTBEAT_STALE", "LOST", "ORPHANED"}
-            else ("TERMINAL" if bool(receipt.get("terminal")) else "ACTIVE")
+            else (
+                "TERMINAL"
+                if bool(receipt.get("terminal"))
+                else ("ACTIVE" if live else "WAITING")
+            )
         ),
     }
     for key in (
@@ -2256,31 +2268,60 @@ def _long_job_status(receipt: dict[str, Any]) -> str:
         return observed
     if observed in {"STALLED", "HEARTBEAT_STALE", "LOST", "ORPHANED"}:
         return "STALLED"
-    return "RUNNING"
+    if bool(receipt.get("worker_alive")) or bool(receipt.get("child_alive")):
+        return "RUNNING"
+    if observed in {"STARTING", "STARTED", "PENDING", "QUEUED", ""}:
+        return "PENDING"
+    return "WAITING"
 
 
 def _sync_long_job(job: dict[str, Any], receipt: dict[str, Any]) -> dict[str, Any]:
     mapped = _long_job_status(receipt)
     previous = str(job.get("status") or "PENDING")
     execution_id = str((job.get("backend") or {}).get("job_id") or "")
+    current_step = {
+        "STALLED": "Detached command stalled",
+        "RUNNING": "Detached command running",
+        "PENDING": "Detached command queued",
+        "WAITING": "Detached command waiting",
+        "SUCCEEDED": "Detached command succeeded",
+        "FAILED": "Detached command failed",
+        "CANCELLED": "Detached command cancelled",
+    }.get(mapped, f"Detached command {mapped.lower()}")
+
+    job = update_runtime_job(
+        job["job_id"],
+        runtime=_long_job_runtime(receipt),
+        status=mapped,
+        current_step=current_step,
+    )
+
     if previous != mapped and previous not in {"SUCCEEDED", "FAILED", "CANCELLED"}:
         if mapped == "STALLED":
             summary = (
                 f"Detached execution {execution_id} has no observable progress "
                 f"or heartbeat within its configured threshold."
             )
-            current_step = "Detached command appears stalled"
             next_action = (
                 "Inspect the durable output tail and liveness fields; cancel or retry "
                 "only after identifying whether the command is actually hung."
             )
         elif mapped == "RUNNING":
-            summary = f"Detached execution {execution_id} is making progress again."
-            current_step = "Detached command running"
+            summary = f"Detached execution {execution_id} has a live server process."
             next_action = "Keep the watcher attached until terminal state."
+        elif mapped == "PENDING":
+            summary = (
+                f"Detached execution {execution_id} is accepted but no live server process "
+                "is observed yet."
+            )
+            next_action = "Keep the watcher armed and wait for a live-process receipt."
+        elif mapped == "WAITING":
+            summary = (
+                f"Detached execution {execution_id} has no live server process and is waiting."
+            )
+            next_action = "Inspect the durable receipt before deciding whether to resume or retry."
         else:
             summary = f"Detached execution {execution_id} ended with status {mapped}."
-            current_step = f"Detached command {mapped.lower()}"
             next_action = (
                 "Inspect stdout/stderr tail and acceptance evidence, then continue the goal."
             )
@@ -2292,22 +2333,7 @@ def _sync_long_job(job: dict[str, Any], receipt: dict[str, Any]) -> dict[str, An
             status=mapped,
             source="backend",
         )
-
-    current_step = (
-        "Detached command stalled"
-        if mapped == "STALLED"
-        else (
-            f"Detached command {mapped.lower()}"
-            if mapped in {"SUCCEEDED", "FAILED", "CANCELLED"}
-            else "Detached command running"
-        )
-    )
-    return update_runtime_job(
-        job["job_id"],
-        runtime=_long_job_runtime(receipt),
-        status=mapped,
-        current_step=current_step,
-    )
+    return job
 
 
 @server.tool(
@@ -2366,14 +2392,14 @@ def start_long_job(
             "cwd": workdir,
             "executable": os.path.basename(str(argv[0])),
         },
-        status="RUNNING",
+        status="PENDING",
     )
     runtime_job = checkpoint_runtime_job(
         runtime_job["job_id"],
-        summary=f"Supervised detached execution {execution_id} started.",
-        current_step=f"Running {os.path.basename(str(argv[0]))}",
-        next_action="Keep the long-job watcher attached until terminal or stalled state.",
-        status="RUNNING",
+        summary=f"Supervised detached execution {execution_id} was accepted.",
+        current_step=f"Queued {os.path.basename(str(argv[0]))}",
+        next_action="Keep the long-job watcher armed until a live-process receipt arrives.",
+        status="PENDING",
         source="runtime",
     )
     receipt = dict(launched)
@@ -2414,14 +2440,25 @@ def _long_job_receipt(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def _reconcile_runtime_job(job: dict[str, Any]) -> dict[str, Any]:
-    """Repair stale supervised-exec state from its authoritative receipt."""
+    """Repair stale durable state from the authoritative backend receipt."""
     if bool(job.get("terminal")):
         return job
     backend = job.get("backend")
-    if not isinstance(backend, dict) or backend.get("type") != "exec":
+    if not isinstance(backend, dict):
         return job
     try:
-        return _sync_long_job(job, _long_job_receipt(job))
+        if backend.get("type") == "exec":
+            return _sync_long_job(job, _long_job_receipt(job))
+        if backend.get("type") in {"pi", "pi-agent", "pi-step"}:
+            state = _pi_job_command(
+                "job-status",
+                str(backend.get("job_id") or ""),
+                str(backend.get("pi_remote_dir") or "/home/ubuntu/src/pi-remote"),
+                backend.get("job_root"),
+                timeout_seconds=15,
+            )
+            return _sync_pi_runtime_job(job, state)
+        return job
     except Exception as exc:
         result = dict(job)
         runtime = dict(result.get("runtime") or {})
@@ -2670,6 +2707,99 @@ def _pi_job_command(
     return parsed
 
 
+def _sync_pi_runtime_job(job: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    """Map Pi process liveness into durable state; RUNNING requires processAlive=true."""
+    backend = job.get("backend") if isinstance(job.get("backend"), dict) else {}
+    backend_type = str(backend.get("type") or "")
+    raw = str(state.get("status") or "").upper()
+    live = state.get("processAlive") is True
+
+    if backend_type == "pi-step":
+        if raw == "SUCCEEDED":
+            mapped = "WAITING"
+            step = "Pi step completed; waiting for ChatGPT"
+            next_action = (
+                "Inspect Pi session evidence and choose the next bounded step, or mark "
+                "the durable goal SUCCEEDED only when acceptance evidence is satisfied."
+            )
+        elif raw in {"FAILED", "CANCELLED", "CANCELED", "ERROR"}:
+            mapped = "BLOCKED"
+            step = f"Pi step {raw.lower()}"
+            next_action = "Inspect Pi evidence, then retry, change the plan, or terminate the durable goal."
+        elif raw in {"STALLED", "HEARTBEAT_STALE", "LOST", "ORPHANED"}:
+            mapped = "STALLED"
+            step = "Pi step stalled"
+            next_action = "Inspect Pi liveness/evidence before retrying or cancelling."
+        elif live:
+            mapped = "RUNNING"
+            step = "Pi step process running"
+            next_action = "Await the live Pi process completion."
+        else:
+            mapped = "PENDING"
+            step = "Pi step queued"
+            next_action = "Keep the watcher armed until the Pi process actually starts."
+    else:
+        terminal_map = {
+            "SUCCEEDED": "SUCCEEDED",
+            "SUCCESS": "SUCCEEDED",
+            "COMPLETED": "SUCCEEDED",
+            "FAILED": "FAILED",
+            "ERROR": "FAILED",
+            "CANCELLED": "CANCELLED",
+            "CANCELED": "CANCELLED",
+        }
+        if raw in terminal_map:
+            mapped = terminal_map[raw]
+        elif raw in {"STALLED", "HEARTBEAT_STALE", "LOST", "ORPHANED"}:
+            mapped = "STALLED"
+        elif live:
+            mapped = "RUNNING"
+        elif raw == "BLOCKED":
+            mapped = "BLOCKED"
+        elif raw == "WAITING":
+            mapped = "WAITING"
+        else:
+            mapped = "PENDING"
+        step = (
+            "Pi agent process running"
+            if mapped == "RUNNING"
+            else f"Pi backend {raw.lower() or 'unknown'}"
+        )
+        next_action = None
+
+    runtime = {
+        "backend_status": raw or "UNKNOWN",
+        "observed_status": raw or "UNKNOWN",
+        "progress_state": (
+            "ACTIVE" if live else (
+                "TERMINAL"
+                if raw in {"SUCCEEDED", "SUCCESS", "COMPLETED", "FAILED", "ERROR", "CANCELLED", "CANCELED"}
+                else "WAITING"
+            )
+        ),
+        "worker_alive": live,
+        "child_alive": False,
+    }
+    previous = str(job.get("status") or "PENDING")
+    job = update_runtime_job(
+        job["job_id"],
+        runtime=runtime,
+        status=mapped,
+        current_step=step,
+        next_action=next_action,
+    )
+    if previous != mapped and previous not in {"SUCCEEDED", "FAILED", "CANCELLED", "CANCELLED_BY_USER"}:
+        job = checkpoint_runtime_job(
+            job["job_id"],
+            summary=f"Pi backend status is {raw or 'UNKNOWN'}; durable state is {mapped}.",
+            current_step=step,
+            next_action=next_action,
+            status=mapped,
+            source="backend",
+        )
+    return job
+
+
 @server.tool(
     name="start_pi_agent",
     annotations=ToolAnnotations(
@@ -2766,21 +2896,25 @@ def start_pi_agent(
         "provider": "livingruntime-chatgpt",
         "model": "chatgpt-web",
     }
+    initial_status = "PENDING"
     runtime_job = create_runtime_job(
         goal=goal,
         project=project,
         device=runtime_device,
         backend=backend,
-        status="RUNNING",
+        status=initial_status,
     )
     runtime_job = checkpoint_runtime_job(
         runtime_job["job_id"],
-        summary="Pi native agent loop started with ChatGPT as its cognition provider.",
-        current_step="Pi native agent loop running",
+        summary="Pi native agent job accepted with ChatGPT as its cognition provider.",
+        current_step=(
+            "Pi native agent queued"
+        ),
         next_action="Keep the Pi watcher attached; Pi owns planning, tool execution, and loop continuation.",
-        status="RUNNING",
+        status=initial_status,
         source="runtime",
     )
+    runtime_job = _sync_pi_runtime_job(runtime_job, state)
     _audit("start_pi_agent", True, {
         "runtime_job_id": runtime_job["job_id"],
         "pi_job_id": pi_job_id,
@@ -2922,28 +3056,32 @@ def start_pi_step(
         "session_id": session.get("sessionId"),
         "controller_mode": "external",
     }
+    initial_status = "PENDING"
     if runtime_job is None:
         runtime_job = create_runtime_job(
             goal=goal,
             project=project,
             device=runtime_device,
             backend=backend,
-            status="RUNNING",
+            status=initial_status,
         )
     else:
         runtime_job = attach_runtime_backend(
             runtime_job["job_id"],
             backend,
-            status="RUNNING",
+            status=initial_status,
         )
     runtime_job = checkpoint_runtime_job(
         runtime_job["job_id"],
-        summary=f"Detached external-controller Pi step started with {len(actions)} actions.",
-        current_step=f"Pi external-actions batch ({len(actions)} actions)",
+        summary=f"Detached external-controller Pi step accepted with {len(actions)} actions.",
+        current_step=(
+            f"Pi external-actions batch queued ({len(actions)} actions)"
+        ),
         next_action="Await detached Pi completion, then inspect evidence and choose the next step.",
-        status="RUNNING",
+        status=initial_status,
         source="runtime",
     )
+    runtime_job = _sync_pi_runtime_job(runtime_job, state)
     _audit("start_pi_step", True, {
         "runtime_job_id": runtime_job["job_id"],
         "pi_job_id": pi_job_id,
@@ -2984,6 +3122,8 @@ def watch_pi_job(
     """Inspect an existing Pi Remote detached job before arming OpenAI continuation."""
     state = _pi_job_command("job-status", job_id, pi_remote_dir, job_root, timeout_seconds=15)
     runtime_job = find_by_backend("pi-agent", job_id) or find_by_backend("pi-step", job_id) or find_by_backend("pi", job_id)
+    if runtime_job is not None and not runtime_job.get("terminal"):
+        runtime_job = _sync_pi_runtime_job(runtime_job, state)
     return {
         "jobId": job_id,
         "runtimeJobId": None if runtime_job is None else runtime_job["job_id"],
@@ -3016,45 +3156,8 @@ def wait_pi_job_completion(
     )
     state = result.get("state") if isinstance(result.get("state"), dict) else {}
     runtime_job = find_by_backend("pi-agent", job_id) or find_by_backend("pi-step", job_id) or find_by_backend("pi", job_id)
-    if runtime_job is not None and (
-        bool(result.get("terminal"))
-        or state.get("status") in {"SUCCEEDED", "FAILED", "CANCELLED"}
-    ):
-        backend_status = str(state.get("status") or "")
-        backend = runtime_job.get("backend")
-        backend_type = backend.get("type") if isinstance(backend, dict) else None
-        if backend_type == "pi-step" and not runtime_job.get("terminal"):
-            if backend_status == "SUCCEEDED" and runtime_job.get("status") == "RUNNING":
-                runtime_job = checkpoint_runtime_job(
-                    runtime_job["job_id"],
-                    summary=f"Detached Pi step {job_id} completed successfully.",
-                    current_step="Detached Pi step completed",
-                    next_action=(
-                        "Inspect Pi session evidence and decide the next bounded step. "
-                        "Start another Pi step on this durable goal, or mark the goal SUCCEEDED "
-                        "only after acceptance evidence is satisfied."
-                    ),
-                    status="WAITING",
-                    source="backend",
-                )
-            elif backend_status in {"FAILED", "CANCELLED"} and runtime_job.get("status") == "RUNNING":
-                runtime_job = checkpoint_runtime_job(
-                    runtime_job["job_id"],
-                    summary=f"Detached Pi step {job_id} ended with status {backend_status}.",
-                    current_step=f"Detached Pi step {backend_status.lower()}",
-                    next_action=(
-                        "Inspect the Pi job/session evidence, then retry a bounded step, "
-                        "change the plan, or explicitly terminate the durable goal."
-                    ),
-                    status="BLOCKED",
-                    source="backend",
-                )
-        elif backend_type in {"pi", "pi-agent"} and not runtime_job.get("terminal") and backend_status:
-            runtime_job = sync_backend_status(
-                runtime_job["job_id"],
-                backend_status=backend_status,
-                summary=f"Detached Pi job {job_id} completed with status {backend_status}.",
-            )
+    if runtime_job is not None and not runtime_job.get("terminal"):
+        runtime_job = _sync_pi_runtime_job(runtime_job, state)
     return {
         **result,
         "runtimeJobId": None if runtime_job is None else runtime_job["job_id"],

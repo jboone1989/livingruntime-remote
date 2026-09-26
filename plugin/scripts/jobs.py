@@ -77,6 +77,12 @@ def _load(job_id: str) -> dict[str, Any]:
     return value
 
 
+def _has_live_process(runtime: Any) -> bool:
+    return isinstance(runtime, dict) and (
+        runtime.get("worker_alive") is True or runtime.get("child_alive") is True
+    )
+
+
 def create(
     *,
     goal: str,
@@ -89,9 +95,11 @@ def create(
     project = _bounded(project, field="project", maximum=256)
     device = _bounded(device, field="device", maximum=256)
     normalized_backend = _normalize_backend(backend)
-    initial = status or ("RUNNING" if normalized_backend is not None else "PENDING")
+    initial = status or "PENDING"
     if initial not in STATUSES:
         raise ValueError("unsupported job status")
+    if initial == "RUNNING":
+        raise ValueError("RUNNING requires an observed live server process")
     now = time.time()
     job_id = "lrjob_" + uuid.uuid4().hex[:20]
     value = {
@@ -161,6 +169,8 @@ def checkpoint(
     new_status = status or previous
     if previous in TERMINAL_STATUSES and new_status != previous:
         raise RuntimeError("terminal job status cannot transition")
+    if new_status == "RUNNING" and not _has_live_process(value.get("runtime")):
+        raise ValueError("RUNNING requires an observed live server process")
 
     now = time.time()
     entry = {
@@ -254,6 +264,8 @@ def update_runtime(
 
     current_step = _bounded(current_step, field="current_step", maximum=2000)
     next_action = _bounded(next_action, field="next_action", maximum=4000)
+    if new_status == "RUNNING" and not _has_live_process(normalized):
+        raise ValueError("RUNNING requires an observed live server process")
     value["runtime"] = normalized
     value["status"] = new_status
     value["terminal"] = new_status in TERMINAL_STATUSES
@@ -300,7 +312,7 @@ def ensure_backend_job(
         project=project,
         device=device,
         backend=details,
-        status="RUNNING",
+        status="PENDING",
     )
 
 
@@ -308,14 +320,17 @@ def attach_backend(
     job_id: str,
     backend: dict[str, Any],
     *,
-    status: str = "RUNNING",
+    status: str = "PENDING",
 ) -> dict[str, Any]:
     value = _load(job_id)
     if value.get("status") in TERMINAL_STATUSES:
         raise RuntimeError("terminal job cannot attach a new backend")
     if status not in STATUSES or status in TERMINAL_STATUSES:
         raise ValueError("attached backend status must be non-terminal")
+    if status == "RUNNING":
+        raise ValueError("attached backend cannot be RUNNING before liveness is observed")
     value["backend"] = _normalize_backend(backend)
+    value["runtime"] = {}
     value["status"] = status
     value["terminal"] = False
     value["updated_at"] = time.time()
@@ -334,9 +349,9 @@ def sync_backend_status(
     mapped = {
         "PENDING": "PENDING",
         "QUEUED": "PENDING",
-        "STARTING": "RUNNING",
-        "STARTED": "RUNNING",
-        "RUNNING": "RUNNING",
+        "STARTING": "PENDING",
+        "STARTED": "PENDING",
+        "RUNNING": "PENDING",
         "STALLED": "STALLED",
         "HEARTBEAT_STALE": "STALLED",
         "LOST": "STALLED",

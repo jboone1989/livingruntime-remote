@@ -32,6 +32,11 @@ class JobStoreTests(unittest.TestCase):
         self.assertEqual(created["status"], "PENDING")
         self.assertFalse(created["terminal"])
 
+        jobs.update_runtime(
+            created["job_id"],
+            runtime={"worker_alive": True, "child_alive": False},
+            status="RUNNING",
+        )
         running = jobs.checkpoint(
             created["job_id"],
             summary="Started diagnosis.",
@@ -106,7 +111,7 @@ class JobStoreTests(unittest.TestCase):
             },
         )
         self.assertEqual(attached["job_id"], created["job_id"])
-        self.assertEqual(attached["status"], "RUNNING")
+        self.assertEqual(attached["status"], "PENDING")
         self.assertFalse(attached["terminal"])
         self.assertEqual(attached["backend"]["type"], "pi-step")
         self.assertEqual(attached["backend"]["session_id"], "session-1")
@@ -128,7 +133,7 @@ class JobStoreTests(unittest.TestCase):
                 "cwd": "/home/ubuntu/src/content-agent",
                 "executable": "pytest",
             },
-            status="RUNNING",
+            status="PENDING",
         )
         updated = jobs.update_runtime(
             created["job_id"],
@@ -146,6 +151,7 @@ class JobStoreTests(unittest.TestCase):
                 "worker_alive": True,
                 "child_alive": True,
             },
+            status="RUNNING",
             current_step="pytest running",
         )
         self.assertEqual(updated["status"], "RUNNING")
@@ -176,11 +182,37 @@ class JobStoreTests(unittest.TestCase):
                 "observed_status": "RUNNING",
                 "last_heartbeat_at": 20.0,
                 "last_progress_at": 20.0,
+                "worker_alive": True,
+                "child_alive": False,
             },
             status="RUNNING",
         )
         self.assertEqual(resumed["status"], "RUNNING")
         self.assertFalse(resumed["terminal"])
+
+    def test_running_cannot_be_fabricated_without_live_process(self) -> None:
+        with self.assertRaisesRegex(ValueError, "live server process"):
+            jobs.create(goal="Fake running", status="RUNNING")
+
+        created = jobs.create(goal="Truthful state")
+        with self.assertRaisesRegex(ValueError, "live server process"):
+            jobs.checkpoint(
+                created["job_id"],
+                summary="pretend",
+                status="RUNNING",
+            )
+        with self.assertRaisesRegex(ValueError, "live server process"):
+            jobs.update_runtime(
+                created["job_id"],
+                runtime={"worker_alive": False, "child_alive": False},
+                status="RUNNING",
+            )
+        with self.assertRaisesRegex(ValueError, "cannot be RUNNING"):
+            jobs.attach_backend(
+                created["job_id"],
+                {"type": "pi", "job_id": "fake"},
+                status="RUNNING",
+            )
 
     def test_job_files_are_owner_only(self) -> None:
         created = jobs.create(goal="Private task")

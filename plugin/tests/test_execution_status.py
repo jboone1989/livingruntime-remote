@@ -102,10 +102,27 @@ class ExecutionStatusTests(unittest.TestCase):
             },
         }]
         snap = execution_status.snapshot(jobs=jobs, now=500.0)
-        self.assertEqual(snap["state"], "RUNNING_EXECUTION")
+        self.assertEqual(snap["state"], "RUNNING")
         self.assertEqual(snap["active_job_count"], 1)
         self.assertEqual(snap["worker_alive_count"], 1)
         self.assertEqual(snap["active_jobs"][0]["current_step"], "pytest")
+
+    def test_running_metadata_without_live_process_is_waiting(self) -> None:
+        jobs = [{
+            "job_id": "lrjob_metadata_only",
+            "status": "RUNNING",
+            "terminal": False,
+            "goal": "Detached work",
+            "runtime": {
+                "worker_alive": False,
+                "child_alive": False,
+            },
+        }]
+        snap = execution_status.snapshot(jobs=jobs, now=500.0)
+        self.assertEqual(snap["state"], "WAITING")
+        self.assertEqual(snap["worker_alive_count"], 0)
+        self.assertTrue(snap["running_requires_live_process"])
+        self.assertIn("no live server process", snap["message"])
 
     def test_cognition_states_are_distinct_from_execution(self) -> None:
         execution_status.record_tool_event(
