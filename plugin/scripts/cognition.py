@@ -307,9 +307,9 @@ def submit(
     dispatch_timeout = (
         None if dispatch_timeout_seconds is None else int(dispatch_timeout_seconds)
     )
-    if dispatch_timeout is not None and not 1 <= dispatch_timeout <= timeout:
+    if dispatch_timeout is not None and not 0 <= dispatch_timeout <= timeout:
         raise ValueError(
-            "dispatch_timeout_seconds must be within 1..timeout_seconds"
+            "dispatch_timeout_seconds must be within 0..timeout_seconds"
         )
     payload = _canonical_payload(
         agent_id=agent,
@@ -346,10 +346,16 @@ def submit(
             "created_at": now,
             "updated_at": now,
             "dispatch_deadline_at": (
-                None if dispatch_timeout is None else now + dispatch_timeout
+                None
+                if dispatch_timeout in (None, 0)
+                else now + dispatch_timeout
             ),
-            "deadline_at": now + (
-                dispatch_timeout if dispatch_timeout is not None else timeout
+            "deadline_at": (
+                None
+                if dispatch_timeout == 0
+                else now + (
+                    dispatch_timeout if dispatch_timeout is not None else timeout
+                )
             ),
             "timeout_phase": None,
             "finished_at": None,

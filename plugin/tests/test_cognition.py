@@ -188,6 +188,31 @@ class CognitionQueueTests(unittest.TestCase):
         self.assertEqual(timed_out["status"], "TIMED_OUT")
         self.assertEqual(timed_out["timeout_phase"], "DISPATCH")
 
+    def test_zero_dispatch_timeout_keeps_request_pending_until_claimed(self) -> None:
+        with patch.object(cognition.time, "time", return_value=1000.0):
+            created = cognition.submit(
+                agent_id="ferro",
+                purpose="durable-chatgpt",
+                messages=[{"role": "user", "content": "hello"}],
+                timeout_seconds=300,
+                dispatch_timeout_seconds=0,
+                request_id="llmreq_durable_dispatch",
+            )
+        self.assertIsNone(created["dispatch_deadline_at"])
+        self.assertIsNone(created["deadline_at"])
+
+        with patch.object(cognition.time, "time", return_value=5000.0):
+            pending = cognition.get("llmreq_durable_dispatch")
+            claimed = cognition.claim_request(
+                request_id="llmreq_durable_dispatch",
+                watcher_id="watcher_late_session",
+                claim_seconds=120,
+            )
+        self.assertEqual(pending["status"], "PENDING")
+        self.assertEqual(claimed["status"], "DISPATCHED")
+        self.assertEqual(claimed["response_deadline_at"], 5300.0)
+        self.assertEqual(claimed["deadline_at"], 5300.0)
+
     def test_claim_extends_dispatch_grace_to_full_response_window(self) -> None:
         with patch.object(cognition.time, "time", return_value=1000.0):
             cognition.submit(
