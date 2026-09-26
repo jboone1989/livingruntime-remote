@@ -566,11 +566,15 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn('"COMPLETED"', html)
         self.assertIn("setWidgetState", html)
         self.assertIn("void followUp", html)
-        self.assertNotIn("await followUp", html)
         self.assertLess(
             html.index('setStatus("COMPLETED", detail)'),
             html.index("void followUp"),
         )
+        terminal_block = html[
+            html.index("if (data?.terminal || job.terminal)") :
+            html.index('if (status === "STALLED")')
+        ]
+        self.assertNotIn("await followUp", terminal_block)
         self.assertIn('"pagehide"', html)
         self.assertNotIn("Long job is working", html)
         self.assertNotIn("setInterval(", html)
