@@ -42,7 +42,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.29")
+            self.assertEqual(health.json()["version"], "0.4.30")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -536,6 +536,14 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn('"ARMED"', html)
         self.assertIn('"WAITING_FOR_CHATGPT_SESSION"', html)
         self.assertIn('"DISCONNECTED"', html)
+        self.assertIn('"COMPLETED"', html)
+        self.assertIn("setWidgetState", html)
+        self.assertIn("void sendFollowUp", html)
+        self.assertNotIn("await sendFollowUp", html)
+        self.assertLess(
+            html.index('setStatus("COMPLETED", detail)'),
+            html.index("void sendFollowUp"),
+        )
         self.assertIn('"pagehide"', html)
         self.assertNotIn("Pi is working", html)
         self.assertNotIn("setInterval(", html)
@@ -555,6 +563,14 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn('"ARMED"', html)
         self.assertIn('"WAITING_FOR_CHATGPT_SESSION"', html)
         self.assertIn('"DISCONNECTED"', html)
+        self.assertIn('"COMPLETED"', html)
+        self.assertIn("setWidgetState", html)
+        self.assertIn("void followUp", html)
+        self.assertNotIn("await followUp", html)
+        self.assertLess(
+            html.index('setStatus("COMPLETED", detail)'),
+            html.index("void followUp"),
+        )
         self.assertIn('"pagehide"', html)
         self.assertNotIn("Long job is working", html)
         self.assertNotIn("setInterval(", html)

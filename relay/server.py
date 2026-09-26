@@ -26,7 +26,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.29"
+VERSION = "0.4.30"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
 COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v3.html"
@@ -128,6 +128,7 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
   let latestOutput = null;
   let activeJob = null;
   let stopped = false;
+  let watcherState = "INITIALIZING";
   const statusEl = document.getElementById("status");
   const detailEl = document.getElementById("detail");
 
@@ -142,8 +143,19 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
   }
 
   function setStatus(status, detail = "") {
+    watcherState = status;
     statusEl.textContent = status;
     detailEl.textContent = detail;
+  }
+
+  function persistTerminalState(jobId, detail) {
+    const openai = typeof window !== "undefined" ? window.openai : undefined;
+    openai?.setWidgetState?.({
+      watcherState: "COMPLETED",
+      jobId,
+      detail,
+      terminal: true
+    });
   }
 
   function toolResultData(result) {
@@ -190,6 +202,12 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
     const jobRoot = output?.jobRoot || null;
     if (!connected || !jobId || activeJob === jobId || stopped) return;
     activeJob = jobId;
+    const saved = typeof window !== "undefined" ? window.openai?.widgetState : null;
+    if (saved?.watcherState === "COMPLETED" && saved?.jobId === jobId) {
+      stopped = true;
+      setStatus("COMPLETED", saved?.detail || ("Pi job " + jobId + " already reached terminal state."));
+      return;
+    }
     const initialStatus = output?.state?.status || "UNKNOWN";
     setStatus(
       output?.terminal ? "WAITING_FOR_CHATGPT_SESSION" : "ARMED",
@@ -213,13 +231,13 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
           const state = data.state || {};
           const durableId = data.runtimeJobId || runtimeJobId;
           const durableStatus = data.runtimeGoalStatus || output?.runtimeGoalStatus || null;
-          setStatus(
-            "WAITING_FOR_CHATGPT_SESSION",
-            durableId
-              ? "Pi server state " + (state.status || "terminal") + " · durable goal " + durableId + " · " + (durableStatus || "awaiting controller")
-              : "Pi server state " + (state.status || "terminal") + " · handing the terminal result to ChatGPT"
-          );
-          await request("ui/update-model-context", {
+          const detail = durableId
+            ? "Pi server state " + (state.status || "terminal") + " · durable goal " + durableId + " · " + (durableStatus || "awaiting controller")
+            : "Pi server state " + (state.status || "terminal") + " · terminal result handed to ChatGPT";
+          stopped = true;
+          persistTerminalState(jobId, detail);
+          setStatus("COMPLETED", detail);
+          void request("ui/update-model-context", {
             structuredContent: {
               piRemoteCompletion: {
                 jobId,
@@ -230,9 +248,7 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
               }
             }
           }).catch(() => {});
-          await sendFollowUp(jobId, state, durableId, durableStatus);
-          setStatus("WAITING_FOR_CHATGPT_SESSION", "Terminal Pi result handed to ChatGPT.");
-          stopped = true;
+          void sendFollowUp(jobId, state, durableId, durableStatus).catch(() => {});
           return;
         }
         if (!data?.timedOut) {
@@ -277,14 +293,18 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
     if (message.method === "ui/notifications/request-teardown") {
       stopped = true;
       connected = false;
-      setStatus("DISCONNECTED", "Watcher widget was destroyed. Server process state is independent.");
+      if (watcherState !== "COMPLETED") {
+        setStatus("DISCONNECTED", "Watcher widget was destroyed. Server process state is independent.");
+      }
     }
   }, { passive: true });
 
   window.addEventListener("pagehide",()=>{
     stopped=true;
     connected=false;
-    setStatus("DISCONNECTED","Watcher widget is no longer attached. Durable server state is unchanged.");
+    if (watcherState !== "COMPLETED") {
+      setStatus("DISCONNECTED","Watcher widget is no longer attached. Durable server state is unchanged.");
+    }
   },{once:true});
 
   async function connect() {
@@ -339,6 +359,7 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
   let latestOutput = null;
   let activeJob = null;
   let stopped = false;
+  let watcherState = "INITIALIZING";
   const statusEl = document.getElementById("status");
   const detailEl = document.getElementById("detail");
 
@@ -351,8 +372,19 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
     window.parent.postMessage({ jsonrpc:"2.0", method, params }, "*");
   }
   function setStatus(status, detail="") {
+    watcherState = status;
     statusEl.textContent = status;
     detailEl.textContent = detail;
+  }
+  function persistTerminalState(jobId, status, detail) {
+    const openai = typeof window !== "undefined" ? window.openai : undefined;
+    openai?.setWidgetState?.({
+      watcherState:"COMPLETED",
+      jobId,
+      status,
+      detail,
+      terminal:true
+    });
   }
   function toolResultData(result) {
     return result?.structuredContent || result?.structured_content || result || null;
@@ -395,6 +427,12 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
     const jobId = jobIdFrom(output);
     if (!connected || !jobId || activeJob === jobId || stopped) return;
     activeJob = jobId;
+    const saved = typeof window !== "undefined" ? window.openai?.widgetState : null;
+    if (saved?.watcherState === "COMPLETED" && saved?.jobId === jobId) {
+      stopped = true;
+      setStatus("COMPLETED", saved?.detail || ("Long job " + jobId + " already reached terminal state."));
+      return;
+    }
     setStatus("ARMED", "Long job " + jobId + " · watcher attached; server process state is checked separately");
     try {
       while (!stopped) {
@@ -408,13 +446,14 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
         const status = job.status || state.observed_status || state.status || "UNKNOWN";
 
         if (data?.terminal || job.terminal) {
-          setStatus("WAITING_FOR_CHATGPT_SESSION", "Server state " + status + " · " + describe(data));
-          await request("ui/update-model-context", {
+          const detail = "Server state " + status + " · " + describe(data);
+          stopped = true;
+          persistTerminalState(jobId, status, detail);
+          setStatus("COMPLETED", detail);
+          void request("ui/update-model-context", {
             structuredContent:{longJobCompletion:{jobId,status,terminal:true}}
           }).catch(()=>{});
-          await followUp(jobId,status);
-          setStatus("WAITING_FOR_CHATGPT_SESSION", "Terminal durable receipt handed to ChatGPT.");
-          stopped = true;
+          void followUp(jobId,status).catch(()=>{});
           return;
         }
         if (status === "STALLED") {
@@ -473,14 +512,18 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
     if (message.method === "ui/notifications/request-teardown") {
       stopped=true;
       connected=false;
-      setStatus("DISCONNECTED","Watcher widget was destroyed. Server process state is independent.");
+      if (watcherState !== "COMPLETED") {
+        setStatus("DISCONNECTED","Watcher widget was destroyed. Server process state is independent.");
+      }
     }
   },{passive:true});
 
   window.addEventListener("pagehide",()=>{
     stopped=true;
     connected=false;
-    setStatus("DISCONNECTED","Watcher widget is no longer attached. Durable server state is unchanged.");
+    if (watcherState !== "COMPLETED") {
+      setStatus("DISCONNECTED","Watcher widget is no longer attached. Durable server state is unchanged.");
+    }
   },{once:true});
 
   async function connect() {
