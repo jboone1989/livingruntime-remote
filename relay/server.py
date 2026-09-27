@@ -32,7 +32,8 @@ PI_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v3.html"
 LONG_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
 COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v3.html"
-CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v4.html"
+CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v5.html"
+CONTROL_PLANE_WIDGET_V4_URI = "ui://livingruntime-remote/control-plane-v4.html"
 CONTROL_PLANE_WIDGET_LEGACY_URI = "ui://livingruntime-remote/control-plane-v3.html"
 PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
 IDENTITY_SCOPES = ["openid", "email"]
@@ -782,6 +783,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
   <div class="section"><h3>Recent activity</h3><div id="activity" class="grid"></div></div>
 <script>
 (() => {
+  console.info("LivingRuntime control-plane-v5 script loaded");
   const pending = new Map(); let nextId = 1; let connected = false; let latest = null;
   const q = id => document.getElementById(id);
   function request(method, params) {
@@ -1260,6 +1262,13 @@ def create_mcp(
         description="Backward-compatible execution-truth dashboard for existing ChatGPT sessions.",
     )
     add_widget_resource(
+        CONTROL_PLANE_WIDGET_V4_URI,
+        CONTROL_PLANE_WIDGET_HTML,
+        name="remote-control-plane-v4",
+        title="LivingRuntime Remote control plane",
+        description="Compatible fixed dashboard for sessions using the v4 resource URI.",
+    )
+    add_widget_resource(
         CONTROL_PLANE_WIDGET_URI,
         CONTROL_PLANE_WIDGET_HTML,
         name="remote-control-plane",
@@ -1446,7 +1455,7 @@ def create_mcp(
             destructiveHint=False,
             openWorldHint=False,
         ),
-        meta=READ,
+        meta={**READ, "openai/outputTemplate": CONTROL_PLANE_WIDGET_URI},
     )
     async def remote_overview(include_resources: bool = False) -> dict[str, Any]:
         user_sub = _principal("remote:read")

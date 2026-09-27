@@ -418,6 +418,10 @@ class RelayServerTests(unittest.TestCase):
             server.CONTROL_PLANE_WIDGET_URI,
         )
         self.assertEqual(
+            tools["remote_overview"].meta["openai/outputTemplate"],
+            server.CONTROL_PLANE_WIDGET_URI,
+        )
+        self.assertEqual(
             tools["remote_overview"].meta["ui"]["visibility"],
             ["model", "app"],
         )
@@ -440,6 +444,9 @@ class RelayServerTests(unittest.TestCase):
         self.assertTrue(server.LONG_JOB_WIDGET_URI.endswith("long-job-watch-v3.html"))
         self.assertIn(server.PI_JOB_WIDGET_LEGACY_URI, resource_uris)
         self.assertIn(server.LONG_JOB_WIDGET_LEGACY_URI, resource_uris)
+        self.assertTrue(server.CONTROL_PLANE_WIDGET_URI.endswith("control-plane-v5.html"))
+        self.assertIn(server.CONTROL_PLANE_WIDGET_V4_URI, resource_uris)
+        self.assertIn(server.CONTROL_PLANE_WIDGET_LEGACY_URI, resource_uris)
         widget = next(
             resource
             for resource in resources
