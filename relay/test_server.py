@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
+import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -609,6 +612,17 @@ class RelayServerTests(unittest.TestCase):
         self.assertNotIn("the next turn will re-arm this channel", html)
         self.assertIn("do not ask the user to type continue", html)
         self.assertNotIn("setInterval(", html)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required to validate widget JavaScript")
+    def test_control_plane_widget_javascript_parses(self):
+        scripts = re.findall(r"<script>([\s\S]*?)</script>", server.CONTROL_PLANE_WIDGET_HTML)
+        self.assertTrue(scripts, "Control plane must contain its initialization script")
+        for script in scripts:
+            result = subprocess.run(
+                [shutil.which("node"), "--check"],
+                input=script, text=True, capture_output=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_control_plane_widget_is_read_only_snapshot_ui(self):
         html = server.CONTROL_PLANE_WIDGET_HTML

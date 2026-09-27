@@ -857,7 +857,8 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
   (async()=>{try{
     await request("ui/initialize",{appInfo:{name:"livingruntime-remote-control-plane",version:"1.0.0"},appCapabilities:{},protocolVersion:"2026-01-26"});
     notify("ui/notifications/initialized"); connected=true;
-    render(window.openai?.toolOutput||latest);\n    refreshTimer = setTimeout(()=>void refresh(), 1000);
+    render(window.openai?.toolOutput||latest);
+    refreshTimer = setTimeout(()=>void refresh(), 1000);
   }catch(e){q("headline").textContent="Widget initialization failed: "+String(e?.message||e);}})();
 })();
 </script>
