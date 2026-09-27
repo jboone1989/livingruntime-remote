@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib, json, secrets, sqlite3, time, uuid
 from pathlib import Path
+from contextlib import contextmanager
 from typing import Any
 
 def digest(value: str) -> str:
@@ -26,6 +27,12 @@ class RelayStore:
               tool TEXT NOT NULL,args_json TEXT NOT NULL,status TEXT NOT NULL,result_json TEXT,
               created_at REAL NOT NULL,claimed_at REAL,completed_at REAL);
             CREATE INDEX IF NOT EXISTS idx_tasks_device ON tasks(device_id,status,created_at);
+            CREATE TABLE IF NOT EXISTS result_receipts(
+              task_id TEXT PRIMARY KEY,device_id TEXT NOT NULL,payload_hash TEXT NOT NULL,received_at REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS completion_events(
+              event_id TEXT PRIMARY KEY,user_sub TEXT NOT NULL,job_key TEXT NOT NULL,
+              state TEXT NOT NULL DEFAULT 'pending',claim_token TEXT,lease_until REAL,
+              updated_at REAL NOT NULL,UNIQUE(user_sub,job_key));
             CREATE TABLE IF NOT EXISTS continuations(
               user_sub TEXT NOT NULL,session_id TEXT NOT NULL,job_id TEXT NOT NULL,
               pi_remote_dir TEXT NOT NULL,job_root TEXT,created_at REAL NOT NULL,updated_at REAL NOT NULL,
@@ -33,10 +40,15 @@ class RelayStore:
             CREATE INDEX IF NOT EXISTS idx_continuations_updated ON continuations(updated_at);
             """)
 
-    def db(self) -> sqlite3.Connection:
+    @contextmanager
+    def db(self):
         db = sqlite3.connect(self.path, timeout=5)
         db.row_factory = sqlite3.Row
-        return db
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def cleanup(self, retention_seconds: int = 86400) -> None:
         now = time.time()
@@ -201,10 +213,16 @@ class RelayStore:
         return {"task_id": row["task_id"], "tool": row["tool"], "args": json.loads(row["args_json"])}
 
     def complete(self, device_id: str, task_id: str, result: dict[str, Any]) -> None:
-        payload = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        payload = json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         if len(payload.encode()) > 1048576:
             payload = '{"ok":false,"error":"device result exceeds relay limit"}'
         with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            receipt = db.execute("SELECT device_id,payload_hash FROM result_receipts WHERE task_id=?", (task_id,)).fetchone()
+            if receipt:
+                if receipt["device_id"] == device_id and receipt["payload_hash"] == digest(payload):
+                    return
+                raise KeyError("conflicting result or wrong device")
             cur = db.execute(
                 "UPDATE tasks SET status='complete',result_json=?,completed_at=? "
                 "WHERE task_id=? AND device_id=? AND status='claimed'",
@@ -212,6 +230,67 @@ class RelayStore:
             )
             if cur.rowcount != 1:
                 raise KeyError("task missing, complete, or owned by another device")
+            db.execute("INSERT INTO result_receipts VALUES(?,?,?,?)", (task_id, device_id, digest(payload), time.time()))
+
+    def ensure_completion(self, user_sub: str, job_key: str) -> dict[str, Any]:
+        event_id = "completion_" + digest(user_sub + "\n" + job_key)[:40]
+        with self.db() as db:
+            db.execute("INSERT OR IGNORE INTO completion_events(event_id,user_sub,job_key,updated_at) VALUES(?,?,?,?)",
+                       (event_id, user_sub, job_key, time.time()))
+        return self.completion(user_sub, event_id)
+
+    def completion(self, user_sub: str, event_id: str) -> dict[str, Any]:
+        with self.db() as db:
+            row = db.execute("SELECT event_id,state,lease_until FROM completion_events WHERE user_sub=? AND event_id=?",
+                             (user_sub, event_id)).fetchone()
+        if row is None:
+            raise KeyError("completion not found")
+        value = dict(row)
+        if value["state"] == "sending" and (value["lease_until"] or 0) <= time.time():
+            value["state"] = "uncertain"
+        return value
+
+    def claim_completion(self, user_sub: str, event_id: str, retry_uncertain: bool = False) -> dict[str, Any]:
+        now = time.time()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM completion_events WHERE user_sub=? AND event_id=?", (user_sub, event_id)).fetchone()
+            if row is None:
+                raise KeyError("completion not found")
+            state = row["state"]
+            if state == "sending" and (row["lease_until"] or 0) <= now:
+                state = "uncertain"
+            if state == "pending" or (state == "uncertain" and retry_uncertain):
+                token = secrets.token_urlsafe(24)
+                db.execute("UPDATE completion_events SET state='sending',claim_token=?,lease_until=?,updated_at=? WHERE event_id=?",
+                           (token, now + 90, now, event_id))
+                return {"event_id": event_id, "state": "sending", "claim_token": token}
+            return {"event_id": event_id, "state": state}
+
+    def settle_completion(self, user_sub: str, event_id: str, token: str, outcome: str) -> dict[str, Any]:
+        if outcome not in {"pending", "uncertain", "accepted"}:
+            raise ValueError("invalid delivery outcome")
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT state,claim_token FROM completion_events WHERE user_sub=? AND event_id=?", (user_sub, event_id)).fetchone()
+            if row is None:
+                raise KeyError("completion not found")
+            if row["state"] == "observed":
+                return {"event_id": event_id, "state": "observed"}
+            if row["claim_token"] != token:
+                raise PermissionError("completion claim does not match")
+            if row["state"] == "accepted":
+                return {"event_id": event_id, "state": "accepted"}
+            db.execute("UPDATE completion_events SET state=?,updated_at=? WHERE event_id=?", (outcome, time.time(), event_id))
+        return {"event_id": event_id, "state": outcome}
+
+    def observe_completion(self, user_sub: str, event_id: str) -> dict[str, Any]:
+        with self.db() as db:
+            changed = db.execute("UPDATE completion_events SET state='observed',updated_at=? WHERE user_sub=? AND event_id=?",
+                                 (time.time(), user_sub, event_id)).rowcount
+        if not changed:
+            raise KeyError("completion not found")
+        return {"event_id": event_id, "state": "observed"}
 
     def result(self, user_sub: str, task_id: str, consume: bool = False) -> dict[str, Any] | None:
         with self.db() as db:

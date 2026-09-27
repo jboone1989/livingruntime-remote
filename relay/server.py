@@ -26,12 +26,12 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.31"
-PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v3.html"
-PI_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
-LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v3.html"
-LONG_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
-COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v3.html"
+VERSION = "0.4.32"
+PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v4.html"
+PI_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/pi-job-watch-v3.html"
+LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v4.html"
+LONG_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/long-job-watch-v3.html"
+COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v4.html"
 CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v4.html"
 CONTROL_PLANE_WIDGET_LEGACY_URI = "ui://livingruntime-remote/control-plane-v3.html"
 PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
@@ -88,6 +88,129 @@ TOOL_TEXT = {
     "start_pi_step": ("Start detached Pi step", "Run a bounded batch of structured Pi file/search/edit actions in an external-controller session, persist it as a durable job, and attach the Pi watcher. Pi does not call an LLM."),
 }
 
+WIDGET_RPC_JS = r"""
+  function recoveryButton(label, action) {
+    let button = document.getElementById("recover");
+    if (!button) {
+      button = document.createElement("button"); button.id = "recover";
+      document.querySelector(".card").appendChild(button);
+    }
+    button.hidden = false; button.textContent = label;
+    button.onclick = () => { button.hidden = true; void action(); };
+  }
+  let rpcClosed = false;
+  function request(method, params) {
+    if (rpcClosed) return Promise.reject(Object.assign(new Error("Widget is detached"), {uncertain:true}));
+    const id = nextId++;
+    const timeoutMs = method === "tools/call" ? (params?.name?.startsWith("wait_") ? 75000 : 25000) : 10000;
+    return new Promise((resolve,reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(Object.assign(new Error(method + " response timed out"), {uncertain:true}));
+      }, timeoutMs);
+      pending.set(id, {
+        resolve(value) {
+          clearTimeout(timer);
+          if (value?.isError) reject(new Error("Host rejected " + method));
+          else resolve(value);
+        },
+        reject(error) { clearTimeout(timer); reject(error); }
+      });
+      try { window.parent.postMessage({jsonrpc:"2.0",id,method,params},"*"); }
+      catch (error) { pending.delete(id); clearTimeout(timer); reject(error); }
+    });
+  }
+  function closeRequests() {
+    rpcClosed = true;
+    for (const waiter of pending.values()) waiter.reject(Object.assign(new Error("Widget detached"), {uncertain:true}));
+    pending.clear();
+  }
+  window.addEventListener("pagehide", closeRequests);
+  window.addEventListener("message", event => {
+    if (event.source === window.parent && event.data?.method === "ui/notifications/request-teardown") closeRequests();
+  });
+  function boundedPromise(promise) {
+    return new Promise((resolve,reject) => {
+      const timer = setTimeout(() => reject(Object.assign(new Error("Message acceptance unknown"), {uncertain:true})),10000);
+      Promise.resolve(promise).then(value=>{clearTimeout(timer);resolve(value);},error=>{clearTimeout(timer);reject(error);});
+    });
+  }
+  async function sendHostMessage(prompt) {
+    try {
+      await request("ui/message",{role:"user",content:[{type:"text",text:prompt}]});
+    } catch (error) {
+      // A timeout can mean that the message was accepted but its ACK was lost.
+      // Do not automatically send a duplicate through the other transport.
+      if (error?.uncertain || rpcClosed || !window.openai?.sendFollowUpMessage) throw error;
+      await boundedPromise(window.openai.sendFollowUpMessage({prompt,scrollToBottom:false}));
+    }
+  }
+"""
+
+COMPLETION_DELIVERY_JS = r"""
+  let deliveryRunning = false;
+  async function deliverCompletion(event, prompt, jobId, detail, explicitRetry=false, attempt=0) {
+    if (deliveryRunning || rpcClosed) return;
+    deliveryRunning = true;
+    const eventId = event?.event_id;
+    const save = value => {
+      // A widget-state storage failure must not prevent the durable relay ACK.
+      try {
+        const saved = window.openai?.setWidgetState?.({jobId,terminal:true,detail,eventId,...value});
+        saved?.catch?.(()=>{});
+      } catch (_) {}
+    };
+    const unpack = value => value?.structuredContent || value?.structured_content || value;
+    let claim = null;
+    let accepted = false;
+    try {
+      if (!eventId) throw new Error("Completion record missing; reopen this job with the updated plugin.");
+      const saved = window.openai?.widgetState;
+      // If host acceptance succeeded before the relay ACK failed, only replay
+      // the ACK. Never resend the user message from this saved state.
+      if (saved?.eventId === eventId && saved?.notificationAccepted && saved?.claimToken) {
+        claim = {claim_token:saved.claimToken}; accepted = true;
+      } else {
+        claim = unpack(await request("tools/call",{name:"claim_job_completion",arguments:{event_id:eventId,retry_uncertain:explicitRetry}}));
+        if (claim?.state === "accepted" || claim?.state === "observed") {
+          save({watcherState:"COMPLETED",notificationAccepted:true});
+          setStatus("COMPLETED", detail + " · notification accepted by ChatGPT");
+          return;
+        }
+        if (!claim?.claim_token) {
+          const uncertain = claim?.state === "uncertain";
+          setStatus(uncertain ? "DELIVERY_UNCERTAIN" : "DELIVERY_PENDING",
+            detail + (uncertain ? " · message acceptance unknown; check the conversation before retrying" : " · another watcher is delivering this result"));
+          recoveryButton(uncertain ? "Retry notification (may duplicate)" : "Check delivery again",
+            ()=>deliverCompletion(event,prompt,jobId,detail,uncertain));
+          return;
+        }
+        save({watcherState:"DELIVERY_PENDING",claimToken:claim.claim_token});
+        setStatus("RESULT_READY",detail + " · delivering result to ChatGPT");
+        await sendHostMessage(prompt + " Completion event " + eventId +
+          ". After inspecting the durable result, call acknowledge_job_completion with this event_id. Do not repeat work already completed for this event.");
+        accepted = true;
+        save({watcherState:"DELIVERY_PENDING",claimToken:claim.claim_token,notificationAccepted:true});
+      }
+      await request("tools/call",{name:"settle_job_completion",arguments:{event_id:eventId,claim_token:claim.claim_token,outcome:"accepted"}});
+      save({watcherState:"COMPLETED",notificationAccepted:true});
+      setStatus("COMPLETED",detail + " · notification accepted by ChatGPT");
+    } catch (error) {
+      const uncertain = Boolean(error?.uncertain);
+      if (!accepted && claim?.claim_token) {
+        await request("tools/call",{name:"settle_job_completion",arguments:{event_id:eventId,claim_token:claim.claim_token,outcome:uncertain?"uncertain":"pending"}}).catch(()=>{});
+      }
+      setStatus(accepted ? "DELIVERY_PENDING" : (uncertain ? "DELIVERY_UNCERTAIN" : "DELIVERY_PENDING"),
+        detail + " · " + String(error?.message || error));
+      recoveryButton(accepted ? "Confirm delivered notification" : (uncertain ? "Retry notification (may duplicate)" : "Retry notification"),
+        ()=>deliverCompletion(event,prompt,jobId,detail,uncertain));
+      if ((!uncertain || accepted) && attempt < 2 && !rpcClosed) {
+        setTimeout(()=>void deliverCompletion(event,prompt,jobId,detail,false,attempt+1),3000 * (attempt+1));
+      }
+    } finally { deliveryRunning = false; }
+  }
+"""
+
 PI_JOB_WIDGET_HTML = r"""<!doctype html>
 <html>
 <head>
@@ -134,11 +257,7 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
   const statusEl = document.getElementById("status");
   const detailEl = document.getElementById("detail");
 
-  function request(method, params) {
-    const id = nextId++;
-    window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
-    return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
-  }
+  /* WIDGET_RPC */
 
   function notify(method, params = {}) {
     window.parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
@@ -150,21 +269,12 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
     detailEl.textContent = detail;
   }
 
-  function persistTerminalState(jobId, detail) {
-    const openai = typeof window !== "undefined" ? window.openai : undefined;
-    openai?.setWidgetState?.({
-      watcherState: "COMPLETED",
-      jobId,
-      detail,
-      terminal: true
-    });
-  }
 
   function toolResultData(result) {
     return result?.structuredContent || result?.structured_content || result || null;
   }
 
-  async function sendFollowUp(jobId, state, runtimeJobId, runtimeGoalStatus) {
+  async function sendFollowUp(jobId, state, runtimeJobId, runtimeGoalStatus, event, detail) {
     const completionStatus = state?.status || "UNKNOWN";
     const prompt = runtimeJobId
       ? (
@@ -181,21 +291,9 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
           ". Continue this same development task now. Inspect the durable Pi job/session result, " +
           "review the changes and tests, and proceed to the next required step without asking me to say continue."
         );
-    try {
-      await request("ui/message", {
-        role: "user",
-        content: [{ type: "text", text: prompt }]
-      });
-      return;
-    } catch (error) {
-      const openai = typeof window !== "undefined" ? window.openai : undefined;
-      if (openai?.sendFollowUpMessage) {
-        await openai.sendFollowUpMessage({ prompt, scrollToBottom: false });
-        return;
-      }
-      throw error;
-    }
+    return deliverCompletion(event, prompt, jobId, detail);
   }
+  /* COMPLETION_DELIVERY */
 
   async function watch(output) {
     const jobId = output?.jobId;
@@ -204,12 +302,7 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
     const jobRoot = output?.jobRoot || null;
     if (!connected || !jobId || activeJob === jobId || stopped) return;
     activeJob = jobId;
-    const saved = typeof window !== "undefined" ? window.openai?.widgetState : null;
-    if (saved?.watcherState === "COMPLETED" && saved?.jobId === jobId) {
-      stopped = true;
-      setStatus("COMPLETED", saved?.detail || ("Pi job " + jobId + " already reached terminal state."));
-      return;
-    }
+
     const initialStatus = output?.state?.status || "UNKNOWN";
     setStatus(
       output?.terminal ? "WAITING_FOR_CHATGPT_SESSION" : "ARMED",
@@ -235,10 +328,9 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
           const durableStatus = data.runtimeGoalStatus || output?.runtimeGoalStatus || null;
           const detail = durableId
             ? "Pi server state " + (state.status || "terminal") + " · durable goal " + durableId + " · " + (durableStatus || "awaiting controller")
-            : "Pi server state " + (state.status || "terminal") + " · terminal result handed to ChatGPT";
+            : "Pi server state " + (state.status || "terminal") + " · terminal result ready for delivery";
           stopped = true;
-          persistTerminalState(jobId, detail);
-          setStatus("COMPLETED", detail);
+          setStatus("RESULT_READY", detail);
           void request("ui/update-model-context", {
             structuredContent: {
               piRemoteCompletion: {
@@ -250,7 +342,7 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
               }
             }
           }).catch(() => {});
-          void sendFollowUp(jobId, state, durableId, durableStatus).catch(() => {});
+          await sendFollowUp(jobId, state, durableId, durableStatus, data.completionDelivery, detail);
           return;
         }
         if (!data?.timedOut) {
@@ -263,6 +355,7 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
       }
     } catch (error) {
       const message = String(error?.message || error);
+      recoveryButton("Reconnect watcher",()=>{rpcClosed=false;stopped=false;activeJob=null;return connect();});
       const disconnected = /offline|device|connect|timeout/i.test(message);
       setStatus("DISCONNECTED", (disconnected ? "Remote connection lost · " : "Watcher stopped · ") + message);
       const prompt =
@@ -323,10 +416,14 @@ PI_JOB_WIDGET_HTML = r"""<!doctype html>
       }
       await watch(latestOutput);
     } catch (error) {
+      recoveryButton("Reconnect watcher",()=>{rpcClosed=false;stopped=false;activeJob=null;return connect();});
       setStatus("Widget initialization failed", String(error?.message || error));
     }
   }
 
+  window.addEventListener("pageshow",event=>{
+    if (event.persisted) { rpcClosed=false; stopped=false; activeJob=null; void connect(); }
+  });
   void connect();
 })();
 </script>
@@ -365,11 +462,7 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
   const statusEl = document.getElementById("status");
   const detailEl = document.getElementById("detail");
 
-  function request(method, params) {
-    const id = nextId++;
-    window.parent.postMessage({ jsonrpc:"2.0", id, method, params }, "*");
-    return new Promise((resolve,reject)=>pending.set(id,{resolve,reject}));
-  }
+  /* WIDGET_RPC */
   function notify(method, params={}) {
     window.parent.postMessage({ jsonrpc:"2.0", method, params }, "*");
   }
@@ -377,16 +470,6 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
     watcherState = status;
     statusEl.textContent = status;
     detailEl.textContent = detail;
-  }
-  function persistTerminalState(jobId, status, detail) {
-    const openai = typeof window !== "undefined" ? window.openai : undefined;
-    openai?.setWidgetState?.({
-      watcherState:"COMPLETED",
-      jobId,
-      status,
-      detail,
-      terminal:true
-    });
   }
   function toolResultData(result) {
     return result?.structuredContent || result?.structured_content || result || null;
@@ -407,34 +490,20 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
     if (progress !== undefined && progress !== null) bits.push("progress " + progress + "s ago");
     return bits.join(" · ");
   }
-  async function followUp(jobId, status) {
+  async function followUp(jobId, status, event=null, detail="") {
     const prompt =
       "LivingRuntime Remote long job " + jobId + " is now " + status +
       ". Continue this same task now. Call get_long_job for the durable receipt, inspect the output tail and current repository/process state, " +
       "then either proceed, repair/retry, or cancel as appropriate. Do not ask me to say continue and do not assume the job is still running.";
-    try {
-      await request("ui/message", { role:"user", content:[{type:"text",text:prompt}] });
-      return;
-    } catch (error) {
-      const openai = typeof window !== "undefined" ? window.openai : undefined;
-      if (openai?.sendFollowUpMessage) {
-        await openai.sendFollowUpMessage({prompt,scrollToBottom:false});
-        return;
-      }
-      throw error;
-    }
+    return event ? deliverCompletion(event,prompt,jobId,detail) : sendHostMessage(prompt);
   }
+  /* COMPLETION_DELIVERY */
 
   async function watch(output) {
     const jobId = jobIdFrom(output);
     if (!connected || !jobId || activeJob === jobId || stopped) return;
     activeJob = jobId;
-    const saved = typeof window !== "undefined" ? window.openai?.widgetState : null;
-    if (saved?.watcherState === "COMPLETED" && saved?.jobId === jobId) {
-      stopped = true;
-      setStatus("COMPLETED", saved?.detail || ("Long job " + jobId + " already reached terminal state."));
-      return;
-    }
+
     setStatus("ARMED", "Long job " + jobId + " · watcher attached; server process state is checked separately");
     try {
       while (!stopped) {
@@ -450,17 +519,16 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
         if (data?.terminal || job.terminal) {
           const detail = "Server state " + status + " · " + describe(data);
           stopped = true;
-          persistTerminalState(jobId, status, detail);
-          setStatus("COMPLETED", detail);
+          setStatus("RESULT_READY", detail);
           void request("ui/update-model-context", {
             structuredContent:{longJobCompletion:{jobId,status,terminal:true}}
           }).catch(()=>{});
-          void followUp(jobId,status).catch(()=>{});
+          await followUp(jobId,status,data.completionDelivery,detail);
           return;
         }
         if (status === "STALLED") {
           setStatus("WAITING_FOR_CHATGPT_SESSION", "Server state STALLED · " + describe(data));
-          await request("ui/update-model-context", {
+          void request("ui/update-model-context", {
             structuredContent:{longJobCompletion:{jobId,status:"STALLED",terminal:false}}
           }).catch(()=>{});
           await followUp(jobId,"STALLED");
@@ -472,7 +540,7 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
           throw new Error("long-job wait returned without terminal/stalled state or timeout");
         }
         setStatus("ARMED", describe(data));
-        await request("ui/update-model-context", {
+        void request("ui/update-model-context", {
           structuredContent:{
             longJobProgress:{
               jobId,
@@ -485,6 +553,7 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
       }
     } catch (error) {
       const message = String(error?.message || error);
+      recoveryButton("Reconnect watcher",()=>{rpcClosed=false;stopped=false;activeJob=null;return connect();});
       setStatus("DISCONNECTED", message);
       try {
         await request("ui/message", {
@@ -540,9 +609,13 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
       if (!latestOutput && window.openai?.toolOutput) latestOutput=window.openai.toolOutput;
       await watch(latestOutput);
     } catch (error) {
+      recoveryButton("Reconnect watcher",()=>{rpcClosed=false;stopped=false;activeJob=null;return connect();});
       setStatus("Widget initialization failed",String(error?.message || error));
     }
   }
+  window.addEventListener("pageshow",event=>{
+    if (event.persisted) { rpcClosed=false; stopped=false; activeJob=null; void connect(); }
+  });
   void connect();
 })();
 </script>
@@ -580,11 +653,7 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
   const statusEl = document.getElementById("status");
   const detailEl = document.getElementById("detail");
 
-  function request(method, params) {
-    const id = nextId++;
-    window.parent.postMessage({jsonrpc:"2.0",id,method,params},"*");
-    return new Promise((resolve,reject)=>pending.set(id,{resolve,reject}));
-  }
+  /* WIDGET_RPC */
   function notify(method, params={}) {
     window.parent.postMessage({jsonrpc:"2.0",method,params},"*");
   }
@@ -607,21 +676,9 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
       "needed, complete with response_text. If the request is already completed, inspect get_llm_request_status and " +
       "do not duplicate work. This watcher stays armed for subsequent requests, so do not call watch_agent_cognition " +
       "again and do not ask the user to type continue.";
-    try {
-      await request("ui/message", {
-        role:"user",
-        content:[{type:"text",text:prompt}]
-      });
-      return;
-    } catch (error) {
-      const openai = typeof window !== "undefined" ? window.openai : undefined;
-      if (openai?.sendFollowUpMessage) {
-        await openai.sendFollowUpMessage({prompt,scrollToBottom:false});
-        return;
-      }
-      throw error;
-    }
+    return sendHostMessage(prompt);
   }
+
   async function watch(output) {
     const agentId = output?.agentId;
     const watcherId = output?.watcherId;
@@ -666,7 +723,7 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
           const claimed = data(claimResult);
           const claimToken = claimed?.claim?.token;
           if (!claimToken) throw new Error("cognition watcher claim returned no token");
-          await request("ui/update-model-context", {
+          void request("ui/update-model-context", {
             structuredContent:{
               livingRuntimeCognitionRequest:{
                 agentId,
@@ -691,6 +748,7 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
       }
     } catch (error) {
       const message = String(error?.message || error);
+      recoveryButton("Reconnect watcher",()=>{rpcClosed=false;stopped=false;activeWatcher=null;return connect();});
       setStatus("DISCONNECTED", message);
       try {
         await request("ui/message", {
@@ -743,6 +801,9 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
       setStatus("Widget initialization failed",String(error?.message || error));
     }
   }
+  window.addEventListener("pageshow",event=>{
+    if (event.persisted) { rpcClosed=false; stopped=false; activeWatcher=null; void connect(); }
+  });
   void connect();
 })();
 </script>
@@ -784,10 +845,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
 (() => {
   const pending = new Map(); let nextId = 1; let connected = false; let latest = null;
   const q = id => document.getElementById(id);
-  function request(method, params) {
-    const id = nextId++; window.parent.postMessage({jsonrpc:"2.0",id,method,params},"*");
-    return new Promise((resolve,reject)=>pending.set(id,{resolve,reject}));
-  }
+  /* WIDGET_RPC */
   function notify(method, params={}) { window.parent.postMessage({jsonrpc:"2.0",method,params},"*"); }
   function data(result) { return result?.structuredContent || result?.structured_content || result || null; }
   function esc(v) { return String(v ?? "").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
@@ -863,6 +921,10 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
 </script>
 </body>
 </html>"""
+
+
+for _widget_name in ("PI_JOB_WIDGET_HTML", "LONG_JOB_WIDGET_HTML", "COGNITION_WIDGET_HTML", "CONTROL_PLANE_WIDGET_HTML"):
+    globals()[_widget_name] = globals()[_widget_name].replace("/* WIDGET_RPC */", WIDGET_RPC_JS).replace("/* COMPLETION_DELIVERY */", COMPLETION_DELIVERY_JS)
 
 
 class PairRateLimiter:
@@ -988,7 +1050,19 @@ class Relay:
                 if not result.get("ok"):
                     raise RuntimeError(str(result.get("error") or "remote device call failed"))
                 value = result.get("result")
-                return value if isinstance(value, dict) else {"result": value}
+                value = value if isinstance(value, dict) else {"result": value}
+                if value.get("terminal") and tool in {
+                    "start_long_job", "watch_long_job", "get_long_job", "wait_long_job",
+                    "start_pi_agent", "start_pi_step", "watch_pi_job", "wait_pi_job_completion",
+                }:
+                    is_long = "long_job" in tool
+                    job_id = (value.get("runtimeJobId") or (value.get("job") or {}).get("job_id") or args.get("job_id")) if is_long else (value.get("jobId") or args.get("job_id"))
+                    if job_id:
+                        key = json.dumps([device["device_id"], "long" if is_long else "pi", job_id,
+                            None if is_long else args.get("pi_remote_dir", "/home/ubuntu/src/pi-remote"),
+                            None if is_long else args.get("job_root")], separators=(",", ":"))
+                        value = {**value, "completionDelivery": self.store.ensure_completion(user_sub, key)}
+                return value
             if self.store.cancel_if_queued(user_sub, task_id):
                 raise TimeoutError(
                     "paired device did not claim task before relay timeout; queued task was cancelled"
@@ -1216,10 +1290,18 @@ def create_mcp(
             )
         )
 
+    for old_uri, old_html in (
+        ("ui://livingruntime-remote/pi-job-watch-v2.html", PI_JOB_WIDGET_HTML),
+        ("ui://livingruntime-remote/long-job-watch-v2.html", LONG_JOB_WIDGET_HTML),
+        ("ui://livingruntime-remote/agent-cognition-watch-v3.html", COGNITION_WIDGET_HTML),
+    ):
+        add_widget_resource(old_uri, old_html, name=old_uri.rsplit("/",1)[-1],
+            title="LivingRuntime watcher", description="Recover an existing watcher card.")
+
     add_widget_resource(
         PI_JOB_WIDGET_LEGACY_URI,
         PI_JOB_WIDGET_HTML,
-        name="pi-job-watch-v2",
+        name="pi-job-watch-v3",
         title="Pi Remote job watcher",
         description="Backward-compatible watcher resource for existing Pi Remote task cards.",
     )
@@ -1233,7 +1315,7 @@ def create_mcp(
     add_widget_resource(
         LONG_JOB_WIDGET_LEGACY_URI,
         LONG_JOB_WIDGET_HTML,
-        name="long-job-watch-v2",
+        name="long-job-watch-v3",
         title="Long-running job watcher",
         description="Backward-compatible watcher resource for existing supervised long-job task cards.",
     )
@@ -1554,6 +1636,27 @@ def create_mcp(
     def disconnect_device(device_id: str | None = None) -> dict[str, Any]:
         """Revoke a paired connector and discard its queued or completed relay tasks."""
         return {"disconnected": relay.store.revoke_device(_principal("remote:write"), device_id)}
+
+    @server.tool(name="claim_job_completion", title="Claim completion notification",
+        description="App-only atomic notification claim. Retrying uncertain delivery requires an explicit user retry.",
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False),
+        meta={**WRITE, "ui": {"visibility": ["app"]}})
+    def claim_job_completion(event_id: str, retry_uncertain: bool = False) -> dict[str, Any]:
+        return relay.store.claim_completion(_principal("remote:write"), event_id, retry_uncertain)
+
+    @server.tool(name="settle_job_completion", title="Record completion delivery",
+        description="App-only record of host acceptance, rejection or unknown delivery; never executes a command.",
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False),
+        meta={**WRITE, "ui": {"visibility": ["app"]}})
+    def settle_job_completion(event_id: str, claim_token: str, outcome: str) -> dict[str, Any]:
+        return relay.store.settle_completion(_principal("remote:write"), event_id, claim_token, outcome)
+
+    @server.tool(name="acknowledge_job_completion", title="Acknowledge inspected job result",
+        description="After inspecting the durable result referenced by a completion notification, acknowledge its event ID. This suppresses duplicate continuation notifications; it does not mark the user goal complete.",
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+        meta=WRITE)
+    def acknowledge_job_completion(event_id: str) -> dict[str, Any]:
+        return relay.store.observe_completion(_principal("remote:write"), event_id)
 
     @server.tool(
         name="wait_long_job",
@@ -2385,6 +2488,13 @@ nav a{{margin-right:18px}}
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=401)
 
+    async def heartbeat(request: Request):
+        try:
+            store.authenticate_device(_device_token(request))
+            return JSONResponse({"ok": True})
+        except PermissionError:
+            return JSONResponse({"error": "invalid device token"}, status_code=401)
+
     async def poll(request: Request):
         try:
             device = store.authenticate_device(_device_token(request))
@@ -2509,6 +2619,7 @@ nav a{{margin-right:18px}}
     routes.extend([
         Route("/device/pair", pair, methods=["POST"]),
         Route("/device/poll", poll, methods=["POST"]),
+        Route("/device/heartbeat", heartbeat, methods=["POST"]),
         Route("/device/result", complete, methods=["POST"]),
         Mount("/", app=mcp_app),
     ])

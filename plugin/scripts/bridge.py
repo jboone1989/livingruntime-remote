@@ -2228,6 +2228,7 @@ def _long_job_runtime(receipt: dict[str, Any]) -> dict[str, Any]:
     observed = str(receipt.get("observed_status") or status).upper()
     live = bool(receipt.get("worker_alive")) or bool(receipt.get("child_alive"))
     runtime: dict[str, Any] = {
+        "observed_at": time.time(),
         "backend_status": status,
         "observed_status": observed,
         "progress_state": (
@@ -2463,6 +2464,13 @@ def _reconcile_runtime_job(job: dict[str, Any]) -> dict[str, Any]:
         result = dict(job)
         runtime = dict(result.get("runtime") or {})
         runtime["reconcile_error"] = str(exc)[:2000]
+        runtime["liveness_state"] = "UNKNOWN"
+        runtime["last_known_worker_alive"] = runtime.get("worker_alive")
+        runtime["last_known_child_alive"] = runtime.get("child_alive")
+        runtime["worker_alive"] = None
+        runtime["child_alive"] = None
+        result["last_known_status"] = result.get("status")
+        result["status"] = "UNKNOWN"
         result["runtime"] = runtime
         return result
 
@@ -2768,6 +2776,7 @@ def _sync_pi_runtime_job(job: dict[str, Any], state: dict[str, Any]) -> dict[str
         next_action = None
 
     runtime = {
+        "observed_at": time.time(),
         "backend_status": raw or "UNKNOWN",
         "observed_status": raw or "UNKNOWN",
         "progress_state": (

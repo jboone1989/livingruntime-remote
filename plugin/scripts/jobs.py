@@ -223,6 +223,7 @@ def update_runtime(
         "error": 2000,
     }
     allowed_number = {
+        "observed_at",
         "last_heartbeat_at",
         "last_progress_at",
         "heartbeat_age_seconds",

@@ -86,7 +86,7 @@ class ConnectorTests(unittest.TestCase):
         setup.assert_called_once_with()
 
     def test_interactive_setup_collects_three_inputs(self):
-        with patch("builtins.input", side_effect=["ABCD-EFGH", "ubuntu@example", "/srv/project"]):
+        with patch("builtins.input", side_effect=["ABCD-EFGH", "ubuntu@example", "/srv/project", ""]):
             with patch.object(connector, "install", return_value={"autostart": "test"}) as install:
                 connector.interactive_setup()
         install.assert_called_once()
@@ -156,13 +156,13 @@ class ConnectorTests(unittest.TestCase):
             if path == "/device/result":
                 with lock:
                     results.append(body["task_id"])
-                return {}
+                return {"ok": True}
             raise AssertionError(path)
 
-        with patch.object(relay_agent, "_load", return_value=cfg), patch.object(
+        with tempfile.TemporaryDirectory() as outbox_dir, patch.object(relay_agent, "_load", return_value=cfg), patch.object(
             relay_agent, "_dispatch", side_effect=fake_dispatch
         ), patch.object(relay_agent, "_request", side_effect=fake_request):
-            relay_agent.serve(Path("/unused"))
+            relay_agent.serve(Path(outbox_dir) / "relay.json")
 
         self.assertTrue(second_started.is_set())
         self.assertTrue(overlapped["value"])

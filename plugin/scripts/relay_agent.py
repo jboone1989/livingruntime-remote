@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import os
 import socket
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -12,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from contract import PLUGIN_VERSION, REMOTE_TOOLS
+from result_outbox import ResultOutbox, connector_lock
 
 TOOLS = set(REMOTE_TOOLS)
 
@@ -91,24 +94,56 @@ def _dispatch(task: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:1000]}
 
 
-def _handle_claimed_task(cfg: dict[str, Any], task: dict[str, Any]) -> None:
-    result = _dispatch(task)
-    _request(
-        cfg["url"],
-        "/device/result",
-        {"task_id": task["task_id"], "result": result},
-        cfg["device_token"],
-        timeout=30,
-    )
+def _handle_claimed_task(task: dict[str, Any], outbox: ResultOutbox, wake: threading.Event) -> None:
+    if outbox.begin(task["task_id"]):
+        outbox.finish(task["task_id"], _dispatch(task))
+    wake.set()
+
+
+def _deliver_results(cfg: dict[str, Any], outbox: ResultOutbox) -> None:
+    for row in outbox.due():
+        try:
+            reply = _request(cfg["url"], "/device/result",
+                {"task_id": row["task_id"], "result": json.loads(row["payload"])},
+                cfg["device_token"], timeout=10)
+            if reply.get("ok") is not True:
+                raise RuntimeError("relay did not acknowledge result")
+        except Exception as exc:
+            outbox.retry(row["task_id"], row["attempts"])
+            print(f"result delivery pending: {type(exc).__name__}", flush=True)
+        else:
+            outbox.delivered(row["task_id"])
+
+
+def _upload_loop(cfg, outbox, wake, shutdown):
+    while not shutdown.is_set():
+        wake.clear()
+        try:
+            _deliver_results(cfg, outbox)
+        except Exception as exc:
+            print(f"result outbox pending: {type(exc).__name__}", flush=True)
+        wake.wait(1)
 
 
 def serve(config_path: Path, once: bool = False) -> None:
+    with connector_lock(config_path.with_suffix(".outbox.lock")):
+        _serve(config_path, once)
+
+
+def _serve(config_path: Path, once: bool = False) -> None:
     cfg = _load(config_path)
+    owner = hashlib.sha256((cfg["url"] + "\n" + str(cfg.get("device_id") or cfg["device_token"])).encode()).hexdigest()
+    outbox = ResultOutbox(config_path.with_suffix(".outbox.sqlite3"), owner)
+    outbox.recover_interrupted()
+    wake, shutdown = threading.Event(), threading.Event()
+    uploader = threading.Thread(target=_upload_loop, args=(cfg, outbox, wake, shutdown), daemon=True)
+    uploader.start()
     max_workers = min(
         8,
         max(2, int(os.environ.get("LIVINGRUNTIME_CONNECTOR_WORKERS", "4"))),
     )
     pending: set[concurrent.futures.Future[None]] = set()
+    last_contact = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=max_workers,
         thread_name_prefix="livingruntime-remote",
@@ -120,6 +155,13 @@ def serve(config_path: Path, once: bool = False) -> None:
                     pending.remove(future)
                     future.result()
 
+                if len(pending) >= max_workers:
+                    if time.monotonic() - last_contact >= 10:
+                        last_contact = time.monotonic()
+                        _request(cfg["url"], "/device/heartbeat", {}, cfg["device_token"], timeout=10)
+                    concurrent.futures.wait(pending, timeout=0.2, return_when=concurrent.futures.FIRST_COMPLETED)
+                    continue
+
                 response = _request(
                     cfg["url"],
                     "/device/poll?wait=20",
@@ -128,13 +170,19 @@ def serve(config_path: Path, once: bool = False) -> None:
                     timeout=30,
                 )
                 task = response.get("task")
+                last_contact = time.monotonic()
                 if task:
-                    future = pool.submit(_handle_claimed_task, cfg, task)
+                    future = pool.submit(_handle_claimed_task, task, outbox, wake)
                     pending.add(future)
                     if once:
                         future.result()
+                        shutdown.set()
+                        uploader.join(timeout=12)
+                        _deliver_results(cfg, outbox)
                         return
             except KeyboardInterrupt:
+                shutdown.set()
+                uploader.join(timeout=12)
                 return
             except Exception as exc:
                 print(f"relay connector error: {type(exc).__name__}: {exc}", flush=True)

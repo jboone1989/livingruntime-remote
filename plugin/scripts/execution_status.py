@@ -9,6 +9,7 @@ from typing import Any
 STATE_VERSION = 1
 RECENT_ACTIVITY_SECONDS = 45.0
 STALE_UI_SECONDS = 120.0
+LIVENESS_MAX_AGE_SECONDS = 60.0
 
 OBSERVABILITY_TOOLS = frozenset({
     "capabilities",
@@ -34,7 +35,7 @@ OBSERVABILITY_TOOLS = frozenset({
     "logs",
 })
 
-ACTIVE_JOB_STATES = frozenset({"PENDING", "RUNNING", "WAITING", "BLOCKED", "STALLED"})
+ACTIVE_JOB_STATES = frozenset({"PENDING", "RUNNING", "WAITING", "BLOCKED", "STALLED", "UNKNOWN"})
 COGNITION_PENDING_STATES = frozenset({"PENDING"})
 COGNITION_CLAIMED_STATES = frozenset({"DISPATCHED", "CLAIMED"})
 COGNITION_TERMINAL_STATES = frozenset({
@@ -186,16 +187,24 @@ def tracked_cognition_request_id() -> str | None:
     return request_id or None
 
 
-def _job_summary(job: dict[str, Any]) -> dict[str, Any]:
+def _job_summary(job: dict[str, Any], now: float) -> dict[str, Any]:
     runtime = job.get("runtime") if isinstance(job.get("runtime"), dict) else {}
+    observed_at = runtime.get("observed_at")
+    fresh = isinstance(observed_at, (int, float)) and 0 <= now - observed_at <= LIVENESS_MAX_AGE_SECONDS
+    unknown = bool(runtime.get("reconcile_error")) or runtime.get("liveness_state") == "UNKNOWN" or (
+        not fresh and (runtime.get("worker_alive") is True or runtime.get("child_alive") is True))
     return {
         "job_id": job.get("job_id"),
-        "status": job.get("status"),
+        "status": "UNKNOWN" if unknown else job.get("status"),
+        "last_known_status": job.get("last_known_status") or job.get("status"),
+        "observed_at": observed_at,
+        "observation_error": runtime.get("reconcile_error"),
+        "liveness_known": not unknown,
         "goal": str(job.get("goal") or "")[:300],
         "current_step": str(job.get("current_step") or "")[:300] or None,
         "next_action": str(job.get("next_action") or "")[:300] or None,
-        "worker_alive": bool(runtime.get("worker_alive")),
-        "child_alive": bool(runtime.get("child_alive")),
+        "worker_alive": None if unknown else bool(runtime.get("worker_alive")),
+        "child_alive": None if unknown else bool(runtime.get("child_alive")),
         "heartbeat_age_seconds": runtime.get("heartbeat_age_seconds"),
         "progress_age_seconds": runtime.get("progress_age_seconds"),
     }
@@ -216,7 +225,7 @@ def snapshot(
         and not bool(row.get("terminal"))
         and str(row.get("status") or "").upper() in ACTIVE_JOB_STATES
     ]
-    summaries = [_job_summary(row) for row in active_jobs[:8]]
+    summaries = [_job_summary(row, now) for row in active_jobs]
     workers_alive = sum(
         1 for row in summaries if row["worker_alive"] or row["child_alive"]
     )
@@ -244,13 +253,16 @@ def snapshot(
     if isinstance(last_activity_at, (int, float)):
         age = max(0.0, now - float(last_activity_at))
 
-    job_states = {str(row.get("status") or "").upper() for row in active_jobs}
+    job_states = {str(row.get("status") or "").upper() for row in summaries}
     metadata_only_running = any(
         row["status"] in {"RUNNING", "PENDING"}
         and not (row["worker_alive"] or row["child_alive"])
         for row in summaries
     )
-    if "STALLED" in job_states:
+    if "UNKNOWN" in job_states:
+        state = "UNKNOWN"
+        message = "One or more job receipts could not be refreshed; last known liveness is not current execution evidence."
+    elif "STALLED" in job_states:
         state = "STALLED"
         message = "A durable job is stalled; inspect its heartbeat/progress receipt."
     elif workers_alive:
@@ -298,7 +310,7 @@ def snapshot(
         "active_job_count": len(active_jobs),
         "worker_alive_count": workers_alive,
         "running_requires_live_process": True,
-        "active_jobs": summaries,
+        "active_jobs": summaries[:8],
         "last_real_activity_at": last_activity_at,
         "last_real_activity_age_seconds": None if age is None else round(age, 3),
         "last_tool": value.get("last_tool"),
@@ -308,7 +320,7 @@ def snapshot(
         "cognition": cognition,
         "ui_may_be_stale": ui_may_be_stale,
         "ui_warning": (
-            "No server-side work is running. If ChatGPT still shows an old tool as running, that UI timeline is stale."
+            "No supervised server work is currently observed. This does not establish whether ChatGPT is still reasoning or its UI is stale."
             if ui_may_be_stale
             else None
         ),

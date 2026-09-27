@@ -38,11 +38,22 @@ class RelayServerTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_busy_connector_heartbeat_does_not_claim_queued_work(self):
+        code = self.store.create_pairing_code("user-a")
+        device = self.store.pair_device(code["code"], "host")
+        task = self.store.enqueue("user-a", device["device_id"], "connection_status", {})
+        with TestClient(self.app) as client:
+            response = client.post("/device/heartbeat", json={},
+                headers={"authorization": "Bearer " + device["device_token"]})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(client.post("/device/heartbeat", json={}).status_code, 401)
+        self.assertEqual(self.store.claim(device["device_id"])["task_id"], task)
+
     def test_health_challenge_and_oauth_resource_metadata(self):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.31")
+            self.assertEqual(health.json()["version"], "0.4.32")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -283,6 +294,7 @@ class RelayServerTests(unittest.TestCase):
             "bind_openai_pi_continuation",
             "continue_openai_pi_job",
             "claim_llm_request_for_watcher",
+            "claim_job_completion", "settle_job_completion", "acknowledge_job_completion",
         } | set(REMOTE_TOOLS)
         self.assertEqual(set(tools), expected)
         app_bindings = {
@@ -433,8 +445,8 @@ class RelayServerTests(unittest.TestCase):
         )
         resources = asyncio.run(mcp.list_resources())
         resource_uris = {str(resource.uri) for resource in resources}
-        self.assertTrue(server.PI_JOB_WIDGET_URI.endswith("pi-job-watch-v3.html"))
-        self.assertTrue(server.LONG_JOB_WIDGET_URI.endswith("long-job-watch-v3.html"))
+        self.assertTrue(server.PI_JOB_WIDGET_URI.endswith("pi-job-watch-v4.html"))
+        self.assertTrue(server.LONG_JOB_WIDGET_URI.endswith("long-job-watch-v4.html"))
         self.assertIn(server.PI_JOB_WIDGET_LEGACY_URI, resource_uris)
         self.assertIn(server.LONG_JOB_WIDGET_LEGACY_URI, resource_uris)
         widget = next(
@@ -543,12 +555,9 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn('"DISCONNECTED"', html)
         self.assertIn('"COMPLETED"', html)
         self.assertIn("setWidgetState", html)
-        self.assertIn("void sendFollowUp", html)
-        self.assertNotIn("await sendFollowUp", html)
-        self.assertLess(
-            html.index('setStatus("COMPLETED", detail)'),
-            html.index("void sendFollowUp"),
-        )
+        self.assertIn("await sendFollowUp", html)
+        self.assertIn("settle_job_completion", html)
+        self.assertIn("DELIVERY_UNCERTAIN", html)
         self.assertIn('"pagehide"', html)
         self.assertNotIn("Pi is working", html)
         self.assertNotIn("setInterval(", html)
@@ -570,16 +579,13 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn('"DISCONNECTED"', html)
         self.assertIn('"COMPLETED"', html)
         self.assertIn("setWidgetState", html)
-        self.assertIn("void followUp", html)
-        self.assertLess(
-            html.index('setStatus("COMPLETED", detail)'),
-            html.index("void followUp"),
-        )
+        self.assertIn("settle_job_completion", html)
+        self.assertIn("DELIVERY_UNCERTAIN", html)
         terminal_block = html[
             html.index("if (data?.terminal || job.terminal)") :
             html.index('if (status === "STALLED")')
         ]
-        self.assertNotIn("await followUp", terminal_block)
+        self.assertIn("await followUp", terminal_block)
         self.assertIn('"pagehide"', html)
         self.assertNotIn("Long job is working", html)
         self.assertNotIn("setInterval(", html)

@@ -97,6 +97,7 @@ class ExecutionStatusTests(unittest.TestCase):
             "runtime": {
                 "worker_alive": True,
                 "child_alive": True,
+                "observed_at": 499.0,
                 "heartbeat_age_seconds": 2.0,
                 "progress_age_seconds": 1.0,
             },

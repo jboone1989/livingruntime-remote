@@ -436,9 +436,14 @@ class SchemaAndToolTests(unittest.TestCase):
                 "_long_job_receipt",
                 side_effect=RuntimeError("host temporarily unavailable"),
             ):
-                listed = bridge.list_jobs(status="RUNNING")
+                listed = bridge.list_jobs()
+                running = bridge.list_jobs(status="RUNNING")
 
         self.assertEqual([row["job_id"] for row in listed["jobs"]], [created["job_id"]])
+        self.assertEqual(running["jobs"], [])
+        self.assertEqual(listed["jobs"][0]["status"], "UNKNOWN")
+        self.assertEqual(listed["jobs"][0]["last_known_status"], "RUNNING")
+        self.assertIsNone(listed["jobs"][0]["runtime"]["worker_alive"])
         self.assertIn("temporarily unavailable", listed["jobs"][0]["runtime"]["reconcile_error"])
 
     def test_pi_running_requires_process_alive_receipt(self) -> None:
@@ -601,7 +606,7 @@ class SchemaAndToolTests(unittest.TestCase):
             self.assertEqual(result["piLlmCallsExpectedDelta"], 0)
             self.assertEqual(result["jobId"], "11111111-1111-4111-8111-111111111111")
             self.assertTrue(result["runtimeJobId"].startswith("lrjob_"))
-            durable = bridge.get_job(result["runtimeJobId"])
+            durable = jobs.get(result["runtimeJobId"])
             self.assertEqual(durable["status"], "PENDING")
             self.assertFalse(durable["runtime"]["worker_alive"])
             self.assertEqual(durable["backend"]["type"], "pi-step")
@@ -647,7 +652,7 @@ class SchemaAndToolTests(unittest.TestCase):
                     "/home/ubuntu/.livingruntime/pi-jobs",
                     timeout_seconds=5,
                 )
-            durable = bridge.get_job(goal["job_id"])
+            durable = jobs.get(goal["job_id"])
 
         self.assertEqual(waited["runtimeJobId"], goal["job_id"])
         self.assertEqual(waited["runtimeGoalStatus"], "WAITING")
@@ -878,7 +883,7 @@ class SchemaAndToolTests(unittest.TestCase):
                 bound["hookSpecificOutput"]["hookEventName"], "PostToolUse"
             )
             runtime_job_id = bound["runtimeJobId"]
-            self.assertEqual(bridge.get_job(runtime_job_id)["status"], "PENDING")
+            self.assertEqual(jobs.get(runtime_job_id)["status"], "PENDING")
             with patch.object(
                 bridge,
                 "_pi_job_command",
