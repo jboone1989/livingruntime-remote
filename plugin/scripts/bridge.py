@@ -49,6 +49,7 @@ from execution_status import (
     tracked_cognition_request_id,
 )
 from jobs import (
+    acknowledge_completion as acknowledge_runtime_completion,
     attach_backend as attach_runtime_backend,
     checkpoint as checkpoint_runtime_job,
     create as create_runtime_job,
@@ -1389,6 +1390,21 @@ def remote_overview(include_resources: bool = False) -> dict[str, Any]:
         for row in credential_rows
     ]
     leases = credential_lease_snapshot(active_only=True)
+    completion_events = []
+    for job in jobs:
+        event = job.get("completion_event") if isinstance(job, dict) else None
+        if not isinstance(event, dict) or event.get("acknowledged_at") is not None:
+            continue
+        completion_events.append({
+            "event_id": event.get("event_id"),
+            "job_id": job.get("job_id"),
+            "status": event.get("status") or job.get("status"),
+            "terminal": bool(event.get("terminal")),
+            "created_at": event.get("created_at"),
+            "goal": job.get("goal"),
+            "project": job.get("project"),
+            "device": job.get("device"),
+        })
     result = {
         "version": VERSION,
         "generated_at": time.time(),
@@ -1402,6 +1418,7 @@ def remote_overview(include_resources: bool = False) -> dict[str, Any]:
         },
         "credentials": credentials,
         "active_credential_leases": leases,
+        "completion_events": completion_events,
         "activity": _recent_audit_events(20),
     }
     if _contains_secret(result):
@@ -2500,6 +2517,31 @@ def get_long_job(job_id: str) -> dict[str, Any]:
 def watch_long_job(job_id: str) -> dict[str, Any]:
     """Refresh a supervised long job and return watcher-ready state."""
     return get_long_job(job_id)
+
+
+@server.tool(
+    name="ack_long_job_completion",
+    annotations=ToolAnnotations(
+        title="Acknowledge long-job completion",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def ack_long_job_completion(
+    job_id: str,
+    event_id: str,
+    acknowledged_by: str = "chatgpt",
+) -> dict[str, Any]:
+    """Mark one durable completion event consumed after ChatGPT handles it."""
+    job = acknowledge_runtime_completion(
+        job_id,
+        event_id,
+        acknowledged_by=acknowledged_by,
+    )
+    _audit("ack_long_job_completion", True, {"job_id": job_id, "event_id": event_id})
+    return {"job": job, "completion_event": job.get("completion_event")}
 
 
 @server.tool(

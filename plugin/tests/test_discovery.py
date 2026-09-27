@@ -136,6 +136,7 @@ class DiscoveryTests(unittest.TestCase):
             "start_long_job": (False, True, True),
             "watch_long_job": (True, False, False),
             "get_long_job": (True, False, False),
+            "ack_long_job_completion": (False, False, False),
             "wait_long_job": (True, False, False),
             "cancel_long_job": (False, True, False),
             "start_pi_agent": (False, True, False),

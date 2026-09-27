@@ -35,6 +35,7 @@ REMOTE_TOOLS = (
     "start_long_job",
     "watch_long_job",
     "get_long_job",
+    "ack_long_job_completion",
     "wait_long_job",
     "cancel_long_job",
     "list_exec_permissions",
@@ -73,7 +74,7 @@ DISCOVERY_TOOLS = REMOTE_TOOLS
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 DEFAULT_HTTP_PORT = 8766
 PLUGIN_NAME = "LivingRuntime Remote"
-PLUGIN_VERSION = "0.4.32"
+PLUGIN_VERSION = "0.4.33"
 SECRET_KEYS = (
     "token",
     "password",

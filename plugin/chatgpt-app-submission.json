@@ -584,6 +584,18 @@
         "destructive_justification": "Does not modify files, services, or the supervised process."
       }
     },
+    "ack_long_job_completion": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Marks one already-observed durable completion event as handled so it is not handed to ChatGPT again.",
+        "open_world_justification": "Updates only private LivingRuntime Remote completion metadata.",
+        "destructive_justification": "Does not change the completed job result, files, processes, services, or external resources."
+      }
+    },
     "wait_long_job": {
       "annotations": {
         "readOnlyHint": true,

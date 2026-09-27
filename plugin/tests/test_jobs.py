@@ -60,6 +60,25 @@ class JobStoreTests(unittest.TestCase):
         self.assertEqual([row["job_id"] for row in rows], [created["job_id"]])
         self.assertEqual(jobs.list_jobs(status="SUCCEEDED")[0]["job_id"], created["job_id"])
 
+    def test_terminal_transition_creates_durable_completion_event(self) -> None:
+        created = jobs.create(goal="Durable completion")
+        completed = jobs.checkpoint(
+            created["job_id"],
+            summary="done",
+            status="SUCCEEDED",
+        )
+        event = completed["completion_event"]
+        self.assertTrue(event["event_id"].startswith("lrcomp_"))
+        self.assertEqual(event["job_id"], created["job_id"])
+        self.assertEqual(event["status"], "SUCCEEDED")
+        self.assertTrue(event["terminal"])
+        self.assertIsNone(event["acknowledged_at"])
+        acknowledged = jobs.acknowledge_completion(
+            created["job_id"],
+            event["event_id"],
+        )
+        self.assertIsNotNone(acknowledged["completion_event"]["acknowledged_at"])
+
     def test_terminal_job_cannot_reopen(self) -> None:
         created = jobs.create(goal="One way")
         jobs.checkpoint(created["job_id"], summary="done", status="FAILED")

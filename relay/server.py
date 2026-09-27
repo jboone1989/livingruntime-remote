@@ -26,13 +26,15 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.32"
+VERSION = "0.4.33"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v3.html"
 PI_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
-LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v3.html"
+LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v4.html"
+LONG_JOB_WIDGET_V3_URI = "ui://livingruntime-remote/long-job-watch-v3.html"
 LONG_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
 COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v3.html"
-CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v6.html"
+CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v7.html"
+CONTROL_PLANE_WIDGET_V6_URI = "ui://livingruntime-remote/control-plane-v6.html"
 CONTROL_PLANE_WIDGET_V5_URI = "ui://livingruntime-remote/control-plane-v5.html"
 CONTROL_PLANE_WIDGET_V4_URI = "ui://livingruntime-remote/control-plane-v4.html"
 CONTROL_PLANE_WIDGET_LEGACY_URI = "ui://livingruntime-remote/control-plane-v3.html"
@@ -77,6 +79,7 @@ TOOL_TEXT = {
     "start_long_job": ("Start supervised long job", "Start a command under the durable long-job supervisor and return immediately with a watcher-ready job ID."),
     "watch_long_job": ("Watch supervised long job", "Attach the no-polling watcher to an existing supervised long-running command."),
     "get_long_job": ("Get supervised long job", "Refresh one supervised long-running command from its durable remote receipt."),
+    "ack_long_job_completion": ("Acknowledge long-job completion", "Mark one durable long-job completion event handled after ChatGPT has consumed its receipt."),
     "wait_long_job": ("Wait for supervised long job", "App-only bounded wait used by the long-job watcher."),
     "cancel_long_job": ("Cancel supervised long job", "Request cancellation of a supervised long-running command process group."),
     "list_exec_permissions": ("List command permissions", "List pending dynamic command requests plus active and revoked persisted grants."),
@@ -410,22 +413,23 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
     if (progress !== undefined && progress !== null) bits.push("progress " + progress + "s ago");
     return bits.join(" · ");
   }
-  async function followUp(jobId, status) {
-    const prompt =
-      "LivingRuntime Remote long job " + jobId + " is now " + status +
-      ". Continue this same task now. Call get_long_job for the durable receipt, inspect the output tail and current repository/process state, " +
-      "then either proceed, repair/retry, or cancel as appropriate. Do not ask me to say continue and do not assume the job is still running.";
-    try {
-      await request("ui/message", { role:"user", content:[{type:"text",text:prompt}] });
-      return;
-    } catch (error) {
-      const openai = typeof window !== "undefined" ? window.openai : undefined;
-      if (openai?.sendFollowUpMessage) {
-        await openai.sendFollowUpMessage({prompt,scrollToBottom:false});
-        return;
+  async function publishCompletion(job, status, detail, terminal=true) {
+    const event = job?.completion_event || null;
+    await request("ui/update-model-context", {
+      structuredContent:{
+        longJobCompletion:{
+          jobId:job?.job_id || activeJob,
+          eventId:event?.event_id || null,
+          status,
+          terminal:Boolean(terminal),
+          detail,
+          nextAction:job?.next_action || null,
+          instruction:terminal
+            ? "Inspect get_long_job for the durable receipt, continue/repair as appropriate, then acknowledge this exact event with ack_long_job_completion."
+            : "Inspect get_long_job and current process state before deciding whether to retry, repair, wait, or cancel."
+        }
       }
-      throw error;
-    }
+    });
   }
 
   async function watch(output) {
@@ -455,19 +459,20 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
           stopped = true;
           persistTerminalState(jobId, status, detail);
           setStatus("COMPLETED", detail);
-          void request("ui/update-model-context", {
-            structuredContent:{longJobCompletion:{jobId,status,terminal:true}}
-          }).catch(()=>{});
-          void followUp(jobId,status).catch(()=>{});
+          void publishCompletion(job,status,detail,true).catch(()=>{
+            setStatus("WAITING_FOR_CHATGPT_SESSION", detail + " · durable completion is waiting for a ChatGPT session");
+          });
           return;
         }
         if (status === "STALLED") {
           setStatus("WAITING_FOR_CHATGPT_SESSION", "Server state STALLED · " + describe(data));
-          await request("ui/update-model-context", {
-            structuredContent:{longJobCompletion:{jobId,status:"STALLED",terminal:false}}
-          }).catch(()=>{});
-          await followUp(jobId,"STALLED");
-          setStatus("WAITING_FOR_CHATGPT_SESSION", "Stall receipt handed to ChatGPT for recovery.");
+          await publishCompletion(
+            job,
+            "STALLED",
+            "Server state STALLED · " + describe(data),
+            false
+          ).catch(()=>{});
+          setStatus("WAITING_FOR_CHATGPT_SESSION", "Stall receipt is durable and available to the next ChatGPT model turn.");
           stopped = true;
           return;
         }
@@ -489,15 +494,16 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
     } catch (error) {
       const message = String(error?.message || error);
       setStatus("DISCONNECTED", message);
-      try {
-        await request("ui/message", {
-          role:"user",
-          content:[{type:"text",text:
-            "LivingRuntime Remote long-job watcher for " + jobId + " stopped: " + message +
-            ". Check get_long_job and device_status before assuming the command is still running."
-          }]
-        });
-      } catch (_) {}
+      await request("ui/update-model-context", {
+        structuredContent:{
+          longJobWatcherIssue:{
+            jobId,
+            status:"DISCONNECTED",
+            detail:message,
+            instruction:"Check get_long_job and device_status before assuming the command is still running."
+          }
+        }
+      }).catch(()=>{});
     }
   }
 
@@ -534,7 +540,7 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
   async function connect() {
     try {
       await request("ui/initialize", {
-        appInfo:{name:"livingruntime-remote-long-job-watch",version:"1.0.0"},
+        appInfo:{name:"livingruntime-remote-long-job-watch",version:"1.1.0"},
         appCapabilities:{},
         protocolVersion:"2026-01-26"
       });
@@ -762,6 +768,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
   body { margin:0; padding:12px; font:13px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--color-text-primary,inherit); background:transparent; }
   .top,.section { border:1px solid var(--color-border-secondary,rgba(127,127,127,.35)); border-radius:12px; padding:12px 14px; margin-bottom:10px; }
   .row { display:flex; gap:8px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+  .actions { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
   .badge { display:inline-flex; gap:6px; align-items:center; padding:2px 8px; border-radius:999px; background:rgba(127,127,127,.12); }
   .dot { width:8px; height:8px; border-radius:50%; background:#999; }
   .ok .dot { background:#32a852; } .bad .dot { background:#d64545; } .warn .dot { background:#d79a27; }
@@ -775,24 +782,29 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
   .danger { color:#d64545; }
   .metric { font-variant-numeric:tabular-nums; }
   code { font-family:var(--font-mono,ui-monospace,monospace); font-size:11px; }
-  button { border:1px solid var(--color-border-secondary,rgba(127,127,127,.4)); border-radius:8px; padding:6px 10px; background:transparent; color:inherit; }
+  button { border:1px solid var(--color-border-secondary,rgba(127,127,127,.4)); border-radius:8px; padding:6px 10px; background:transparent; color:inherit; cursor:pointer; }
+  button:disabled { opacity:.55; cursor:default; }
+  body[data-mode="pip"] { padding:8px; font-size:12px; }
+  body[data-mode="pip"] .top, body[data-mode="pip"] .section { padding:9px 10px; margin-bottom:7px; border-radius:10px; }
+  body[data-mode="pip"] .pip-secondary { display:none; }
+  body[data-mode="pip"] .grid { grid-template-columns:1fr; }
 </style>
 </head>
 <body>
   <div class="top">
-    <div class="row"><strong>LivingRuntime Remote Control Plane</strong><button id="refresh">Refresh</button></div>
+    <div class="row"><strong>LivingRuntime Remote Control Plane</strong><div class="actions"><button id="pin">Pin</button><button id="expand">Expand</button><button id="refresh">Refresh</button></div></div>
     <div id="headline" class="muted">Loading snapshot…</div>
   </div>
   <div class="section"><h3>Execution truth</h3><div id="execution" class="grid"></div></div>
   <div class="section"><h3>Running now</h3><div id="running" class="grid"></div></div>
   <div class="section"><h3>Waiting / handoff</h3><div id="waiting" class="grid"></div></div>
   <div class="section"><h3>Hosts</h3><div id="devices" class="grid"></div></div>
-  <div class="section"><h3>Recent terminal jobs</h3><div id="jobs" class="grid"></div></div>
-  <div class="section"><h3>Permissions & credentials</h3><div id="security" class="grid"></div></div>
-  <div class="section"><h3>Recent activity</h3><div id="activity" class="grid"></div></div>
+  <div class="section pip-secondary"><h3>Recent terminal jobs</h3><div id="jobs" class="grid"></div></div>
+  <div class="section pip-secondary"><h3>Permissions & credentials</h3><div id="security" class="grid"></div></div>
+  <div class="section pip-secondary"><h3>Recent activity</h3><div id="activity" class="grid"></div></div>
 <script>
 (() => {
-  console.info("LivingRuntime control-plane-v6 script loaded");
+  console.info("LivingRuntime control-plane-v7 script loaded");
   const pending = new Map(); let nextId = 1; let connected = false; let latest = null;
   const q = id => document.getElementById(id);
   function request(method, params) {
@@ -801,6 +813,53 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
   }
   function notify(method, params={}) { window.parent.postMessage({jsonrpc:"2.0",method,params},"*"); }
   function data(result) { return result?.structuredContent || result?.structured_content || result || null; }
+  function displayMode() { return window.openai?.displayMode || "inline"; }
+  function syncDisplayMode() {
+    const mode = displayMode();
+    document.body.dataset.mode = mode;
+    const pin = q("pin");
+    if (pin) {
+      pin.textContent = mode === "pip" ? "Pinned" : "Pin";
+      pin.disabled = mode === "pip";
+    }
+  }
+  async function requestDisplayMode(mode) {
+    if (!window.openai?.requestDisplayMode) return false;
+    try {
+      await window.openai.requestDisplayMode({mode});
+      syncDisplayMode();
+      return true;
+    } catch (_) {
+      syncDisplayMode();
+      return false;
+    }
+  }
+  function completionEvents(snapshot) {
+    const overview = snapshot?.overview || snapshot || {};
+    return Array.isArray(overview?.completion_events) ? overview.completion_events : [];
+  }
+  async function publishCompletionBacklog(snapshot) {
+    const events = completionEvents(snapshot);
+    if (!events.length) return;
+    const openai = typeof window !== "undefined" ? window.openai : undefined;
+    const saved = openai?.widgetState || {};
+    const published = new Set(Array.isArray(saved?.publishedCompletionEventIds) ? saved.publishedCompletionEventIds : []);
+    const fresh = events.filter(event => event?.event_id && !published.has(event.event_id));
+    if (!fresh.length) return;
+    await request("ui/update-model-context", {
+      structuredContent:{
+        longJobCompletionBacklog:{
+          events:fresh,
+          instruction:"Handle each durable long-job completion on the next model turn. Inspect get_long_job, continue/repair as appropriate, then call ack_long_job_completion for the exact event_id. Do not ask the user to type continue."
+        }
+      }
+    });
+    for (const event of fresh) published.add(event.event_id);
+    openai?.setWidgetState?.({
+      ...saved,
+      publishedCompletionEventIds:Array.from(published).slice(-100)
+    });
+  }
   function esc(v) { return String(v ?? "").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
   function formatTs(value) {
     const seconds = Number(value);
@@ -869,8 +928,14 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     const cognitionCard=cognition
       ? '<div class="item"><span class="badge warn"><span class="dot"></span>'+esc(cognition.status||"COGNITION")+'</span><div><strong>'+esc(cognition.agent_id||"agent cognition")+'</strong></div><div class="muted"><code>'+esc(cognition.request_id||"")+'</code></div></div>'
       : '';
-    q("waiting").innerHTML = waitingJobs.length || cognitionCard
-      ? waitingJobs.slice(0,8).map(jobCard).join("")+cognitionCard
+    const completions=overview?.completion_events||[];
+    const completionCards=completions.slice(0,8).map(event=>
+      '<div class="item"><span class="badge warn"><span class="dot"></span>WAITING_FOR_CHATGPT_SESSION</span>'+
+      '<div><strong>'+esc(event.status||"COMPLETED")+' · '+esc(event.job_id||"")+'</strong></div>'+
+      '<div class="muted">'+esc(event.goal||"Durable completion pending model handoff")+'</div></div>'
+    ).join("");
+    q("waiting").innerHTML = waitingJobs.length || cognitionCard || completionCards
+      ? waitingJobs.slice(0,8).map(jobCard).join("")+cognitionCard+completionCards
       : '<div class="empty">Nothing is waiting for ChatGPT, approval, or a resumed worker.</div>';
 
     const devices = overview?.devices?.devices || [];
@@ -908,8 +973,12 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
     q("headline").textContent="Refreshing…";
     try {
-      const result=await request("tools/call",{name:"remote_overview",arguments:{include_resources:true}});
-      render(data(result));
+      const result=window.openai?.callTool
+        ? await window.openai.callTool("remote_overview",{include_resources:true})
+        : await request("tools/call",{name:"remote_overview",arguments:{include_resources:true}});
+      const snapshot=data(result);
+      render(snapshot);
+      void publishCompletionBacklog(snapshot).catch(()=>{});
     } catch (e) {
       q("headline").textContent="Refresh failed: "+String(e?.message||e);
     } finally {
@@ -917,10 +986,17 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     }
   }
   q("refresh").addEventListener("click",()=>void refresh());
+  q("pin").addEventListener("click",()=>void requestDisplayMode("pip"));
+  q("expand").addEventListener("click",()=>void requestDisplayMode("fullscreen"));
+  window.addEventListener("openai:set_globals", syncDisplayMode, {passive:true});
   window.addEventListener("message", event=>{
     if(event.source!==window.parent)return; const m=event.data; if(!m||m.jsonrpc!=="2.0")return;
     if(m.id!==undefined&&pending.has(m.id)){const w=pending.get(m.id);pending.delete(m.id);m.error?w.reject(m.error):w.resolve(m.result);return;}
-    if(m.method==="ui/notifications/tool-result") render(m.params?.structuredContent||null);
+    if(m.method==="ui/notifications/tool-result") {
+      const snapshot=m.params?.structuredContent||null;
+      render(snapshot);
+      void publishCompletionBacklog(snapshot).catch(()=>{});
+    }
     if(m.method==="ui/notifications/request-teardown"){
       connected=false;
       if(refreshTimer){clearTimeout(refreshTimer);refreshTimer=null;}
@@ -932,9 +1008,13 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     if(refreshTimer){clearTimeout(refreshTimer);refreshTimer=null;}
   },{once:true});
   (async()=>{try{
-    await request("ui/initialize",{appInfo:{name:"livingruntime-remote-control-plane",version:"1.1.0"},appCapabilities:{},protocolVersion:"2026-01-26"});
+    await request("ui/initialize",{appInfo:{name:"livingruntime-remote-control-plane",version:"1.2.0"},appCapabilities:{availableDisplayModes:["inline","pip","fullscreen"]},protocolVersion:"2026-01-26"});
     notify("ui/notifications/initialized"); connected=true;
-    render(window.openai?.toolOutput||latest);
+    syncDisplayMode();
+    const initial=window.openai?.toolOutput||latest;
+    render(initial);
+    void publishCompletionBacklog(initial).catch(()=>{});
+    void requestDisplayMode("pip");
     refreshTimer = setTimeout(()=>void refresh(), 1000);
   }catch(e){q("headline").textContent="Widget initialization failed: "+String(e?.message||e);}})();
 })();
@@ -1267,6 +1347,7 @@ def create_mcp(
         name: str,
         title: str,
         description: str,
+        display_modes: list[str] | None = None,
     ) -> None:
         """Publish both MCP Apps metadata and ChatGPT compatibility aliases."""
         csp = ResourceCsp(connect_domains=[], resource_domains=[])
@@ -1289,6 +1370,10 @@ def create_mcp(
                     },
                     "openai/widgetDomain": PI_JOB_WIDGET_DOMAIN,
                     "openai/widgetPrefersBorder": True,
+                    **(
+                        {"openai/ui": {"availableDisplayModes": display_modes}}
+                        if display_modes else {}
+                    ),
                 },
                 text=widget_html,
             )
@@ -1314,6 +1399,13 @@ def create_mcp(
         name="long-job-watch-v2",
         title="Long-running job watcher",
         description="Backward-compatible watcher resource for existing supervised long-job task cards.",
+    )
+    add_widget_resource(
+        LONG_JOB_WIDGET_V3_URI,
+        LONG_JOB_WIDGET_HTML,
+        name="long-job-watch-v3",
+        title="Long-running job watcher",
+        description="Backward-compatible watcher resource for sessions using the v3 long-job URI.",
     )
     add_widget_resource(
         LONG_JOB_WIDGET_URI,
@@ -1351,11 +1443,19 @@ def create_mcp(
         description="Backward-compatible dashboard for sessions using the v5 resource URI.",
     )
     add_widget_resource(
+        CONTROL_PLANE_WIDGET_V6_URI,
+        CONTROL_PLANE_WIDGET_HTML,
+        name="remote-control-plane-v6",
+        title="LivingRuntime Remote control plane",
+        description="Backward-compatible dashboard for sessions using the v6 resource URI.",
+    )
+    add_widget_resource(
         CONTROL_PLANE_WIDGET_URI,
         CONTROL_PLANE_WIDGET_HTML,
         name="remote-control-plane",
         title="LivingRuntime Remote control plane",
         description="Read-only execution-truth snapshot of connector health, real server activity, durable jobs, approvals, credential handles, and recent activity.",
+        display_modes=["inline", "pip", "fullscreen"],
     )
 
     @apps.tool(
@@ -2182,6 +2282,22 @@ def create_mcp(
             _principal("remote:read"),
             "get_long_job",
             {"job_id": job_id},
+        )
+
+    @expose("ack_long_job_completion", False, False, False)
+    async def ack_long_job_completion(
+        job_id: str,
+        event_id: str,
+        acknowledged_by: str = "chatgpt",
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "ack_long_job_completion",
+            {
+                "job_id": job_id,
+                "event_id": event_id,
+                "acknowledged_by": acknowledged_by,
+            },
         )
 
     @expose("cancel_long_job", False, False, True)

@@ -18,6 +18,24 @@ STATUSES = frozenset({
 TERMINAL_STATUSES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED", "CANCELLED_BY_USER"})
 
 
+def _ensure_completion_event(value: dict[str, Any], now: float) -> None:
+    """Create one durable, unacknowledged completion event per terminal job."""
+    if value.get("status") not in TERMINAL_STATUSES:
+        return
+    existing = value.get("completion_event")
+    if isinstance(existing, dict) and existing.get("event_id"):
+        return
+    value["completion_event"] = {
+        "event_id": "lrcomp_" + uuid.uuid4().hex[:20],
+        "job_id": value["job_id"],
+        "status": value["status"],
+        "terminal": True,
+        "created_at": now,
+        "acknowledged_at": None,
+        "acknowledged_by": None,
+    }
+
+
 def jobs_root() -> Path:
     raw = os.environ.get("LIVINGRUNTIME_REMOTE_JOBS")
     if raw:
@@ -118,6 +136,7 @@ def create(
         "created_at": now,
         "updated_at": now,
     }
+    _ensure_completion_event(value, now)
     _save(value)
     return dict(value)
 
@@ -192,6 +211,7 @@ def checkpoint(
     if next_action is not None:
         value["next_action"] = next_action
     value["updated_at"] = now
+    _ensure_completion_event(value, now)
     _save(value)
     return dict(value)
 
@@ -274,7 +294,37 @@ def update_runtime(
     if next_action is not None:
         value["next_action"] = next_action
     value["updated_at"] = time.time()
+    _ensure_completion_event(value, value["updated_at"])
     _save(value)
+    return dict(value)
+
+
+def acknowledge_completion(
+    job_id: str,
+    event_id: str,
+    *,
+    acknowledged_by: str = "chatgpt",
+) -> dict[str, Any]:
+    """Acknowledge one durable completion event after ChatGPT handles it."""
+    value = _load(job_id)
+    event = value.get("completion_event")
+    if not isinstance(event, dict) or not event.get("event_id"):
+        raise KeyError(f"job {job_id} has no completion event")
+    if str(event.get("event_id")) != str(event_id):
+        raise ValueError("completion event identity mismatch")
+    if event.get("acknowledged_at") is None:
+        now = time.time()
+        event = dict(event)
+        event["acknowledged_at"] = now
+        event["acknowledged_by"] = _bounded(
+            acknowledged_by,
+            field="acknowledged_by",
+            maximum=128,
+            required=True,
+        )
+        value["completion_event"] = event
+        value["updated_at"] = now
+        _save(value)
     return dict(value)
 
 
