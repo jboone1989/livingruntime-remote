@@ -26,13 +26,14 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.32"
+VERSION = "0.4.33"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v3.html"
 PI_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v3.html"
 LONG_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
 COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v3.html"
-CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v6.html"
+CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v7.html"
+CONTROL_PLANE_WIDGET_V6_URI = "ui://livingruntime-remote/control-plane-v6.html"
 CONTROL_PLANE_WIDGET_V5_URI = "ui://livingruntime-remote/control-plane-v5.html"
 CONTROL_PLANE_WIDGET_V4_URI = "ui://livingruntime-remote/control-plane-v4.html"
 CONTROL_PLANE_WIDGET_LEGACY_URI = "ui://livingruntime-remote/control-plane-v3.html"
@@ -762,6 +763,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
   body { margin:0; padding:12px; font:13px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--color-text-primary,inherit); background:transparent; }
   .top,.section { border:1px solid var(--color-border-secondary,rgba(127,127,127,.35)); border-radius:12px; padding:12px 14px; margin-bottom:10px; }
   .row { display:flex; gap:8px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+  .actions { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
   .badge { display:inline-flex; gap:6px; align-items:center; padding:2px 8px; border-radius:999px; background:rgba(127,127,127,.12); }
   .dot { width:8px; height:8px; border-radius:50%; background:#999; }
   .ok .dot { background:#32a852; } .bad .dot { background:#d64545; } .warn .dot { background:#d79a27; }
@@ -775,24 +777,29 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
   .danger { color:#d64545; }
   .metric { font-variant-numeric:tabular-nums; }
   code { font-family:var(--font-mono,ui-monospace,monospace); font-size:11px; }
-  button { border:1px solid var(--color-border-secondary,rgba(127,127,127,.4)); border-radius:8px; padding:6px 10px; background:transparent; color:inherit; }
+  button { border:1px solid var(--color-border-secondary,rgba(127,127,127,.4)); border-radius:8px; padding:6px 10px; background:transparent; color:inherit; cursor:pointer; }
+  button:disabled { opacity:.55; cursor:default; }
+  body[data-mode="pip"] { padding:8px; font-size:12px; }
+  body[data-mode="pip"] .top, body[data-mode="pip"] .section { padding:9px 10px; margin-bottom:7px; border-radius:10px; }
+  body[data-mode="pip"] .pip-secondary { display:none; }
+  body[data-mode="pip"] .grid { grid-template-columns:1fr; }
 </style>
 </head>
 <body>
   <div class="top">
-    <div class="row"><strong>LivingRuntime Remote Control Plane</strong><button id="refresh">Refresh</button></div>
+    <div class="row"><strong>LivingRuntime Remote Control Plane</strong><div class="actions"><button id="pin">Pin</button><button id="expand">Expand</button><button id="refresh">Refresh</button></div></div>
     <div id="headline" class="muted">Loading snapshot…</div>
   </div>
   <div class="section"><h3>Execution truth</h3><div id="execution" class="grid"></div></div>
   <div class="section"><h3>Running now</h3><div id="running" class="grid"></div></div>
   <div class="section"><h3>Waiting / handoff</h3><div id="waiting" class="grid"></div></div>
   <div class="section"><h3>Hosts</h3><div id="devices" class="grid"></div></div>
-  <div class="section"><h3>Recent terminal jobs</h3><div id="jobs" class="grid"></div></div>
-  <div class="section"><h3>Permissions & credentials</h3><div id="security" class="grid"></div></div>
-  <div class="section"><h3>Recent activity</h3><div id="activity" class="grid"></div></div>
+  <div class="section pip-secondary"><h3>Recent terminal jobs</h3><div id="jobs" class="grid"></div></div>
+  <div class="section pip-secondary"><h3>Permissions & credentials</h3><div id="security" class="grid"></div></div>
+  <div class="section pip-secondary"><h3>Recent activity</h3><div id="activity" class="grid"></div></div>
 <script>
 (() => {
-  console.info("LivingRuntime control-plane-v6 script loaded");
+  console.info("LivingRuntime control-plane-v7 script loaded");
   const pending = new Map(); let nextId = 1; let connected = false; let latest = null;
   const q = id => document.getElementById(id);
   function request(method, params) {
@@ -801,6 +808,27 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
   }
   function notify(method, params={}) { window.parent.postMessage({jsonrpc:"2.0",method,params},"*"); }
   function data(result) { return result?.structuredContent || result?.structured_content || result || null; }
+  function displayMode() { return window.openai?.displayMode || "inline"; }
+  function syncDisplayMode() {
+    const mode = displayMode();
+    document.body.dataset.mode = mode;
+    const pin = q("pin");
+    if (pin) {
+      pin.textContent = mode === "pip" ? "Pinned" : "Pin";
+      pin.disabled = mode === "pip";
+    }
+  }
+  async function requestDisplayMode(mode) {
+    if (!window.openai?.requestDisplayMode) return false;
+    try {
+      await window.openai.requestDisplayMode({mode});
+      syncDisplayMode();
+      return true;
+    } catch (_) {
+      syncDisplayMode();
+      return false;
+    }
+  }
   function esc(v) { return String(v ?? "").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
   function formatTs(value) {
     const seconds = Number(value);
@@ -908,7 +936,9 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
     q("headline").textContent="Refreshing…";
     try {
-      const result=await request("tools/call",{name:"remote_overview",arguments:{include_resources:true}});
+      const result=window.openai?.callTool
+        ? await window.openai.callTool("remote_overview",{include_resources:true})
+        : await request("tools/call",{name:"remote_overview",arguments:{include_resources:true}});
       render(data(result));
     } catch (e) {
       q("headline").textContent="Refresh failed: "+String(e?.message||e);
@@ -917,6 +947,9 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     }
   }
   q("refresh").addEventListener("click",()=>void refresh());
+  q("pin").addEventListener("click",()=>void requestDisplayMode("pip"));
+  q("expand").addEventListener("click",()=>void requestDisplayMode("fullscreen"));
+  window.addEventListener("openai:set_globals", syncDisplayMode, {passive:true});
   window.addEventListener("message", event=>{
     if(event.source!==window.parent)return; const m=event.data; if(!m||m.jsonrpc!=="2.0")return;
     if(m.id!==undefined&&pending.has(m.id)){const w=pending.get(m.id);pending.delete(m.id);m.error?w.reject(m.error):w.resolve(m.result);return;}
@@ -932,9 +965,11 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     if(refreshTimer){clearTimeout(refreshTimer);refreshTimer=null;}
   },{once:true});
   (async()=>{try{
-    await request("ui/initialize",{appInfo:{name:"livingruntime-remote-control-plane",version:"1.1.0"},appCapabilities:{},protocolVersion:"2026-01-26"});
+    await request("ui/initialize",{appInfo:{name:"livingruntime-remote-control-plane",version:"1.2.0"},appCapabilities:{availableDisplayModes:["inline","pip","fullscreen"]},protocolVersion:"2026-01-26"});
     notify("ui/notifications/initialized"); connected=true;
+    syncDisplayMode();
     render(window.openai?.toolOutput||latest);
+    void requestDisplayMode("pip");
     refreshTimer = setTimeout(()=>void refresh(), 1000);
   }catch(e){q("headline").textContent="Widget initialization failed: "+String(e?.message||e);}})();
 })();
@@ -1267,6 +1302,7 @@ def create_mcp(
         name: str,
         title: str,
         description: str,
+        display_modes: list[str] | None = None,
     ) -> None:
         """Publish both MCP Apps metadata and ChatGPT compatibility aliases."""
         csp = ResourceCsp(connect_domains=[], resource_domains=[])
@@ -1289,6 +1325,7 @@ def create_mcp(
                     },
                     "openai/widgetDomain": PI_JOB_WIDGET_DOMAIN,
                     "openai/widgetPrefersBorder": True,
+                    **({"openai/ui": {"availableDisplayModes": display_modes}} if display_modes else {}),
                 },
                 text=widget_html,
             )
@@ -1351,11 +1388,19 @@ def create_mcp(
         description="Backward-compatible dashboard for sessions using the v5 resource URI.",
     )
     add_widget_resource(
+        CONTROL_PLANE_WIDGET_V6_URI,
+        CONTROL_PLANE_WIDGET_HTML,
+        name="remote-control-plane-v6",
+        title="LivingRuntime Remote control plane",
+        description="Backward-compatible dashboard for sessions using the v6 resource URI.",
+    )
+    add_widget_resource(
         CONTROL_PLANE_WIDGET_URI,
         CONTROL_PLANE_WIDGET_HTML,
         name="remote-control-plane",
         title="LivingRuntime Remote control plane",
         description="Read-only execution-truth snapshot of connector health, real server activity, durable jobs, approvals, credential handles, and recent activity.",
+        display_modes=["inline", "pip", "fullscreen"],
     )
 
     @apps.tool(

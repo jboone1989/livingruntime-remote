@@ -45,7 +45,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.32")
+            self.assertEqual(health.json()["version"], "0.4.33")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -458,7 +458,8 @@ class RelayServerTests(unittest.TestCase):
         self.assertTrue(server.LONG_JOB_WIDGET_URI.endswith("long-job-watch-v3.html"))
         self.assertIn(server.PI_JOB_WIDGET_LEGACY_URI, resource_uris)
         self.assertIn(server.LONG_JOB_WIDGET_LEGACY_URI, resource_uris)
-        self.assertTrue(server.CONTROL_PLANE_WIDGET_URI.endswith("control-plane-v6.html"))
+        self.assertTrue(server.CONTROL_PLANE_WIDGET_URI.endswith("control-plane-v7.html"))
+        self.assertIn(server.CONTROL_PLANE_WIDGET_V6_URI, resource_uris)
         self.assertIn(server.CONTROL_PLANE_WIDGET_V5_URI, resource_uris)
         self.assertIn(server.CONTROL_PLANE_WIDGET_V4_URI, resource_uris)
         self.assertIn(server.CONTROL_PLANE_WIDGET_LEGACY_URI, resource_uris)
@@ -541,6 +542,10 @@ class RelayServerTests(unittest.TestCase):
         self.assertEqual(
             control_resource_meta["openai/widgetDomain"],
             server.PI_JOB_WIDGET_DOMAIN,
+        )
+        self.assertEqual(
+            control_resource_meta["openai/ui"]["availableDisplayModes"],
+            ["inline", "pip", "fullscreen"],
         )
         legacy_control_widget = next(
             resource
@@ -657,6 +662,14 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn("Permissions & credentials", html)
         self.assertIn("ui_warning", html)
         self.assertIn("last_real_activity_at", html)
+        self.assertIn('requestDisplayMode("pip")', html)
+        self.assertIn('requestDisplayMode("fullscreen")', html)
+        self.assertIn('availableDisplayModes:["inline","pip","fullscreen"]', html)
+        self.assertIn("window.openai?.callTool", html)
+        self.assertIn('"openai:set_globals"', html)
+        self.assertIn('body[data-mode="pip"] .pip-secondary', html)
+        self.assertIn('id="pin"', html)
+        self.assertIn('id="expand"', html)
         self.assertIn("worker_alive", html)
         self.assertIn("heartbeat_age_seconds", html)
         self.assertIn("progress_age_seconds", html)
