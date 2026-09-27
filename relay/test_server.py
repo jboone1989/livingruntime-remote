@@ -185,6 +185,22 @@ class RelayServerTests(unittest.TestCase):
         self.assertGreaterEqual(elapsed, 0.25)
         self.assertEqual(store.claim_calls, 1)
 
+    def test_two_phase_http_offer_and_acceptance(self):
+        paired = self.store.pair_device(self.store.create_pairing_code("user")["code"], "test")
+        task_id = self.store.enqueue("user", paired["device_id"], "diagnostics", {})
+        headers = {"authorization": "Bearer " + paired["device_token"]}
+        with TestClient(self.app) as client:
+            offered = client.post("/device/poll?wait=0", json={"claim_protocol": 2}, headers=headers).json()
+            self.assertEqual(offered["claim_protocol"], 2)
+            self.assertEqual(offered["task"]["task_id"], task_id)
+            repeated = client.post("/device/poll?wait=0", json={"claim_protocol": 2}, headers=headers).json()
+            self.assertEqual(repeated["task"], offered["task"])
+            self.assertEqual(self.store.task_receipt("user", task_id)["status"], "offered")
+            for _ in range(2):
+                accepted = client.post("/device/claim", json={"task_id": task_id, "claim_token": "prepared"}, headers=headers)
+                self.assertTrue(accepted.json()["accepted"])
+            self.assertIsNone(client.post("/device/poll?wait=0", json={"claim_protocol": 2}, headers=headers).json()["task"])
+
     def test_task_notification_wakes_waiter_without_polling(self):
         relay = server.Relay(self.store)
 
@@ -294,7 +310,7 @@ class RelayServerTests(unittest.TestCase):
             "bind_openai_pi_continuation",
             "continue_openai_pi_job",
             "claim_llm_request_for_watcher",
-            "claim_job_completion", "settle_job_completion", "acknowledge_job_completion",
+            "claim_job_completion", "settle_job_completion", "acknowledge_job_completion", "get_relay_task",
         } | set(REMOTE_TOOLS)
         self.assertEqual(set(tools), expected)
         app_bindings = {

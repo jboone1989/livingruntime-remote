@@ -94,10 +94,22 @@ def _dispatch(task: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:1000]}
 
 
-def _handle_claimed_task(task: dict[str, Any], outbox: ResultOutbox, wake: threading.Event) -> None:
-    if outbox.begin(task["task_id"]):
+def _handle_claimed_task(task: dict[str, Any], outbox: ResultOutbox, wake: threading.Event, journaled: bool = False) -> None:
+    if journaled or outbox.begin(task["task_id"]):
         outbox.finish(task["task_id"], _dispatch(task))
     wake.set()
+
+
+def _accept_prepared(cfg: dict[str, Any], outbox: ResultOutbox, prepared: dict[str, Any]) -> bool:
+    task_id = prepared["task"]["task_id"]
+    reply = _request(cfg["url"], "/device/claim", {"task_id": task_id,
+        "claim_token": prepared["claim_token"]}, cfg["device_token"], timeout=10)
+    if reply.get("accepted") is False:
+        outbox.delivered(task_id)  # Cancelled or accepted by a different preparation; never execute.
+        return False
+    if reply.get("accepted") is not True:
+        raise RuntimeError("relay did not acknowledge prepared task")
+    return outbox.start_prepared(task_id)
 
 
 def _deliver_results(cfg: dict[str, Any], outbox: ResultOutbox) -> None:
@@ -132,6 +144,9 @@ def serve(config_path: Path, once: bool = False) -> None:
 
 def _serve(config_path: Path, once: bool = False) -> None:
     cfg = _load(config_path)
+    handshake = _request(cfg["url"], "/device/heartbeat", {}, cfg["device_token"], timeout=10)
+    if handshake.get("claim_protocol") != 2:
+        raise RuntimeError("Relay must be upgraded before this Connector; no tasks were claimed")
     owner = hashlib.sha256((cfg["url"] + "\n" + str(cfg.get("device_id") or cfg["device_token"])).encode()).hexdigest()
     outbox = ResultOutbox(config_path.with_suffix(".outbox.sqlite3"), owner)
     outbox.recover_interrupted()
@@ -162,17 +177,20 @@ def _serve(config_path: Path, once: bool = False) -> None:
                     concurrent.futures.wait(pending, timeout=0.2, return_when=concurrent.futures.FIRST_COMPLETED)
                     continue
 
-                response = _request(
-                    cfg["url"],
-                    "/device/poll?wait=20",
-                    {},
-                    cfg["device_token"],
-                    timeout=30,
-                )
-                task = response.get("task")
+                prepared = outbox.prepared()
+                if not prepared:
+                    response = _request(cfg["url"], "/device/poll?wait=20",
+                        {"claim_protocol": 2}, cfg["device_token"], timeout=30)
+                    task = response.get("task")
+                    if task:
+                        if response.get("claim_protocol") != 2:
+                            raise RuntimeError("Relay must be upgraded before this Connector")
+                        outbox.prepare(task)
+                    prepared = outbox.prepared()
                 last_contact = time.monotonic()
-                if task:
-                    future = pool.submit(_handle_claimed_task, task, outbox, wake)
+                if prepared and _accept_prepared(cfg, outbox, prepared[0]):
+                    task = prepared[0]["task"]
+                    future = pool.submit(_handle_claimed_task, task, outbox, wake, True)
                     pending.add(future)
                     if once:
                         future.result()

@@ -192,7 +192,7 @@ def _job_summary(job: dict[str, Any], now: float) -> dict[str, Any]:
     observed_at = runtime.get("observed_at")
     fresh = isinstance(observed_at, (int, float)) and 0 <= now - observed_at <= LIVENESS_MAX_AGE_SECONDS
     unknown = bool(runtime.get("reconcile_error")) or runtime.get("liveness_state") == "UNKNOWN" or (
-        not fresh and (runtime.get("worker_alive") is True or runtime.get("child_alive") is True))
+        not fresh and ("worker_alive" in runtime or "child_alive" in runtime))
     return {
         "job_id": job.get("job_id"),
         "status": "UNKNOWN" if unknown else job.get("status"),
@@ -205,6 +205,8 @@ def _job_summary(job: dict[str, Any], now: float) -> dict[str, Any]:
         "next_action": str(job.get("next_action") or "")[:300] or None,
         "worker_alive": None if unknown else bool(runtime.get("worker_alive")),
         "child_alive": None if unknown else bool(runtime.get("child_alive")),
+        "last_known_worker_alive": runtime.get("last_known_worker_alive", runtime.get("worker_alive")),
+        "last_known_child_alive": runtime.get("last_known_child_alive", runtime.get("child_alive")),
         "heartbeat_age_seconds": runtime.get("heartbeat_age_seconds"),
         "progress_age_seconds": runtime.get("progress_age_seconds"),
     }

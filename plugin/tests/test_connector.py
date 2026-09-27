@@ -140,19 +140,23 @@ class ConnectorTests(unittest.TestCase):
             return {"ok": True, "result": {"task_id": task_id}}
 
         def fake_request(base, path, body, token=None, timeout=35):
+            if path == "/device/heartbeat":
+                return {"ok": True, "claim_protocol": 2}
             if path.startswith("/device/poll"):
                 with lock:
                     poll_count["value"] += 1
                     index = poll_count["value"]
                     done = len(results)
                 if index == 1:
-                    return {"task": {"task_id": "task-1", "tool": "diagnostics", "args": {}}}
+                    return {"claim_protocol": 2, "task": {"task_id": "task-1", "tool": "diagnostics", "args": {}}}
                 if index == 2:
                     self.assertTrue(first_started.wait(2))
-                    return {"task": {"task_id": "task-2", "tool": "diagnostics", "args": {}}}
+                    return {"claim_protocol": 2, "task": {"task_id": "task-2", "tool": "diagnostics", "args": {}}}
                 if done >= 2:
                     raise KeyboardInterrupt
                 return {"task": None}
+            if path == "/device/claim":
+                return {"accepted": True}
             if path == "/device/result":
                 with lock:
                     results.append(body["task_id"])

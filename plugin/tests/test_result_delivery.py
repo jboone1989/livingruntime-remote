@@ -43,6 +43,30 @@ class ResultDeliveryTests(unittest.TestCase):
         self.assertEqual(upload.call_args.args[2]["result"]["result"], {"x": 1})
         self.assertEqual(restored.due(), [])
 
+    def test_prepared_record_survives_lost_ack_and_crash_before_execution(self):
+        task = {"task_id": "prepared-1", "tool": "diagnostics", "args": {}}
+        self.outbox.prepare(task)
+        original = self.outbox.prepared()[0]
+        with patch.object(relay_agent, "_request", side_effect=TimeoutError):
+            with self.assertRaises(TimeoutError):
+                relay_agent._accept_prepared(self.cfg, self.outbox, original)
+        restored = ResultOutbox(self.path, "device-a")
+        restored.recover_interrupted()
+        self.assertEqual(restored.prepared(), [original])
+        with patch.object(relay_agent, "_request", return_value={"accepted": True}) as request:
+            self.assertTrue(relay_agent._accept_prepared(self.cfg, restored, original))
+            self.assertFalse(relay_agent._accept_prepared(self.cfg, restored, original))
+        self.assertEqual(request.call_args.args[2]["claim_token"], original["claim_token"])
+        restored.recover_interrupted()
+        self.assertIn("outcome unknown", json.loads(restored.due()[0]["payload"])["error"])
+
+    def test_cancelled_offer_is_not_executed(self):
+        self.outbox.prepare({"task_id": "cancelled"})
+        with patch.object(relay_agent, "_request", return_value={"accepted": False}):
+            self.assertFalse(relay_agent._accept_prepared(self.cfg, self.outbox, self.outbox.prepared()[0]))
+        self.assertEqual(self.outbox.prepared(), [])
+        self.assertFalse(self.outbox.begin("cancelled"))
+
     def test_missing_ack_keeps_payload_and_repairing_does_not_send_old_owner_results(self):
         self.outbox.begin("task-1")
         self.outbox.finish("task-1", {"ok": True})
@@ -78,6 +102,8 @@ class ResultDeliveryTests(unittest.TestCase):
                 {"worker_alive": True, "observed_at": 10},
                 {"worker_alive": True, "observed_at": 999, "reconcile_error": "SSH timeout"},
                 {"worker_alive": True},
+                {"worker_alive": False, "child_alive": False, "observed_at": 10},
+                {"worker_alive": False, "child_alive": False},
             ]:
                 snap = execution_status.snapshot(jobs=[{"job_id": "x", "status": "RUNNING", "runtime": runtime}], now=1000)
                 self.assertEqual(snap["state"], "UNKNOWN")

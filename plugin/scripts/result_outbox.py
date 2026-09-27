@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import sqlite3
 import time
 from pathlib import Path
@@ -70,6 +71,22 @@ class ResultOutbox:
                 "INSERT OR IGNORE INTO results(owner,task_id,state) VALUES(?,?,'executing')",
                 (self.owner, task_id),
             ).rowcount == 1
+
+    def prepare(self, task: dict[str, Any]) -> None:
+        payload = json.dumps({"task": task, "claim_token": secrets.token_urlsafe(24)})
+        with self.db() as db:
+            db.execute("INSERT OR IGNORE INTO results(owner,task_id,state,payload) VALUES(?,?,'prepared',?)",
+                       (self.owner, task["task_id"], payload))
+
+    def prepared(self) -> list[dict[str, Any]]:
+        with self.db() as db:
+            return [json.loads(row[0]) for row in db.execute(
+                "SELECT payload FROM results WHERE owner=? AND state='prepared'", (self.owner,))]
+
+    def start_prepared(self, task_id: str) -> bool:
+        with self.db() as db:
+            return db.execute("UPDATE results SET state='executing',payload=NULL WHERE owner=? AND task_id=? AND state='prepared'",
+                              (self.owner, task_id)).rowcount == 1
 
     def finish(self, task_id: str, result: dict[str, Any]) -> None:
         payload = json.dumps(result, ensure_ascii=False, separators=(",", ":"))

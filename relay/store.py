@@ -39,6 +39,9 @@ class RelayStore:
               PRIMARY KEY(user_sub,session_id));
             CREATE INDEX IF NOT EXISTS idx_continuations_updated ON continuations(updated_at);
             """)
+            db.execute("BEGIN IMMEDIATE")
+            if "claim_token" not in {row[1] for row in db.execute("PRAGMA table_info(tasks)")}:
+                db.execute("ALTER TABLE tasks ADD COLUMN claim_token TEXT")
 
     @contextmanager
     def db(self):
@@ -60,7 +63,7 @@ class RelayStore:
                 (cutoff,),
             )
             db.execute(
-                "DELETE FROM tasks WHERE status IN ('queued','claimed') AND created_at < ?",
+                "DELETE FROM tasks WHERE status IN ('queued','offered') AND created_at < ?",
                 (cutoff,),
             )
             db.execute("DELETE FROM continuations WHERE updated_at < ?", (cutoff,))
@@ -159,7 +162,7 @@ class RelayStore:
         """
         with self.db() as db:
             cur = db.execute(
-                "DELETE FROM tasks WHERE task_id=? AND user_sub=? AND status='queued'",
+                "DELETE FROM tasks WHERE task_id=? AND user_sub=? AND status IN ('queued','offered')",
                 (task_id, user_sub),
             )
         return cur.rowcount == 1
@@ -211,6 +214,39 @@ class RelayStore:
                 (time.time(), row["task_id"]),
             )
         return {"task_id": row["task_id"], "tool": row["tool"], "args": json.loads(row["args_json"])}
+
+    def offer(self, device_id: str) -> dict[str, Any] | None:
+        """Re-offer until a Connector has durably prepared and acknowledged it."""
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT task_id,tool,args_json FROM tasks WHERE device_id=? "
+                             "AND status IN ('queued','offered') ORDER BY created_at LIMIT 1", (device_id,)).fetchone()
+            if row is None:
+                return None
+            db.execute("UPDATE tasks SET status='offered' WHERE task_id=?", (row["task_id"],))
+        return {"task_id": row["task_id"], "tool": row["tool"], "args": json.loads(row["args_json"])}
+
+    def accept_offer(self, device_id: str, task_id: str, token: str) -> bool:
+        if not token or len(token) > 128:
+            raise ValueError("invalid preparation token")
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT status,claim_token FROM tasks WHERE device_id=? AND task_id=?",
+                             (device_id, task_id)).fetchone()
+            if row is None:
+                return False
+            if row["status"] == "offered":
+                db.execute("UPDATE tasks SET status='claimed',claimed_at=?,claim_token=? WHERE task_id=?",
+                           (time.time(), token, task_id))
+                return True
+            return row["status"] == "claimed" and row["claim_token"] == token
+
+    def task_receipt(self, user_sub: str, task_id: str) -> dict[str, Any]:
+        with self.db() as db:
+            row = db.execute("SELECT * FROM tasks WHERE task_id=? AND user_sub=?", (task_id, user_sub)).fetchone()
+        if row is None:
+            raise KeyError("relay task not found or expired")
+        return dict(row)
 
     def complete(self, device_id: str, task_id: str, result: dict[str, Any]) -> None:
         payload = json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

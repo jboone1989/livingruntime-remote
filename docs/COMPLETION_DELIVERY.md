@@ -13,6 +13,21 @@ The queue is scoped to the paired device and relay; re-pairing cannot upload an
 old device's results under a new identity. Server-side result hashes make upload
 acknowledgements idempotent even after a result has been consumed.
 
+New Connectors request the two-phase claim protocol: Relay offers a task without
+authorizing execution; Connector persists a prepared record with a unique token,
+then acknowledges that preparation. Relay atomically accepts one token.
+An offer lost before local persistence can be offered again. A lost acceptance
+response is retried using the same durable token. Execution starts only after
+acceptance and a local transition to executing. Old Connectors retain the legacy
+claim behavior until upgraded; new Connectors require the new Relay.
+
+A claimed call that outlasts the Relay wait returns DELIVERY_UNCERTAIN and
+relay_task_id. Use the read-only get_relay_task tool to recover the original
+result without enqueueing another operation. Normal responses and device errors
+also carry the receipt ID. Completed results remain queryable for at least
+24 hours after completion; unresolved claimed operations are not age-deleted.
+A missing receipt never authorizes a destructive retry.
+
 If the Connector restarts between execution and result persistence, the result
 is explicitly unknown. Inspect the durable execution receipt and current state
 before retrying a command. Delivered outbox rows retain only task identities;

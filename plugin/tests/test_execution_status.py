@@ -117,6 +117,7 @@ class ExecutionStatusTests(unittest.TestCase):
             "runtime": {
                 "worker_alive": False,
                 "child_alive": False,
+                "observed_at": 499.0,
             },
         }]
         snap = execution_status.snapshot(jobs=jobs, now=500.0)

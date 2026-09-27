@@ -1,3 +1,7 @@
+import asyncio
+import json
+from unittest.mock import patch
+from test_server import server
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +16,58 @@ class CompletionDeliveryTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_offer_crash_before_local_prepare_can_be_reoffered_and_ack_is_idempotent(self):
+        task_id = self.store.enqueue("user", "device", "exec", {})
+        first = self.store.offer("device")
+        restored = RelayStore(self.store.path)
+        self.assertEqual(restored.offer("device"), first)
+        self.assertTrue(restored.accept_offer("device", task_id, "preparation-1"))
+        self.assertTrue(restored.accept_offer("device", task_id, "preparation-1"))
+        self.assertFalse(restored.accept_offer("device", task_id, "different-connector"))
+        self.assertFalse(restored.accept_offer("other", task_id, "preparation-1"))
+        self.assertIsNone(restored.offer("device"))
+        self.assertFalse(restored.cancel_if_queued("user", task_id))
+        cancelled = restored.enqueue("user", "device", "exec", {})
+        restored.offer("device")
+        self.assertTrue(restored.cancel_if_queued("user", cancelled))
+        self.assertFalse(restored.accept_offer("device", cancelled, "late-preparation"))
+
+    def test_late_result_is_recoverable_after_call_timeout_without_redispatch(self):
+        device = self.store.pair_device(self.store.create_pairing_code("user")["code"], "test")["device_id"]
+        relay = server.Relay(self.store, reconnect_grace=0)
+        async def timeout_after_claim(awaitable, timeout):
+            awaitable.close()
+            self.store.claim(device)
+            raise TimeoutError
+        with patch.object(server.asyncio, "wait_for", side_effect=timeout_after_claim):
+            pending = asyncio.run(relay.call("user", "start_long_job", {"command": "side effect"}))
+        self.assertEqual(pending["status"], "DELIVERY_UNCERTAIN")
+        task_id = pending["relay_task_id"]
+        self.assertEqual(relay.task_receipt("user", task_id)["status"], "CLAIMED")
+        result = {"ok": True, "result": {"job": {"job_id": "job-1"}, "terminal": True}}
+        self.store.complete(device, task_id, result)
+        recovered = server.Relay(RelayStore(self.store.path)).task_receipt("user", task_id)
+        self.assertEqual(recovered["result"]["job"]["job_id"], "job-1")
+        self.assertEqual(relay.task_receipt("user", task_id), recovered)
+        self.assertIsNone(self.store.claim(device))
+        with self.assertRaises(KeyError):
+            relay.task_receipt("other", task_id)
+        with self.store.db() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 1)
+
+    def test_pi_completion_identity_does_not_depend_on_observer_path(self):
+        relay = server.Relay(self.store)
+        ids = []
+        for tool, args in [
+            ("start_pi_agent", {}),
+            ("watch_pi_job", {"job_id": "pi-1", "pi_remote_dir": "/custom/pi/", "job_root": "/jobs/"}),
+            ("wait_pi_job_completion", {"job_id": "pi-1", "pi_remote_dir": "/custom/pi", "job_root": "/jobs"}),
+        ]:
+            value = relay._decorate_result("user", "device", tool, args,
+                {"terminal": True, "jobId": "pi-1", "runtimeJobId": "optional-runtime"}, "task")
+            ids.append(value["completionDelivery"]["event_id"])
+        self.assertEqual(len(set(ids)), 1)
 
     def test_result_upload_is_idempotent_after_consumption(self):
         code = self.store.create_pairing_code("user")

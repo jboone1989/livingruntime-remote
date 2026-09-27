@@ -1039,39 +1039,58 @@ class Relay:
             requested_timeout = 0.0
         wait_timeout = max(self.timeout, min(120.0, max(0.0, requested_timeout)) + 30.0)
         try:
-            result = self.store.result(user_sub, task_id, consume=True)
+            result = self.store.result(user_sub, task_id)
             if result is None:
                 try:
                     await asyncio.wait_for(result_event.wait(), timeout=wait_timeout)
                 except TimeoutError:
                     pass
-                result = self.store.result(user_sub, task_id, consume=True)
+                result = self.store.result(user_sub, task_id)
             if result is not None:
                 if not result.get("ok"):
-                    raise RuntimeError(str(result.get("error") or "remote device call failed"))
+                    raise RuntimeError(f"relay_task_id={task_id}; " + str(result.get("error") or "remote device call failed") + ". Inspect get_relay_task before retrying; execution may have had side effects.")
                 value = result.get("result")
                 value = value if isinstance(value, dict) else {"result": value}
-                if value.get("terminal") and tool in {
-                    "start_long_job", "watch_long_job", "get_long_job", "wait_long_job",
-                    "start_pi_agent", "start_pi_step", "watch_pi_job", "wait_pi_job_completion",
-                }:
-                    is_long = "long_job" in tool
-                    job_id = (value.get("runtimeJobId") or (value.get("job") or {}).get("job_id") or args.get("job_id")) if is_long else (value.get("jobId") or args.get("job_id"))
-                    if job_id:
-                        key = json.dumps([device["device_id"], "long" if is_long else "pi", job_id,
-                            None if is_long else args.get("pi_remote_dir", "/home/ubuntu/src/pi-remote"),
-                            None if is_long else args.get("job_root")], separators=(",", ":"))
-                        value = {**value, "completionDelivery": self.store.ensure_completion(user_sub, key)}
-                return value
+                return self._decorate_result(user_sub, device["device_id"], tool, args, value, task_id)
             if self.store.cancel_if_queued(user_sub, task_id):
                 raise TimeoutError(
                     "paired device did not claim task before relay timeout; queued task was cancelled"
                 )
-            raise TimeoutError(
-                "paired device claimed task but did not complete before relay timeout"
-            )
+            return {"relay_task_id": task_id, "status": "DELIVERY_UNCERTAIN",
+                "terminal": False, "retry_safe": False,
+                "next_action": "Call get_relay_task with this relay_task_id to recover the original result. Do not repeat the original operation: it may already have executed."}
         finally:
             self._result_events.pop(task_id, None)
+
+    def _decorate_result(self, user_sub, device_id, tool, args, value, task_id):
+        if value.get("terminal") and tool in {
+            "start_long_job", "watch_long_job", "get_long_job", "wait_long_job",
+            "start_pi_agent", "start_pi_step", "watch_pi_job", "wait_pi_job_completion",
+        }:
+            is_long = "long_job" in tool
+            job_id = (value.get("runtimeJobId") or (value.get("job") or {}).get("job_id") or args.get("job_id")) if is_long else (value.get("jobId") or args.get("job_id"))
+            if job_id:
+                key = json.dumps([device_id, "long" if is_long else "pi", job_id], separators=(",", ":"))
+                value = {**value, "completionDelivery": self.store.ensure_completion(user_sub, key)}
+        return {**value, "relay_task_id": task_id}
+
+    def task_receipt(self, user_sub: str, task_id: str) -> dict[str, Any]:
+        row = self.store.task_receipt(user_sub, task_id)
+        receipt = {"relay_task_id": task_id, "status": row["status"].upper(), "tool": row["tool"],
+            "retry_safe": False, "result_retention_seconds": 86400}
+        if row["status"] == "complete":
+            result = json.loads(row["result_json"])
+            receipt["ok"] = bool(result.get("ok"))
+            if result.get("ok"):
+                value = result.get("result")
+                value = value if isinstance(value, dict) else {"result": value}
+                receipt["result"] = self._decorate_result(user_sub, row["device_id"], row["tool"],
+                    json.loads(row["args_json"]), value, task_id)
+            else:
+                receipt["error"] = result.get("error")
+        else:
+            receipt["next_action"] = "Query this same relay_task_id again. Do not repeat the original operation."
+        return receipt
 
 
 def _principal(scope: str) -> str:
@@ -1636,6 +1655,12 @@ def create_mcp(
     def disconnect_device(device_id: str | None = None) -> dict[str, Any]:
         """Revoke a paired connector and discard its queued or completed relay tasks."""
         return {"disconnected": relay.store.revoke_device(_principal("remote:write"), device_id)}
+
+    @server.tool(name="get_relay_task", title="Recover original relay result",
+        description="Read a durable relay operation receipt by relay_task_id, especially after DELIVERY_UNCERTAIN. Never re-executes the operation. Results are retained for at least 24 hours after completion; a missing receipt never means retrying a destructive operation is safe.",
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False), meta=READ)
+    def get_relay_task(relay_task_id: str) -> dict[str, Any]:
+        return relay.task_receipt(_principal("remote:read"), relay_task_id)
 
     @server.tool(name="claim_job_completion", title="Claim completion notification",
         description="App-only atomic notification claim. Retrying uncertain delivery requires an explicit user retry.",
@@ -2491,7 +2516,7 @@ nav a{{margin-right:18px}}
     async def heartbeat(request: Request):
         try:
             store.authenticate_device(_device_token(request))
-            return JSONResponse({"ok": True})
+            return JSONResponse({"ok": True, "claim_protocol": 2})
         except PermissionError:
             return JSONResponse({"error": "invalid device token"}, status_code=401)
 
@@ -2500,20 +2525,32 @@ nav a{{margin-right:18px}}
             device = store.authenticate_device(_device_token(request))
             wait = min(25.0, max(0.0, float(request.query_params.get("wait", "20"))))
             device_id = device["device_id"]
+            body = await request.json()
+            protocol = 2 if body.get("claim_protocol") == 2 else 1
+            take = store.offer if protocol == 2 else store.claim
 
             relay.arm_task_wait(device_id)
-            task = store.claim(device_id)
+            task = take(device_id)
             if task:
-                return JSONResponse({"task": task})
+                return JSONResponse({"task": task, "claim_protocol": protocol})
             if wait <= 0:
                 return JSONResponse({"task": None})
 
             if not await relay.wait_for_task(device_id, wait):
                 return JSONResponse({"task": None})
-            task = store.claim(device_id)
-            return JSONResponse({"task": task})
+            task = take(device_id)
+            return JSONResponse({"task": task, "claim_protocol": protocol})
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=401)
+
+    async def accept_claim(request: Request):
+        try:
+            device = store.authenticate_device(_device_token(request))
+            body = await request.json()
+            accepted = store.accept_offer(device["device_id"], str(body["task_id"]), str(body["claim_token"]))
+            return JSONResponse({"accepted": accepted})
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
 
     async def complete(request: Request):
         try:
@@ -2621,6 +2658,7 @@ nav a{{margin-right:18px}}
         Route("/device/poll", poll, methods=["POST"]),
         Route("/device/heartbeat", heartbeat, methods=["POST"]),
         Route("/device/result", complete, methods=["POST"]),
+        Route("/device/claim", accept_claim, methods=["POST"]),
         Mount("/", app=mcp_app),
     ])
     return Starlette(routes=routes, lifespan=mcp_app.router.lifespan_context)
