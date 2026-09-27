@@ -263,19 +263,32 @@ def _refresh_timeout(value: dict[str, Any], now: float | None = None) -> dict[st
     now = time.time() if now is None else now
     if value.get("status") in TERMINAL_STATUSES:
         return value
+    prior_status = str(value.get("status") or "")
+    dispatch_deadline = float(value.get("dispatch_deadline_at") or 0.0)
+    if (
+        prior_status == "PENDING"
+        and int(value.get("attempts") or 0) == 0
+        and value.get("dispatch_timeout_seconds") is not None
+        and dispatch_deadline
+        and now >= dispatch_deadline
+    ):
+        # A durable request must outlive the absence of an attached ChatGPT
+        # session. Dispatch grace is an observability threshold, not request
+        # lifetime: once it elapses the request remains claimable until a
+        # watcher/session returns. Response timeout begins only after claim.
+        if value.get("dispatch_waiting_since") is None:
+            value["dispatch_waiting_since"] = dispatch_deadline
+        value["deadline_at"] = None
+        value["updated_at"] = now
+        value["timeout_phase"] = None
+        _save(value)
+        return value
     deadline = float(value.get("deadline_at") or 0.0)
     if deadline and now >= deadline:
-        prior_status = str(value.get("status") or "")
         value["status"] = "TIMED_OUT"
         value["finished_at"] = now
         value["updated_at"] = now
-        value["timeout_phase"] = (
-            "DISPATCH"
-            if prior_status == "PENDING"
-            and value.get("dispatch_timeout_seconds") is not None
-            and int(value.get("attempts") or 0) == 0
-            else "RESPONSE"
-        )
+        value["timeout_phase"] = "RESPONSE" if prior_status == "DISPATCHED" else "REQUEST"
         value["claim"] = None
         _save(value)
     return value
@@ -352,11 +365,10 @@ def submit(
             ),
             "deadline_at": (
                 None
-                if dispatch_timeout == 0
-                else now + (
-                    dispatch_timeout if dispatch_timeout is not None else timeout
-                )
+                if dispatch_timeout is not None
+                else now + timeout
             ),
+            "dispatch_waiting_since": None,
             "timeout_phase": None,
             "finished_at": None,
         }
@@ -383,6 +395,7 @@ def get_status(request_id: str) -> dict[str, Any]:
         "updated_at": value.get("updated_at"),
         "deadline_at": value.get("deadline_at"),
         "dispatch_deadline_at": value.get("dispatch_deadline_at"),
+        "dispatch_waiting_since": value.get("dispatch_waiting_since"),
         "response_deadline_at": value.get("response_deadline_at"),
         "timeout_phase": value.get("timeout_phase"),
         "finished_at": value.get("finished_at"),
@@ -435,6 +448,7 @@ def peek_next(
                     "purpose": row.get("purpose"),
                     "status": "DISPATCHED",
                     "deadline_at": row.get("deadline_at"),
+                    "dispatch_waiting_since": row.get("dispatch_waiting_since"),
                     "reclaimable": False,
                     "owned_by_watcher": True,
                 }
@@ -454,6 +468,7 @@ def peek_next(
                 "purpose": row.get("purpose"),
                 "status": "DISPATCHED",
                 "deadline_at": row.get("deadline_at"),
+                "dispatch_waiting_since": row.get("dispatch_waiting_since"),
                 "reclaimable": True,
                 "owned_by_watcher": False,
             }
@@ -470,6 +485,7 @@ def peek_next(
             "purpose": row.get("purpose"),
             "status": "PENDING",
             "deadline_at": row.get("deadline_at"),
+            "dispatch_waiting_since": row.get("dispatch_waiting_since"),
             "reclaimable": False,
             "owned_by_watcher": False,
         }
@@ -548,6 +564,7 @@ def claim_request(
             )
             value["response_deadline_at"] = now + response_timeout
             value["deadline_at"] = value["response_deadline_at"]
+            value["dispatch_waiting_since"] = None
             value["timeout_phase"] = None
         value["updated_at"] = now
         _save(value)
@@ -603,6 +620,7 @@ def claim_next(
                 )
                 row["response_deadline_at"] = now + response_timeout
                 row["deadline_at"] = row["response_deadline_at"]
+                row["dispatch_waiting_since"] = None
                 row["timeout_phase"] = None
             row["updated_at"] = now
             _save(row)
@@ -743,3 +761,20 @@ def wait_response(request_id: str, *, timeout_seconds: int | None = None) -> dic
 def new_watcher_id(agent_id: str) -> str:
     agent = _validate_agent_id(agent_id)
     return f"watcher_{agent}_{uuid.uuid4().hex[:16]}"
+
+
+def resumable_watcher_id(agent_id: str) -> str:
+    """Reuse the owner of an active claim when a ChatGPT widget reconnects."""
+    agent = _validate_agent_id(agent_id)
+    now = time.time()
+    with _queue_lock():
+        rows = [_refresh_timeout(row, now) for row in _candidate_rows(agent)]
+    for row in rows:
+        if row.get("status") != "DISPATCHED":
+            continue
+        claim = row.get("claim") if isinstance(row.get("claim"), dict) else {}
+        watcher = str(claim.get("watcher_id") or "").strip()
+        expires_at = float(claim.get("expires_at") or 0.0)
+        if watcher and expires_at > now:
+            return _validate_watcher_id(watcher)
+    return new_watcher_id(agent)

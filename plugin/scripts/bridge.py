@@ -64,7 +64,7 @@ from cognition import (
     complete as complete_cognition_request,
     get as get_cognition_request,
     get_status as get_cognition_request_status,
-    new_watcher_id as new_cognition_watcher_id,
+    resumable_watcher_id as cognition_watcher_id,
     submit as submit_cognition_request,
     wait_pending as wait_pending_cognition_request,
 )
@@ -2051,8 +2051,8 @@ def submit_llm_request(
     ),
 )
 def watch_agent_cognition(agent_id: str) -> dict[str, Any]:
-    """Create a watcher lease that can wait for this agent's next LLM request."""
-    watcher_id = new_cognition_watcher_id(agent_id)
+    """Create or resume the watcher lease for this agent's durable cognition."""
+    watcher_id = cognition_watcher_id(agent_id)
     result = {
         "agentId": str(agent_id).strip(),
         "watcherId": watcher_id,

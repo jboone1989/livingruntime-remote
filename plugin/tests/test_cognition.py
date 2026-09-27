@@ -169,7 +169,7 @@ class CognitionQueueTests(unittest.TestCase):
         self.assertEqual(timed_out["status"], "TIMED_OUT")
         self.assertEqual(timed_out["finished_at"], 1006.0)
 
-    def test_unclaimed_request_uses_short_dispatch_deadline(self) -> None:
+    def test_unclaimed_durable_request_survives_dispatch_grace(self) -> None:
         with patch.object(cognition.time, "time", return_value=1000.0):
             created = cognition.submit(
                 agent_id="ferro",
@@ -179,14 +179,16 @@ class CognitionQueueTests(unittest.TestCase):
                 dispatch_timeout_seconds=15,
                 request_id="llmreq_dispatch_grace",
             )
-        self.assertEqual(created["deadline_at"], 1015.0)
+        self.assertIsNone(created["deadline_at"])
         self.assertEqual(created["dispatch_deadline_at"], 1015.0)
         self.assertEqual(created["timeout_seconds"], 300)
 
         with patch.object(cognition.time, "time", return_value=1016.0):
-            timed_out = cognition.get("llmreq_dispatch_grace")
-        self.assertEqual(timed_out["status"], "TIMED_OUT")
-        self.assertEqual(timed_out["timeout_phase"], "DISPATCH")
+            waiting = cognition.get("llmreq_dispatch_grace")
+        self.assertEqual(waiting["status"], "PENDING")
+        self.assertEqual(waiting["dispatch_waiting_since"], 1015.0)
+        self.assertIsNone(waiting["deadline_at"])
+        self.assertIsNone(waiting["timeout_phase"])
 
     def test_zero_dispatch_timeout_keeps_request_pending_until_claimed(self) -> None:
         with patch.object(cognition.time, "time", return_value=1000.0):
@@ -238,7 +240,7 @@ class CognitionQueueTests(unittest.TestCase):
             still_live = cognition.get("llmreq_claim_extends")
         self.assertEqual(still_live["status"], "DISPATCHED")
 
-    def test_peek_settles_expired_unclaimed_request_for_observability(self) -> None:
+    def test_peek_keeps_expired_dispatch_grace_request_claimable(self) -> None:
         with patch.object(cognition.time, "time", return_value=1000.0):
             cognition.submit(
                 agent_id="ferro",
@@ -249,14 +251,18 @@ class CognitionQueueTests(unittest.TestCase):
                 request_id="llmreq_peek_expired",
             )
         with patch.object(cognition.time, "time", return_value=1006.0):
-            self.assertIsNone(cognition.peek_next(agent_id="ferro"))
+            pending = cognition.peek_next(agent_id="ferro")
+        self.assertEqual(pending["request_id"], "llmreq_peek_expired")
+        self.assertEqual(pending["status"], "PENDING")
+        self.assertEqual(pending["dispatch_waiting_since"], 1005.0)
         stored = json.loads(
             (self.root / "requests" / "llmreq_peek_expired.json").read_text(
                 encoding="utf-8"
             )
         )
-        self.assertEqual(stored["status"], "TIMED_OUT")
-        self.assertEqual(stored["timeout_phase"], "DISPATCH")
+        self.assertEqual(stored["status"], "PENDING")
+        self.assertEqual(stored["dispatch_waiting_since"], 1005.0)
+        self.assertIsNone(stored["deadline_at"])
 
     def test_same_watcher_can_resume_its_active_claim_after_widget_reload(self) -> None:
         created = self.submit("llmreq_resume_same_watcher")
@@ -297,6 +303,31 @@ class CognitionQueueTests(unittest.TestCase):
             same_claim["claim"]["token"],
             claimed["claim"]["token"],
         )
+
+    def test_reopening_watcher_reuses_active_claim_owner(self) -> None:
+        created = self.submit("llmreq_reopen_owner")
+        claimed = cognition.claim_request(
+            request_id=created["request_id"],
+            watcher_id="watcher_session_survives_reload",
+            claim_seconds=300,
+        )
+        with patch.object(cognition.time, "time", return_value=claimed["updated_at"] + 5):
+            watcher = cognition.resumable_watcher_id("ferro")
+            resumed = cognition.peek_next(
+                agent_id="ferro",
+                watcher_id=watcher,
+            )
+
+        self.assertEqual(watcher, "watcher_session_survives_reload")
+        self.assertEqual(resumed["request_id"], created["request_id"])
+        self.assertTrue(resumed["owned_by_watcher"])
+
+    def test_new_watcher_is_created_when_no_active_claim_exists(self) -> None:
+        first = cognition.resumable_watcher_id("ferro")
+        second = cognition.resumable_watcher_id("ferro")
+        self.assertTrue(first.startswith("watcher_ferro_"))
+        self.assertTrue(second.startswith("watcher_ferro_"))
+        self.assertNotEqual(first, second)
 
     def test_agent_queues_are_isolated(self) -> None:
         self.submit("llmreq_ferro", agent_id="ferro")
