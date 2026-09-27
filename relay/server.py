@@ -26,13 +26,14 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.31"
+VERSION = "0.4.32"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v3.html"
 PI_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v3.html"
 LONG_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
 COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v3.html"
-CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v5.html"
+CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v6.html"
+CONTROL_PLANE_WIDGET_V5_URI = "ui://livingruntime-remote/control-plane-v5.html"
 CONTROL_PLANE_WIDGET_V4_URI = "ui://livingruntime-remote/control-plane-v4.html"
 CONTROL_PLANE_WIDGET_LEGACY_URI = "ui://livingruntime-remote/control-plane-v3.html"
 PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
@@ -48,7 +49,8 @@ TOOL_TEXT = {
     "connection_status": ("Check connection status", "Check SSH, gateway, authentication, configured roots, projects, and paired-device reachability before remote work."),
     "capabilities": ("List Remote capabilities", "List the bounded Remote tools currently available and report whether the toolset is healthy and complete."),
     "list_devices": ("List managed devices", "List configured remote hosts, their stable device IDs, reachability, hostnames, projects, and bounded capabilities."),
-    "remote_overview": ("Open Remote control plane", "Show one secret-free snapshot of Connector health, managed hosts, durable jobs, pending approvals, credential handles, and recent activity."),
+    "open_remote_control_plane": ("Open Remote Control Plane", "Open the read-only LivingRuntime Remote Control Plane dashboard with truthful execution state, host health, durable jobs, approvals, and recent activity."),
+    "remote_overview": ("Read Remote control-plane snapshot", "Return one secret-free snapshot of Connector health, managed hosts, durable jobs, pending approvals, credential handles, and recent activity."),
     "list_projects": ("List configured projects", "List the named projects and bounded workspaces configured for this LivingRuntime Remote Connector."),
     "read_file": ("Read remote file", "Read bytes from a file inside an allowed project or configured root. Use this before editing or inspecting source files."),
     "list_dir": ("List remote directory", "List files and directories inside an allowed project or configured root without modifying them."),
@@ -765,8 +767,13 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
   .ok .dot { background:#32a852; } .bad .dot { background:#d64545; } .warn .dot { background:#d79a27; }
   h3 { margin:0 0 8px; font-size:13px; }
   .muted { color:var(--color-text-secondary,#777); }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:8px; }
   .item { padding:8px; border-radius:9px; background:rgba(127,127,127,.08); overflow-wrap:anywhere; }
+  .item strong { display:inline-block; margin-bottom:2px; }
+  .detail { margin-top:4px; }
+  .empty { padding:8px; border-radius:9px; background:rgba(127,127,127,.05); color:var(--color-text-secondary,#777); }
+  .danger { color:#d64545; }
+  .metric { font-variant-numeric:tabular-nums; }
   code { font-family:var(--font-mono,ui-monospace,monospace); font-size:11px; }
   button { border:1px solid var(--color-border-secondary,rgba(127,127,127,.4)); border-radius:8px; padding:6px 10px; background:transparent; color:inherit; }
 </style>
@@ -777,13 +784,15 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     <div id="headline" class="muted">Loading snapshot…</div>
   </div>
   <div class="section"><h3>Execution truth</h3><div id="execution" class="grid"></div></div>
+  <div class="section"><h3>Running now</h3><div id="running" class="grid"></div></div>
+  <div class="section"><h3>Waiting / handoff</h3><div id="waiting" class="grid"></div></div>
   <div class="section"><h3>Hosts</h3><div id="devices" class="grid"></div></div>
-  <div class="section"><h3>Durable jobs</h3><div id="jobs" class="grid"></div></div>
+  <div class="section"><h3>Recent terminal jobs</h3><div id="jobs" class="grid"></div></div>
   <div class="section"><h3>Permissions & credentials</h3><div id="security" class="grid"></div></div>
   <div class="section"><h3>Recent activity</h3><div id="activity" class="grid"></div></div>
 <script>
 (() => {
-  console.info("LivingRuntime control-plane-v5 script loaded");
+  console.info("LivingRuntime control-plane-v6 script loaded");
   const pending = new Map(); let nextId = 1; let connected = false; let latest = null;
   const q = id => document.getElementById(id);
   function request(method, params) {
@@ -811,27 +820,84 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     const overview = latest.overview || latest;
     const execution = overview?.execution || {};
     const state = execution.state || "UNKNOWN";
-    const stateClass = state==="RUNNING" || state==="RECENT_ACTIVITY" ? "ok" : (state==="STALLED" || state==="BLOCKED" ? "bad" : "warn");
+    const stateClass = state==="RUNNING" ? "ok" : (state==="STALLED" || state==="BLOCKED" ? "bad" : "warn");
     const active = execution.active_jobs || [];
     const lastActivity = execution.last_real_activity_at;
     const warning = execution.ui_warning ? '<div class="item"><strong>UI may be stale</strong><div class="muted">'+esc(execution.ui_warning)+'</div></div>' : '';
     q("execution").innerHTML =
       '<div class="item"><span class="badge '+stateClass+'"><span class="dot"></span>'+esc(state)+'</span><div>'+esc(execution.message||"No execution receipt yet.")+'</div></div>'+
-      '<div class="item"><strong>'+esc(execution.active_job_count||0)+'</strong> active durable jobs<div class="muted">'+esc(execution.worker_alive_count||0)+' live workers/children</div></div>'+
+      '<div class="item"><strong class="metric">'+esc(execution.worker_alive_count||0)+'</strong> live workers / child processes<div class="muted">RUNNING requires a real live process</div></div>'+
       '<div class="item"><strong>Last real activity</strong><div>'+esc(lastActivity?formatTs(lastActivity):"none recorded")+'</div><div class="muted">'+esc(execution.last_tool||"—")+(execution.last_target?' · '+esc(execution.last_target):'')+'</div></div>'+
-      warning+
-      active.slice(0,4).map(j=>'<div class="item"><strong>'+esc(j.status)+'</strong> <code>'+esc(j.job_id)+'</code><div>'+esc(j.current_step||j.goal||"")+'</div><div class="muted">worker '+esc(j.worker_alive||j.child_alive?"alive":"not alive")+' · heartbeat '+esc(j.heartbeat_age_seconds ?? "?")+'s</div></div>').join("");
+      warning;
+
+    const jobs = overview?.jobs || [];
+    const live = j => Boolean(j?.runtime?.worker_alive || j?.runtime?.child_alive);
+    const isTerminal = j => Boolean(j?.terminal) || ["SUCCEEDED","FAILED","CANCELLED","CANCELED"].includes(String(j?.status||"").toUpperCase());
+    const effectiveStatus = j => {
+      const raw = String(j?.status || "UNKNOWN").toUpperCase();
+      if (live(j)) return "RUNNING";
+      if (!isTerminal(j) && (raw==="RUNNING" || raw==="PENDING")) return "WAITING";
+      return raw;
+    };
+    const jobCard = j => {
+      const runtime=j?.runtime||{};
+      const status=effectiveStatus(j);
+      const cls=status==="RUNNING"?"ok":(status==="FAILED"||status==="STALLED"||status==="BLOCKED"?"bad":"warn");
+      const hb=runtime.heartbeat_age_seconds;
+      const pg=runtime.progress_age_seconds;
+      const io=[];
+      if (runtime.stdout_bytes !== undefined) io.push("stdout "+runtime.stdout_bytes+" B");
+      if (runtime.stderr_bytes !== undefined) io.push("stderr "+runtime.stderr_bytes+" B");
+      if (runtime.returncode !== undefined && runtime.returncode !== null) io.push("rc "+runtime.returncode);
+      return '<div class="item">'+
+        '<div><span class="badge '+cls+'"><span class="dot"></span>'+esc(status)+'</span> <code>'+esc(j.job_id||"")+'</code></div>'+
+        '<div class="detail"><strong>'+esc(j.goal||"Unnamed job")+'</strong></div>'+
+        '<div>'+esc(j.current_step||"No current step")+'</div>'+
+        '<div class="muted">next: '+esc(j.next_action||"—")+'</div>'+
+        '<div class="muted metric">'+esc(j.device||"default host")+(j.project?' · '+esc(j.project):'')+
+          ' · heartbeat '+esc(hb ?? "—")+'s · progress '+esc(pg ?? "—")+'s'+
+          (io.length?' · '+esc(io.join(" · ")):'')+'</div>'+
+        '</div>';
+    };
+    const runningJobs=jobs.filter(j=>!isTerminal(j)&&live(j));
+    const waitingJobs=jobs.filter(j=>!isTerminal(j)&&!live(j));
+    const terminalJobs=jobs.filter(isTerminal);
+    q("running").innerHTML = runningJobs.length
+      ? runningJobs.slice(0,8).map(jobCard).join("")
+      : '<div class="empty">No server-side worker or child process is currently alive.</div>';
+    const cognition=execution.cognition||null;
+    const cognitionCard=cognition
+      ? '<div class="item"><span class="badge warn"><span class="dot"></span>'+esc(cognition.status||"COGNITION")+'</span><div><strong>'+esc(cognition.agent_id||"agent cognition")+'</strong></div><div class="muted"><code>'+esc(cognition.request_id||"")+'</code></div></div>'
+      : '';
+    q("waiting").innerHTML = waitingJobs.length || cognitionCard
+      ? waitingJobs.slice(0,8).map(jobCard).join("")+cognitionCard
+      : '<div class="empty">Nothing is waiting for ChatGPT, approval, or a resumed worker.</div>';
+
     const devices = overview?.devices?.devices || [];
     q("devices").innerHTML = devices.length ? devices.map(d=>{
       const inv=d.inventory||{}; const mem=inv.memory||{};
-      const resource=inv.ok ? '<div class="muted">CPU '+esc(inv.cpu_count)+' · RAM '+esc(mem.available_bytes ?? "?")+' free</div>' : '';
-      return '<div class="item"><div class="badge '+(d.online?'ok':'bad')+'"><span class="dot"></span>'+esc(d.device_id)+'</div><div>'+esc(d.hostname||d.ssh_host||"")+'</div><div class="muted">'+esc(d.latency_ms)+' ms · '+esc((d.projects||[]).join(", "))+'</div>'+resource+'</div>';
+      const disks=(inv.disks||[]).map(x=>{
+        const total=Number(x.total_bytes||0), used=Number(x.used_bytes||0);
+        const pct=total>0?Math.round((used/total)*100):0;
+        return esc(x.path||"disk")+' '+esc(pct)+'% used';
+      }).join(" · ");
+      const services=(inv.services||[]).map(s=>esc(s.unit||"service")+': '+esc(s.state||"?")).join(" · ");
+      const resource=inv.ok
+        ? '<div class="muted metric">CPU '+esc(inv.cpu_count)+' · load '+esc((inv.load_average||[]).map(x=>Number(x).toFixed(2)).join("/"))+
+          ' · RAM '+esc(mem.available_bytes ?? "?")+' free</div>'+
+          (disks?'<div class="muted">'+disks+'</div>':'')+
+          (services?'<div class="muted">'+services+'</div>':'')
+        : '<div class="muted">Live inventory unavailable.</div>';
+      return '<div class="item"><div class="badge '+(d.online?'ok':'bad')+'"><span class="dot"></span>'+esc(d.device_id)+'</div><div><strong>'+esc(d.hostname||d.ssh_host||"")+'</strong></div><div class="muted metric">'+esc(d.latency_ms)+' ms · '+esc((d.projects||[]).join(", "))+'</div>'+resource+'</div>';
     }).join("") : '<span class="muted">No hosts reported.</span>';
-    const jobs = overview?.jobs || [];
-    q("jobs").innerHTML = jobs.length ? jobs.slice(0,8).map(j=>'<div class="item"><div><strong>'+esc(j.status)+'</strong> <code>'+esc(j.job_id)+'</code></div><div>'+esc(j.goal)+'</div><div class="muted">'+esc(j.current_step||j.next_action||"No current step")+'</div></div>').join("") : '<span class="muted">No durable jobs.</span>';
+    q("jobs").innerHTML = terminalJobs.length
+      ? terminalJobs.slice(0,8).map(jobCard).join("")
+      : '<div class="empty">No recent terminal durable jobs.</div>';
     const p=overview?.permissions||{}; const creds=overview?.credentials||[];
+    const approvals=(p.pending||[]);
     q("security").innerHTML =
-      '<div class="item"><strong>'+esc((p.pending||[]).length)+'</strong> pending command approvals<div class="muted">'+esc(p.active_count||0)+' active grants</div></div>'+
+      '<div class="item"><strong>'+esc(approvals.length)+'</strong> pending command approvals<div class="muted">'+esc(p.active_count||0)+' active grants · '+esc(p.revoked_count||0)+' revoked</div>'+
+      (approvals.length?'<div class="muted">'+approvals.slice(0,6).map(a=>esc(a.executable||"?")+' @ '+esc(a.host_id||"?")).join(" · ")+'</div>':'')+'</div>'+
       '<div class="item"><strong>'+esc(creds.length)+'</strong> credential handles<div class="muted">'+esc(creds.map(c=>c.handle).slice(0,5).join(", ")||"None")+'</div></div>';
     const activity=overview?.activity||[];
     q("activity").innerHTML = activity.length ? activity.slice().reverse().slice(0,12).map(a=>'<div class="item"><span class="badge '+(a.ok?'ok':'bad')+'"><span class="dot"></span>'+esc(a.tool)+'</span><div class="muted" title="'+esc(a.ts)+'">'+esc(formatTs(a.ts))+'</div></div>').join("") : '<span class="muted">No recent activity.</span>';
@@ -842,7 +908,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
     q("headline").textContent="Refreshing…";
     try {
-      const result=await request("tools/call",{name:"remote_overview",arguments:{include_resources:false}});
+      const result=await request("tools/call",{name:"remote_overview",arguments:{include_resources:true}});
       render(data(result));
     } catch (e) {
       q("headline").textContent="Refresh failed: "+String(e?.message||e);
@@ -855,9 +921,18 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     if(event.source!==window.parent)return; const m=event.data; if(!m||m.jsonrpc!=="2.0")return;
     if(m.id!==undefined&&pending.has(m.id)){const w=pending.get(m.id);pending.delete(m.id);m.error?w.reject(m.error):w.resolve(m.result);return;}
     if(m.method==="ui/notifications/tool-result") render(m.params?.structuredContent||null);
+    if(m.method==="ui/notifications/request-teardown"){
+      connected=false;
+      if(refreshTimer){clearTimeout(refreshTimer);refreshTimer=null;}
+      q("headline").innerHTML='<span class="badge warn"><span class="dot"></span>DISCONNECTED</span> · widget detached; server state remains durable';
+    }
   },{passive:true});
+  window.addEventListener("pagehide",()=>{
+    connected=false;
+    if(refreshTimer){clearTimeout(refreshTimer);refreshTimer=null;}
+  },{once:true});
   (async()=>{try{
-    await request("ui/initialize",{appInfo:{name:"livingruntime-remote-control-plane",version:"1.0.0"},appCapabilities:{},protocolVersion:"2026-01-26"});
+    await request("ui/initialize",{appInfo:{name:"livingruntime-remote-control-plane",version:"1.1.0"},appCapabilities:{},protocolVersion:"2026-01-26"});
     notify("ui/notifications/initialized"); connected=true;
     render(window.openai?.toolOutput||latest);
     refreshTimer = setTimeout(()=>void refresh(), 1000);
@@ -1269,6 +1344,13 @@ def create_mcp(
         description="Compatible fixed dashboard for sessions using the v4 resource URI.",
     )
     add_widget_resource(
+        CONTROL_PLANE_WIDGET_V5_URI,
+        CONTROL_PLANE_WIDGET_HTML,
+        name="remote-control-plane-v5",
+        title="LivingRuntime Remote control plane",
+        description="Backward-compatible dashboard for sessions using the v5 resource URI.",
+    )
+    add_widget_resource(
         CONTROL_PLANE_WIDGET_URI,
         CONTROL_PLANE_WIDGET_HTML,
         name="remote-control-plane",
@@ -1487,6 +1569,22 @@ def create_mcp(
             "connector": connector,
             "overview": overview,
         }
+
+    @apps.tool(
+        resource_uri=CONTROL_PLANE_WIDGET_URI,
+        visibility=["model", "app"],
+        name="open_remote_control_plane",
+        title=TOOL_TEXT["open_remote_control_plane"][0],
+        description=TOOL_TEXT["open_remote_control_plane"][1],
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        meta={**READ, "openai/outputTemplate": CONTROL_PLANE_WIDGET_URI},
+    )
+    async def open_remote_control_plane() -> dict[str, Any]:
+        return await remote_overview(include_resources=True)
 
     server = MCPServer(
         NAME,

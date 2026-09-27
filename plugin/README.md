@@ -2,7 +2,7 @@
 
 Identity: `livingruntime.remote`
 
-Current version: `0.4.31`
+Current version: `0.4.32`
 
 This directory contains the ChatGPT/Codex-facing MCP runtime and the local Connector implementation.
 
@@ -11,6 +11,7 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 - connection_status
 - capabilities
 - list_devices
+- open_remote_control_plane
 - remote_overview
 - list_projects
 - read_file
@@ -43,7 +44,8 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 - bind_openai_pi_continuation
 - continue_openai_pi_job
 
-The canonical registry is `scripts/contract.py`.
+The canonical connector-forwarded registry is `scripts/contract.py`. Relay-only
+ChatGPT Apps entrypoints such as `open_remote_control_plane` are registered in `relay/server.py`.
 
 ### Credential broker
 
@@ -53,7 +55,9 @@ Secrets are added only on the owned machine with `python scripts/credentialctl.p
 
 ### Control plane and host discovery
 
-`remote_overview` is the read-only control-plane snapshot used by the ChatGPT Apps SDK widget. It combines paired-connector health, configured host reachability, durable jobs, sanitized pending approvals, credential handles, active leases, recent tool activity, and a conservative `execution` receipt. The execution receipt distinguishes real server-side work (`RUNNING`, only with a live worker/child process), cognition waits, recent completed tool activity, stalls, and `IDLE`; dashboard refreshes are excluded so the widget cannot manufacture apparent work. When no durable work is running and the last real activity is old, it explicitly warns that an older ChatGPT tool timeline may be stale. It intentionally does not expose full pending command argv; operators inspect those through `list_exec_permissions` before approval.
+`open_remote_control_plane` is the explicit ChatGPT Apps SDK entrypoint for the live dashboard. It opens the current control-plane widget with resource inventory enabled so a user request such as “open Remote Control Plane” maps to a UI action instead of a data-only overview call.
+
+`remote_overview` remains the read-only data API behind the dashboard. It combines paired-connector health, configured host reachability, durable jobs, sanitized pending approvals, credential handles, active leases, recent tool activity, and a conservative `execution` receipt. The execution receipt distinguishes real server-side work (`RUNNING`, only with a live worker/child process), cognition waits, recent completed tool activity, stalls, and `IDLE`; dashboard refreshes are excluded so the widget cannot manufacture apparent work. When no durable work is running and the last real activity is old, it explicitly warns that an older ChatGPT tool timeline may be stale. It intentionally does not expose full pending command argv; operators inspect those through `list_exec_permissions` before approval.
 
 Watcher lifecycle is intentionally separate from execution truth: `ARMED` means the ChatGPT widget is attached and waiting, `WAITING_FOR_CHATGPT_SESSION` means a non-terminal durable result or cognition request is ready for ChatGPT, `COMPLETED` means an authoritative terminal receipt has already closed the watcher, and `DISCONNECTED` means the widget is gone or its transport is unavailable. Destroying a widget never leaves a watcher looking `RUNNING`; server `RUNNING` is reserved for receipts with an observed live worker/child process. Reopening the same conversation preserves the watcher identity so an already-claimed durable cognition request can be handed to the restored ChatGPT session immediately instead of waiting for the claim lease to expire.
 

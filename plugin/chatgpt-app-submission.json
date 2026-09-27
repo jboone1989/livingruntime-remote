@@ -404,6 +404,18 @@
         "destructive_justification": "Irreversibly invalidates that lease, while leaving the underlying credential intact."
       }
     },
+    "open_remote_control_plane": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Opens the read-only LivingRuntime Remote Control Plane and returns the same secret-free snapshot used by remote_overview.",
+        "open_world_justification": "Reads only LivingRuntime Remote state and configured owned hosts; it does not publish data or contact arbitrary external services.",
+        "destructive_justification": "Does not change jobs, permissions, credentials, files, processes, or services."
+      }
+    },
     "remote_overview": {
       "annotations": {
         "readOnlyHint": true,

@@ -45,7 +45,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.31")
+            self.assertEqual(health.json()["version"], "0.4.32")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -286,6 +286,7 @@ class RelayServerTests(unittest.TestCase):
             "bind_openai_pi_continuation",
             "continue_openai_pi_job",
             "claim_llm_request_for_watcher",
+            "open_remote_control_plane",
         } | set(REMOTE_TOOLS)
         self.assertEqual(set(tools), expected)
         app_bindings = {
@@ -414,6 +415,19 @@ class RelayServerTests(unittest.TestCase):
         )
         self.assertNotIn("resourceUri", tools["wait_pi_job_completion"].meta["ui"])
         self.assertEqual(
+            tools["open_remote_control_plane"].meta["ui"]["resourceUri"],
+            server.CONTROL_PLANE_WIDGET_URI,
+        )
+        self.assertEqual(
+            tools["open_remote_control_plane"].meta["openai/outputTemplate"],
+            server.CONTROL_PLANE_WIDGET_URI,
+        )
+        self.assertEqual(
+            tools["open_remote_control_plane"].meta["ui"]["visibility"],
+            ["model", "app"],
+        )
+        self.assertTrue(tools["open_remote_control_plane"].annotations.read_only_hint)
+        self.assertEqual(
             tools["remote_overview"].meta["ui"]["resourceUri"],
             server.CONTROL_PLANE_WIDGET_URI,
         )
@@ -444,7 +458,8 @@ class RelayServerTests(unittest.TestCase):
         self.assertTrue(server.LONG_JOB_WIDGET_URI.endswith("long-job-watch-v3.html"))
         self.assertIn(server.PI_JOB_WIDGET_LEGACY_URI, resource_uris)
         self.assertIn(server.LONG_JOB_WIDGET_LEGACY_URI, resource_uris)
-        self.assertTrue(server.CONTROL_PLANE_WIDGET_URI.endswith("control-plane-v5.html"))
+        self.assertTrue(server.CONTROL_PLANE_WIDGET_URI.endswith("control-plane-v6.html"))
+        self.assertIn(server.CONTROL_PLANE_WIDGET_V5_URI, resource_uris)
         self.assertIn(server.CONTROL_PLANE_WIDGET_V4_URI, resource_uris)
         self.assertIn(server.CONTROL_PLANE_WIDGET_LEGACY_URI, resource_uris)
         widget = next(
@@ -636,10 +651,17 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn("LivingRuntime Remote Control Plane", html)
         self.assertIn('"remote_overview"', html)
         self.assertIn("Execution truth", html)
-        self.assertIn("Durable jobs", html)
+        self.assertIn("Running now", html)
+        self.assertIn("Waiting / handoff", html)
+        self.assertIn("Recent terminal jobs", html)
         self.assertIn("Permissions & credentials", html)
         self.assertIn("ui_warning", html)
         self.assertIn("last_real_activity_at", html)
+        self.assertIn("worker_alive", html)
+        self.assertIn("heartbeat_age_seconds", html)
+        self.assertIn("progress_age_seconds", html)
+        self.assertIn("include_resources:true", html)
+        self.assertIn("DISCONNECTED", html)
         self.assertIn("setTimeout(()=>void refresh(), 10000)", html)
         self.assertNotIn("setInterval(", html)
         self.assertIn("formatTs", html)
