@@ -2257,7 +2257,10 @@ def complete_llm_request(
     model: str | None = None,
     session_id: str | None = None,
 ) -> dict[str, Any]:
-    """Complete a claimed request and release the blocked calling agent."""
+    """Complete one request and atomically attach the next durable cognition turn."""
+    current = get_cognition_request(request_id)
+    prior_claim = current.get("claim") if isinstance(current.get("claim"), dict) else {}
+    prior_watcher_id = str(prior_claim.get("watcher_id") or "").strip()
     result = complete_cognition_request(
         request_id=request_id,
         response_text=_normalize_cognition_response_text(response_text),
@@ -2272,7 +2275,42 @@ def complete_llm_request(
         "status": result.get("status"),
         "model": model,
     })
-    return result
+    agent_id = str(result.get("agent_id") or current.get("agent_id") or "").strip()
+    if not agent_id:
+        return result
+    watcher_id = prior_watcher_id or cognition_watcher_id(agent_id)
+    waited = wait_pending_cognition_request(
+        agent_id=agent_id,
+        watcher_id=watcher_id,
+        timeout_seconds=20,
+    )
+    next_request = waited.get("request") if isinstance(waited, dict) else None
+    if not isinstance(next_request, dict) or not next_request.get("request_id"):
+        return {
+            **result,
+            "agentId": agent_id,
+            "watcherId": watcher_id,
+            "watchRecommended": True,
+            "watcherState": "ARMED",
+            "watcherAutoRearmed": True,
+            "nextRequestAutoClaimed": False,
+            "completedRequestId": request_id,
+        }
+    claimed = claim_cognition_request(
+        request_id=str(next_request["request_id"]),
+        watcher_id=watcher_id,
+        claim_seconds=300,
+    )
+    return {
+        **claimed,
+        "agentId": agent_id,
+        "watcherId": watcher_id,
+        "watchRecommended": True,
+        "watcherState": "WAITING_FOR_CHATGPT_SESSION",
+        "watcherAutoRearmed": True,
+        "nextRequestAutoClaimed": True,
+        "completedRequestId": request_id,
+    }
 
 
 

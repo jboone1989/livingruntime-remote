@@ -26,7 +26,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.41"
+VERSION = "0.4.42"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v3.html"
 PI_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v5.html"
@@ -2873,6 +2873,11 @@ def create_mcp(
                 "session_id": session_id,
             },
         )
+        # Newer connectors complete the current request and claim the next
+        # durable cognition turn locally in one atomic continuation step.
+        # Do not add a second relay round-trip when that contract is present.
+        if "nextRequestAutoClaimed" in result:
+            return result
         agent_id = str(result.get("agent_id") or "").strip()
         if not agent_id:
             return result
