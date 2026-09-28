@@ -26,13 +26,14 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.36"
+VERSION = "0.4.37"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v3.html"
 PI_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v5.html"
 LONG_JOB_WIDGET_V4_URI = "ui://livingruntime-remote/long-job-watch-v4.html"
 LONG_JOB_WIDGET_V3_URI = "ui://livingruntime-remote/long-job-watch-v3.html"
 LONG_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
+COGNITION_WIDGET_LEGACY_URI = "ui://livingruntime-remote/agent-cognition-watch-v2.html"
 COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v3.html"
 CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v8.html"
 CONTROL_PLANE_WIDGET_V7_URI = "ui://livingruntime-remote/control-plane-v7.html"
@@ -1589,6 +1590,13 @@ def create_mcp(
         name="long-job-watch",
         title="Long-running job watcher",
         description="Watch a supervised long-running command without model-side polling and report stalled or terminal state back into the same conversation.",
+    )
+    add_widget_resource(
+        COGNITION_WIDGET_LEGACY_URI,
+        COGNITION_WIDGET_HTML,
+        name="agent-cognition-watch-v2",
+        title="Agent cognition watcher",
+        description="Backward-compatible cognition watcher resource for sessions using the v2 URI.",
     )
     add_widget_resource(
         COGNITION_WIDGET_URI,

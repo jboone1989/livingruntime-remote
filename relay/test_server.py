@@ -45,7 +45,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.36")
+            self.assertEqual(health.json()["version"], "0.4.37")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -528,6 +528,15 @@ class RelayServerTests(unittest.TestCase):
         )
         self.assertEqual(
             cognition_resource_meta["openai/widgetDomain"],
+            server.PI_JOB_WIDGET_DOMAIN,
+        )
+        legacy_cognition_widget = next(
+            resource
+            for resource in resources
+            if str(resource.uri) == server.COGNITION_WIDGET_LEGACY_URI
+        )
+        self.assertEqual(
+            legacy_cognition_widget.model_dump(by_alias=True)["_meta"]["openai/widgetDomain"],
             server.PI_JOB_WIDGET_DOMAIN,
         )
         control_widget = next(
