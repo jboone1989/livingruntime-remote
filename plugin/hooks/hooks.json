@@ -1,6 +1,41 @@
 {
-  "description": "Continue OpenAI runtime sessions when any watched LivingRuntime durable job finishes.",
+  "description": "Continue OpenAI runtime sessions when any watched LivingRuntime durable job finishes, and recover durable bindings after session resume.",
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "livingruntime_remote",
+            "tool": "recover_openai_job_continuation",
+            "input": {
+              "session_id": "${session_id}",
+              "hook_event_name": "SessionStart"
+            },
+            "timeout": 15,
+            "statusMessage": "Recovering durable job continuation"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "livingruntime_remote",
+            "tool": "recover_openai_job_continuation",
+            "input": {
+              "session_id": "${session_id}",
+              "hook_event_name": "UserPromptSubmit"
+            },
+            "timeout": 15,
+            "statusMessage": "Checking durable job backlog"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "watch_pi_job$",
@@ -44,11 +79,11 @@
             "tool": "continue_openai_job",
             "input": {
               "session_id": "${session_id}",
-              "timeout_seconds": 25,
+              "timeout_seconds": 110,
               "stop_hook_active": "${stop_hook_active}"
             },
-            "timeout": 30,
-            "statusMessage": "Checking durable job continuation"
+            "timeout": 125,
+            "statusMessage": "Waiting for durable job continuation"
           }
         ]
       }

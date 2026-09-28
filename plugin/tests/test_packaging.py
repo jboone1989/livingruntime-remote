@@ -20,7 +20,7 @@ class PackagingTests(unittest.TestCase):
         openai = plugin["extensions"]["com.openai"]
         self.assertEqual(plugin["name"], "livingruntime-remote")
         self.assertEqual(plugin["version"], PLUGIN_VERSION)
-        self.assertEqual(PLUGIN_VERSION, "0.4.34")
+        self.assertEqual(PLUGIN_VERSION, "0.4.35")
         self.assertEqual(REMOTE_IDENTITY, "livingruntime.remote")
         self.assertEqual(openai["apps"], "./.app.json")
         self.assertEqual(openai["hooks"], "./hooks/hooks.json")
@@ -84,14 +84,22 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(job_binder["input"]["session_id"], "${session_id}")
         self.assertEqual(job_binder["input"]["job_id"], "${tool_input.job_id}")
 
+        session_start = hooks["hooks"]["SessionStart"][0]["hooks"][0]
+        self.assertEqual(session_start["tool"], "recover_openai_job_continuation")
+        self.assertEqual(session_start["input"]["session_id"], "${session_id}")
+        self.assertEqual(session_start["input"]["hook_event_name"], "SessionStart")
+        user_prompt = hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+        self.assertEqual(user_prompt["tool"], "recover_openai_job_continuation")
+        self.assertEqual(user_prompt["input"]["hook_event_name"], "UserPromptSubmit")
+
         stop = hooks["hooks"]["Stop"][0]["hooks"][0]
         self.assertEqual(stop["type"], "mcp_tool")
         self.assertEqual(stop["server"], "livingruntime_remote")
         self.assertEqual(stop["tool"], "continue_openai_job")
         self.assertEqual(stop["input"]["session_id"], "${session_id}")
-        self.assertEqual(stop["input"]["timeout_seconds"], 25)
+        self.assertEqual(stop["input"]["timeout_seconds"], 110)
         self.assertEqual(stop["input"]["stop_hook_active"], "${stop_hook_active}")
-        self.assertEqual(stop["timeout"], 30)
+        self.assertEqual(stop["timeout"], 125)
 
         interrupt = hooks["hooks"]["Interrupt"][0]["hooks"][0]
         self.assertEqual(interrupt["type"], "mcp_tool")

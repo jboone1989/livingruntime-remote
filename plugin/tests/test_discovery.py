@@ -908,6 +908,74 @@ class SchemaAndToolTests(unittest.TestCase):
                 {"continue": True},
             )
 
+    def test_openai_generic_continuation_recovers_after_resume_and_ack_clears_binding(self) -> None:
+        jobs_root = Path(self.tmp.name) / "jobs-recovery"
+        with patch.dict(
+            os.environ,
+            {"LIVINGRUNTIME_REMOTE_JOBS": str(jobs_root)},
+        ), patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(bridge.Path, "home", return_value=Path(self.tmp.name)):
+            created = bridge.create_job("Recover after resumed session", project="ferro")
+            bridge.bind_openai_job_continuation("session-recover", created["job_id"])
+
+            active = bridge.recover_openai_job_continuation(
+                "session-recover", "SessionStart"
+            )
+            self.assertEqual(
+                active["hookSpecificOutput"]["hookEventName"], "SessionStart"
+            )
+            self.assertIn(created["job_id"], active["hookSpecificOutput"]["additionalContext"])
+            self.assertFalse(active["terminal"])
+
+            completed = bridge.checkpoint_job(
+                created["job_id"],
+                summary="done",
+                status="SUCCEEDED",
+            )
+            event_id = completed["completion_event"]["event_id"]
+            terminal = bridge.recover_openai_job_continuation(
+                "session-recover", "UserPromptSubmit"
+            )
+            self.assertTrue(terminal["terminal"])
+            self.assertEqual(terminal["completionEventId"], event_id)
+            self.assertIn(event_id, terminal["hookSpecificOutput"]["additionalContext"])
+
+            acked = bridge.ack_long_job_completion(
+                created["job_id"], event_id
+            )
+            self.assertGreaterEqual(acked["clearedContinuationBindings"], 1)
+            self.assertEqual(
+                bridge.recover_openai_job_continuation(
+                    "session-recover", "SessionStart"
+                ),
+                {"continue": True},
+            )
+
+    def test_recursive_generic_stop_preserves_durable_binding(self) -> None:
+        jobs_root = Path(self.tmp.name) / "jobs-recursive-generic"
+        with patch.dict(
+            os.environ,
+            {"LIVINGRUNTIME_REMOTE_JOBS": str(jobs_root)},
+        ), patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(bridge.Path, "home", return_value=Path(self.tmp.name)):
+            created = bridge.create_job("Still running", project="ferro")
+            bridge.bind_openai_job_continuation(
+                "session-recursive-generic", created["job_id"]
+            )
+            result = bridge.continue_openai_job(
+                "session-recursive-generic",
+                timeout_seconds=1,
+                stop_hook_active=True,
+            )
+            self.assertTrue(result["continue"])
+            self.assertEqual(result["watch_mode"], "durable_outbox")
+            recovered = bridge.recover_openai_job_continuation(
+                "session-recursive-generic", "SessionStart"
+            )
+            self.assertEqual(recovered["runtimeJobId"], created["job_id"])
+
     def test_openai_continuation_binding_and_terminal_resume(self) -> None:
         with patch.object(bridge.Path, "home", return_value=Path(self.tmp.name)):
             bound = bridge.bind_openai_pi_continuation(

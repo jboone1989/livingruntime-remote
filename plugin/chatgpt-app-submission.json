@@ -667,6 +667,18 @@
         "open_world_justification": "Operates only on private LivingRuntime Remote continuation/completion state.",
         "destructive_justification": "Normal checks are non-destructive; an explicit Interrupt hook may cancel only the already-bound durable job at the user's request."
       }
+    },
+    "recover_openai_job_continuation": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads private durable continuation metadata and returns bounded lifecycle-hook context so a resumed OpenAI session can reattach to the exact existing job.",
+        "open_world_justification": "Operates only on private LivingRuntime Remote continuation/completion state.",
+        "destructive_justification": "Does not modify project files, services, external accounts, job state, or completion acknowledgements."
+      }
     }
   },
   "test_cases": [

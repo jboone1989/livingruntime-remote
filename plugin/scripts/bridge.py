@@ -2610,8 +2610,17 @@ def ack_long_job_completion(
         event_id,
         acknowledged_by=acknowledged_by,
     )
-    _audit("ack_long_job_completion", True, {"job_id": job_id, "event_id": event_id})
-    return {"job": job, "completion_event": job.get("completion_event")}
+    cleared_bindings = _clear_openai_continuations_for_job(job_id)
+    _audit("ack_long_job_completion", True, {
+        "job_id": job_id,
+        "event_id": event_id,
+        "cleared_continuation_bindings": cleared_bindings,
+    })
+    return {
+        "job": job,
+        "completion_event": job.get("completion_event"),
+        "clearedContinuationBindings": cleared_bindings,
+    }
 
 
 @server.tool(
@@ -2759,6 +2768,30 @@ def _clear_openai_continuation(session_id: str) -> None:
         pass
 
 
+def _clear_openai_continuations_for_job(job_id: str) -> int:
+    root = Path.home() / ".livingruntime" / "openai-continuations"
+    if not root.exists():
+        return 0
+    cleared = 0
+    for path in root.glob("*.json"):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(value, dict):
+            continue
+        if (
+            value.get("kind") == "runtime-job"
+            and str(value.get("runtime_job_id") or "") == str(job_id)
+        ):
+            try:
+                path.unlink()
+                cleared += 1
+            except FileNotFoundError:
+                pass
+    return cleared
+
+
 @server.tool(
     name="continue_openai_job",
     annotations=ToolAnnotations(
@@ -2770,7 +2803,7 @@ def _clear_openai_continuation(session_id: str) -> None:
 )
 def continue_openai_job(
     session_id: str,
-    timeout_seconds: int = 25,
+    timeout_seconds: int = 110,
     interrupted: bool = False,
     stop_hook_active: bool = False,
 ) -> dict[str, Any]:
@@ -2813,15 +2846,20 @@ def continue_openai_job(
                     )
         return {"continue": False, "cancelledByUser": True, "cancel": cancel}
 
-    if bool(stop_hook_active):
-        _clear_openai_continuation(session_id)
+    latest = _reconcile_runtime_job(get_runtime_job(runtime_job_id))
+    if bool(stop_hook_active) and not latest.get("terminal"):
         return {
-            "continue": False,
-            "stopReason": "Automatic continuation budget exhausted for this turn.",
+            "continue": True,
+            "job_id": runtime_job_id,
+            "status": latest.get("status"),
+            "watch_mode": "durable_outbox",
+            "message": (
+                "Automatic continuation budget for this turn is exhausted; "
+                "the durable session binding remains armed."
+            ),
         }
 
-    deadline = time.monotonic() + min(25, max(1, int(timeout_seconds)))
-    latest = _reconcile_runtime_job(get_runtime_job(runtime_job_id))
+    deadline = time.monotonic() + min(110, max(1, int(timeout_seconds)))
     while not latest.get("terminal") and latest.get("status") != "STALLED":
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -2860,6 +2898,67 @@ def continue_openai_job(
             f"{event.get('event_id') or 'unknown'} is durable. Inspect get_long_job, "
             "continue the original task, then acknowledge the exact completion event."
         ),
+    }
+
+
+@server.tool(
+    name="recover_openai_job_continuation",
+    annotations=ToolAnnotations(
+        title="Recover durable OpenAI job continuation",
+        readOnlyHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def recover_openai_job_continuation(
+    session_id: str,
+    hook_event_name: str = "SessionStart",
+) -> dict[str, Any]:
+    """Inject a still-bound durable job back into a resumed OpenAI session."""
+    session_id = str(session_id).strip()
+    if not session_id or len(session_id) > 256:
+        raise ValueError("session_id must be a bounded non-empty string")
+    event_name = str(hook_event_name or "SessionStart").strip()
+    if event_name not in {"SessionStart", "UserPromptSubmit"}:
+        raise ValueError("hook_event_name must be SessionStart or UserPromptSubmit")
+    binding = _load_openai_continuation(session_id)
+    if binding is None or binding.get("kind") != "runtime-job":
+        return {"continue": True}
+    runtime_job_id = str(binding.get("runtime_job_id") or "").strip()
+    if not runtime_job_id:
+        return {"continue": True}
+    latest = _reconcile_runtime_job(get_runtime_job(runtime_job_id))
+    completion = (
+        latest.get("completion_event")
+        if isinstance(latest.get("completion_event"), dict)
+        else {}
+    )
+    if latest.get("terminal"):
+        context = (
+            f"LivingRuntime durable job {runtime_job_id} completed with status "
+            f"{latest.get('status')}. Durable completion event "
+            f"{completion.get('event_id') or 'unknown'} is still bound to this "
+            "session. Before finishing this turn, call get_long_job, consume the "
+            "terminal evidence, continue or repair the original goal as needed, "
+            "then call ack_long_job_completion for that exact event."
+        )
+    else:
+        context = (
+            f"LivingRuntime durable job {runtime_job_id} is still bound to this "
+            f"session with status {latest.get('status')}. Reattach with "
+            "watch_long_job instead of asking the user to type continue or "
+            "assuming old UI state is current."
+        )
+    return {
+        "continue": True,
+        "hookSpecificOutput": {
+            "hookEventName": event_name,
+            "additionalContext": context,
+        },
+        "runtimeJobId": runtime_job_id,
+        "status": latest.get("status"),
+        "terminal": bool(latest.get("terminal")),
+        "completionEventId": completion.get("event_id"),
     }
 
 

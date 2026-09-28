@@ -95,6 +95,14 @@ class RelayStore:
             )
         return cur.rowcount == 1
 
+    def clear_continuations_for_job(self, user_sub: str, job_id: str) -> int:
+        with self.db() as db:
+            cur = db.execute(
+                "DELETE FROM continuations WHERE user_sub=? AND job_id=?",
+                (user_sub, job_id),
+            )
+        return int(cur.rowcount or 0)
+
     def create_pairing_code(self, user_sub: str, ttl: int = 600) -> dict[str, Any]:
         self.cleanup()
         now = time.time()

@@ -45,7 +45,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.34")
+            self.assertEqual(health.json()["version"], "0.4.35")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -704,6 +704,7 @@ class RelayServerTests(unittest.TestCase):
         source = inspect.getsource(server.create_mcp)
         self.assertIn("bind_openai_job_continuation", source)
         self.assertIn("continue_openai_job", source)
+        self.assertIn("recover_openai_job_continuation", source)
         self.assertIn("bind_openai_pi_continuation", source)
         self.assertIn("continue_openai_pi_job", source)
         self.assertIn('"interrupted": bool(interrupted)', source)

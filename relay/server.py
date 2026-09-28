@@ -26,7 +26,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.34"
+VERSION = "0.4.35"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v3.html"
 PI_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v5.html"
@@ -383,6 +383,15 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
   function notify(method, params={}) {
     window.parent.postMessage({ jsonrpc:"2.0", method, params }, "*");
   }
+  async function requestDisplayMode(mode) {
+    if (!window.openai?.requestDisplayMode) return false;
+    try {
+      await window.openai.requestDisplayMode({mode});
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
   function setStatus(status, detail="") {
     watcherState = status;
     statusEl.textContent = status;
@@ -628,12 +637,13 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
   async function connect() {
     try {
       await request("ui/initialize", {
-        appInfo:{name:"livingruntime-remote-long-job-watch",version:"1.2.0"},
-        appCapabilities:{},
+        appInfo:{name:"livingruntime-remote-long-job-watch",version:"1.3.0"},
+        appCapabilities:{availableDisplayModes:["inline","pip"]},
         protocolVersion:"2026-01-26"
       });
       notify("ui/notifications/initialized");
       connected=true;
+      void requestDisplayMode("pip");
       if (!latestOutput && window.openai?.toolOutput) latestOutput=window.openai.toolOutput;
       await watch(latestOutput);
     } catch (error) {
@@ -684,6 +694,15 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
   }
   function notify(method, params={}) {
     window.parent.postMessage({jsonrpc:"2.0",method,params},"*");
+  }
+  async function requestDisplayMode(mode) {
+    if (!window.openai?.requestDisplayMode) return false;
+    try {
+      await window.openai.requestDisplayMode({mode});
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
   function setStatus(status, detail="") {
     statusEl.textContent = status;
@@ -2140,7 +2159,7 @@ def create_mcp(
     )
     async def continue_openai_job(
         session_id: str,
-        timeout_seconds: int = 25,
+        timeout_seconds: int = 110,
         interrupted: bool = False,
         stop_hook_active: bool = False,
     ) -> dict[str, Any]:
@@ -2158,19 +2177,71 @@ def create_mcp(
             "continue_openai_job",
             {
                 "session_id": session_id,
-                "timeout_seconds": min(25, max(1, int(timeout_seconds))),
+                "timeout_seconds": min(110, max(1, int(timeout_seconds))),
                 "interrupted": bool(interrupted),
                 "stop_hook_active": bool(stop_hook_active),
             },
         )
         if (
             interrupted
-            or stop_hook_active
             or result.get("decision") == "block"
             or result.get("continue") is False
         ):
             relay.store.clear_continuation(user_sub, session_id)
         return result
+
+    @server.tool(
+        name="recover_openai_job_continuation",
+        title="Recover durable OpenAI job continuation",
+        description=(
+            "Internal OpenAI lifecycle-hook helper. Restore a still-bound durable "
+            "job into SessionStart or UserPromptSubmit model context."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        meta=READ,
+    )
+    async def recover_openai_job_continuation(
+        session_id: str,
+        hook_event_name: str = "SessionStart",
+    ) -> dict[str, Any]:
+        user_sub = _principal("remote:read")
+        session_id = str(session_id).strip()
+        event_name = str(hook_event_name or "SessionStart").strip()
+        if not session_id or len(session_id) > 256:
+            raise ValueError("session_id must be a bounded non-empty string")
+        if event_name not in {"SessionStart", "UserPromptSubmit"}:
+            raise ValueError("unsupported recovery hook event")
+        binding = relay.store.continuation_for_user(user_sub, session_id)
+        if binding is None:
+            return {"continue": True}
+        try:
+            result = await relay.call(
+                user_sub,
+                "recover_openai_job_continuation",
+                {
+                    "session_id": session_id,
+                    "hook_event_name": event_name,
+                },
+            )
+            return result
+        except Exception:
+            job_id = str(binding.get("job_id") or "")
+            return {
+                "continue": True,
+                "hookSpecificOutput": {
+                    "hookEventName": event_name,
+                    "additionalContext": (
+                        f"LivingRuntime durable job {job_id} remains bound to this "
+                        "session. The connector could not refresh it during the hook; "
+                        "call get_long_job and watch_long_job before finishing this turn."
+                    ),
+                },
+                "runtimeJobId": job_id,
+            }
 
     @server.tool(
         name="bind_openai_pi_continuation",
@@ -2593,8 +2664,9 @@ def create_mcp(
         event_id: str,
         acknowledged_by: str = "chatgpt",
     ) -> dict[str, Any]:
-        return await relay.call(
-            _principal("remote:write"),
+        user_sub = _principal("remote:write")
+        result = await relay.call(
+            user_sub,
             "ack_long_job_completion",
             {
                 "job_id": job_id,
@@ -2602,6 +2674,8 @@ def create_mcp(
                 "acknowledged_by": acknowledged_by,
             },
         )
+        cleared = relay.store.clear_continuations_for_job(user_sub, job_id)
+        return {**result, "relayContinuationBindingsCleared": cleared}
 
     @expose("cancel_long_job", False, False, True)
     async def cancel_long_job(job_id: str) -> dict[str, Any]:

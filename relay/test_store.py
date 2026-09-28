@@ -106,6 +106,19 @@ class RelayStoreTests(unittest.TestCase):
         self.assertTrue(self.store.clear_continuation("user-a", "session-1"))
         self.assertIsNone(self.store.continuation_for_user("user-a", "session-1"))
 
+    def test_clear_continuations_for_job_is_scoped_by_user_and_job(self):
+        self.store.bind_continuation("user-a", "session-1", "job-1", "", None)
+        self.store.bind_continuation("user-a", "session-2", "job-1", "", None)
+        self.store.bind_continuation("user-a", "session-3", "job-2", "", None)
+        self.store.bind_continuation("user-b", "session-4", "job-1", "", None)
+        self.assertEqual(
+            self.store.clear_continuations_for_job("user-a", "job-1"), 2
+        )
+        self.assertIsNone(self.store.continuation_for_user("user-a", "session-1"))
+        self.assertIsNone(self.store.continuation_for_user("user-a", "session-2"))
+        self.assertIsNotNone(self.store.continuation_for_user("user-a", "session-3"))
+        self.assertIsNotNone(self.store.continuation_for_user("user-b", "session-4"))
+
     def test_cleanup_removes_stale_continuations(self):
         self.store.bind_continuation(
             "user-a", "session-1", "job-a", "/srv/pi", None
