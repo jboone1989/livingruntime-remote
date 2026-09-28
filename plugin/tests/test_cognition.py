@@ -133,6 +133,72 @@ class CognitionQueueTests(unittest.TestCase):
         second = cognition.claim_next(agent_id="ferro", watcher_id="watcher_2")
         self.assertEqual(second["request_id"], "llmreq_two")
 
+    def test_ancient_expired_dispatched_text_request_is_not_reclaimed(self) -> None:
+        with patch.object(cognition.time, "time", return_value=1000.0):
+            cognition.submit(
+                agent_id="ferro",
+                purpose="general_text",
+                messages=[{"role": "user", "content": "old dispatched"}],
+                timeout_seconds=300,
+                dispatch_timeout_seconds=0,
+                request_id="llmreq_ancient_dispatched",
+            )
+            claimed = cognition.claim_request(
+                request_id="llmreq_ancient_dispatched",
+                watcher_id="watcher_old",
+                claim_seconds=15,
+            )
+        path = self.root / "requests" / "llmreq_ancient_dispatched.json"
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        stored["deadline_at"] = None
+        stored["response_deadline_at"] = None
+        path.write_text(json.dumps(stored), encoding="utf-8")
+
+        stale_at = 1000.0 + cognition.MAX_UNCLAIMED_DURABLE_AGE_SECONDS
+        with patch.object(cognition.time, "time", return_value=stale_at + 1):
+            peeked = cognition.peek_next(agent_id="ferro")
+            expired = cognition.get("llmreq_ancient_dispatched")
+
+        self.assertEqual(claimed["status"], "DISPATCHED")
+        self.assertIsNone(peeked)
+        self.assertEqual(expired["status"], "TIMED_OUT")
+        self.assertEqual(expired["timeout_phase"], "DISPATCH_STALE")
+
+    def test_ancient_dispatched_request_with_live_claim_is_preserved(self) -> None:
+        with patch.object(cognition.time, "time", return_value=1000.0):
+            cognition.submit(
+                agent_id="ferro",
+                purpose="general_text",
+                messages=[{"role": "user", "content": "still owned"}],
+                timeout_seconds=300,
+                dispatch_timeout_seconds=0,
+                request_id="llmreq_live_old_claim",
+            )
+        stale_at = 1000.0 + cognition.MAX_UNCLAIMED_DURABLE_AGE_SECONDS
+        path = self.root / "requests" / "llmreq_live_old_claim.json"
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        stored["status"] = "DISPATCHED"
+        stored["attempts"] = 1
+        stored["claim"] = {
+            "watcher_id": "watcher_live",
+            "token": "live-token",
+            "claimed_at": stale_at,
+            "expires_at": stale_at + 300,
+        }
+        stored["deadline_at"] = None
+        path.write_text(json.dumps(stored), encoding="utf-8")
+
+        with patch.object(cognition.time, "time", return_value=stale_at + 1):
+            same = cognition.peek_next(
+                agent_id="ferro",
+                watcher_id="watcher_live",
+            )
+            preserved = cognition.get("llmreq_live_old_claim")
+
+        self.assertEqual(preserved["status"], "DISPATCHED")
+        self.assertEqual(same["request_id"], "llmreq_live_old_claim")
+        self.assertTrue(same["owned_by_watcher"])
+
     def test_stale_claim_can_be_reclaimed(self) -> None:
         self.submit("llmreq_reclaim")
         with patch.object(cognition.time, "time", return_value=1000.0):

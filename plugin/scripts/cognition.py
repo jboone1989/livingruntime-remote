@@ -290,17 +290,22 @@ def _refresh_timeout(value: dict[str, Any], now: float | None = None) -> dict[st
         dispatch_timeout == 0
         and purpose not in {"general_text", "simple_public_text"}
     )
+    claim = value.get("claim") if isinstance(value.get("claim"), dict) else {}
+    claim_live = float(claim.get("expires_at") or 0.0) > now
+    stale_dispatch_state = (
+        prior_status in {"PENDING", "DISPATCHED"}
+        and not claim_live
+        and (deadline == 0.0 or deadline <= now)
+    )
     if (
-        prior_status == "PENDING"
+        stale_dispatch_state
         and created_at
         and now >= created_at + MAX_UNCLAIMED_DURABLE_AGE_SECONDS
-        and deadline == 0.0
         and not indefinitely_durable
     ):
-        # Legacy durable requests (created before dispatch deadlines existed)
-        # can otherwise survive forever and starve every newly attached watcher.
-        # Explicit zero-dispatch-timeout requests retain their intentionally
-        # unbounded semantics.
+        # Legacy queues may contain both never-claimed PENDING rows and
+        # DISPATCHED rows whose lease vanished or expired. Neither may starve
+        # a newly attached ChatGPT session forever. A live claim is preserved.
         value["status"] = "TIMED_OUT"
         value["finished_at"] = now
         value["updated_at"] = now
