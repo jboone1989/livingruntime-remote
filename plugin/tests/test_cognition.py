@@ -270,6 +270,22 @@ class CognitionQueueTests(unittest.TestCase):
         self.assertEqual(expired["status"], "TIMED_OUT")
         self.assertEqual(expired["timeout_phase"], "DISPATCH_STALE")
 
+    def test_old_zero_dispatch_general_text_is_migrated_out_of_backlog(self) -> None:
+        with patch.object(cognition.time, "time", return_value=1000.0):
+            cognition.submit(
+                agent_id="ferro",
+                purpose="general_text",
+                messages=[{"role": "user", "content": "old general text"}],
+                timeout_seconds=300,
+                dispatch_timeout_seconds=0,
+                request_id="llmreq_old_zero_general",
+            )
+        stale_at = 1000.0 + cognition.MAX_UNCLAIMED_DURABLE_AGE_SECONDS
+        with patch.object(cognition.time, "time", return_value=stale_at + 1):
+            expired = cognition.get("llmreq_old_zero_general")
+        self.assertEqual(expired["status"], "TIMED_OUT")
+        self.assertEqual(expired["timeout_phase"], "DISPATCH_STALE")
+
     def test_zero_dispatch_timeout_keeps_request_pending_until_claimed(self) -> None:
         with patch.object(cognition.time, "time", return_value=1000.0):
             created = cognition.submit(

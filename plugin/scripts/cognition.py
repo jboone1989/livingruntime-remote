@@ -285,12 +285,17 @@ def _refresh_timeout(value: dict[str, Any], now: float | None = None) -> dict[st
     created_at = float(value.get("created_at") or 0.0)
     dispatch_timeout = value.get("dispatch_timeout_seconds")
     deadline = float(value.get("deadline_at") or 0.0)
+    purpose = str(value.get("purpose") or "").strip().lower()
+    indefinitely_durable = (
+        dispatch_timeout == 0
+        and purpose not in {"general_text", "simple_public_text"}
+    )
     if (
         prior_status == "PENDING"
         and created_at
         and now >= created_at + MAX_UNCLAIMED_DURABLE_AGE_SECONDS
         and deadline == 0.0
-        and dispatch_timeout != 0
+        and not indefinitely_durable
     ):
         # Legacy durable requests (created before dispatch deadlines existed)
         # can otherwise survive forever and starve every newly attached watcher.
