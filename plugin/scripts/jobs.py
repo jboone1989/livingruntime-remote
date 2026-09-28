@@ -16,6 +16,36 @@ STATUSES = frozenset({
     "SUCCEEDED", "FAILED", "CANCELLED", "CANCELLED_BY_USER",
 })
 TERMINAL_STATUSES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED", "CANCELLED_BY_USER"})
+DELIVERY_STATES = frozenset({"PENDING", "CLAIMED", "DELIVERED", "ACKED"})
+DEFAULT_COMPLETION_CLAIM_SECONDS = 300
+
+
+def _normalize_completion_event(
+    event: dict[str, Any],
+    *,
+    now: float | None = None,
+) -> dict[str, Any]:
+    normalized = dict(event)
+    acknowledged = normalized.get("acknowledged_at") is not None
+    state = str(normalized.get("delivery_state") or ("ACKED" if acknowledged else "PENDING"))
+    if state not in DELIVERY_STATES:
+        state = "ACKED" if acknowledged else "PENDING"
+    normalized["delivery_state"] = "ACKED" if acknowledged else state
+    normalized.setdefault("delivery_attempts", 0)
+    normalized.setdefault("last_delivery_at", None)
+    normalized.setdefault("claimed_by_session", None)
+    normalized.setdefault("claim_expires_at", None)
+    normalized.setdefault("delivered_at", None)
+    if (
+        not acknowledged
+        and normalized["delivery_state"] in {"CLAIMED", "DELIVERED"}
+        and normalized.get("claim_expires_at") is not None
+        and float(normalized["claim_expires_at"]) <= float(now or time.time())
+    ):
+        normalized["delivery_state"] = "PENDING"
+        normalized["claimed_by_session"] = None
+        normalized["claim_expires_at"] = None
+    return normalized
 
 
 def _ensure_completion_event(value: dict[str, Any], now: float) -> None:
@@ -31,6 +61,12 @@ def _ensure_completion_event(value: dict[str, Any], now: float) -> None:
         "status": value["status"],
         "terminal": True,
         "created_at": now,
+        "delivery_state": "PENDING",
+        "delivery_attempts": 0,
+        "last_delivery_at": None,
+        "claimed_by_session": None,
+        "claim_expires_at": None,
+        "delivered_at": None,
         "acknowledged_at": None,
         "acknowledged_by": None,
     }
@@ -142,7 +178,124 @@ def create(
 
 
 def get(job_id: str) -> dict[str, Any]:
-    return dict(_load(job_id))
+    value = _load(job_id)
+    event = value.get("completion_event")
+    if isinstance(event, dict) and event.get("event_id"):
+        normalized = _normalize_completion_event(event)
+        if normalized != event:
+            value["completion_event"] = normalized
+            _save(value)
+    return dict(value)
+
+
+def claim_completion(
+    job_id: str,
+    event_id: str,
+    *,
+    session_id: str,
+    claim_seconds: int = DEFAULT_COMPLETION_CLAIM_SECONDS,
+) -> dict[str, Any]:
+    """Lease an unacknowledged completion for at-least-once delivery."""
+    value = _load(job_id)
+    event = value.get("completion_event")
+    if not isinstance(event, dict) or not event.get("event_id"):
+        raise KeyError(f"job {job_id} has no completion event")
+    if str(event.get("event_id")) != str(event_id):
+        raise ValueError("completion event identity mismatch")
+    now = time.time()
+    event = _normalize_completion_event(event, now=now)
+    session = _bounded(
+        session_id,
+        field="session_id",
+        maximum=256,
+        required=True,
+    ) or ""
+    if event.get("acknowledged_at") is not None:
+        value["completion_event"] = event
+        _save(value)
+        return {
+            "claimed": False,
+            "reason": "ACKED",
+            "job": dict(value),
+            "completion_event": dict(event),
+        }
+    expires = event.get("claim_expires_at")
+    owner = str(event.get("claimed_by_session") or "")
+    leased = (
+        event.get("delivery_state") in {"CLAIMED", "DELIVERED"}
+        and expires is not None
+        and float(expires) > now
+    )
+    if leased and owner == session:
+        value["completion_event"] = event
+        _save(value)
+        return {
+            "claimed": True,
+            "reason": "ALREADY_CLAIMED",
+            "job": dict(value),
+            "completion_event": dict(event),
+        }
+    if leased and owner and owner != session:
+        value["completion_event"] = event
+        _save(value)
+        return {
+            "claimed": False,
+            "reason": "LEASED",
+            "job": dict(value),
+            "completion_event": dict(event),
+        }
+    bounded_claim = min(1800, max(30, int(claim_seconds)))
+    event["delivery_state"] = "CLAIMED"
+    event["delivery_attempts"] = int(event.get("delivery_attempts") or 0) + 1
+    event["last_delivery_at"] = now
+    event["claimed_by_session"] = session
+    event["claim_expires_at"] = now + bounded_claim
+    value["completion_event"] = event
+    value["updated_at"] = now
+    _save(value)
+    return {
+        "claimed": True,
+        "reason": "CLAIMED",
+        "job": dict(value),
+        "completion_event": dict(event),
+    }
+
+
+def mark_completion_delivered(
+    job_id: str,
+    event_id: str,
+    *,
+    session_id: str,
+) -> dict[str, Any]:
+    """Record successful UI handoff without consuming the durable completion."""
+    value = _load(job_id)
+    event = value.get("completion_event")
+    if not isinstance(event, dict) or not event.get("event_id"):
+        raise KeyError(f"job {job_id} has no completion event")
+    if str(event.get("event_id")) != str(event_id):
+        raise ValueError("completion event identity mismatch")
+    now = time.time()
+    event = _normalize_completion_event(event, now=now)
+    session = _bounded(
+        session_id,
+        field="session_id",
+        maximum=256,
+        required=True,
+    ) or ""
+    if event.get("acknowledged_at") is not None:
+        return dict(value)
+    if str(event.get("claimed_by_session") or "") != session:
+        raise PermissionError("completion delivery lease belongs to another session")
+    expires = event.get("claim_expires_at")
+    if expires is None or float(expires) <= now:
+        raise RuntimeError("completion delivery lease expired")
+    event["delivery_state"] = "DELIVERED"
+    event["delivered_at"] = now
+    event["last_delivery_at"] = now
+    value["completion_event"] = event
+    value["updated_at"] = now
+    _save(value)
+    return dict(value)
 
 
 def list_jobs(*, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
@@ -162,6 +315,12 @@ def list_jobs(*, status: str | None = None, limit: int = 50) -> list[dict[str, A
             continue
         if status is not None and value.get("status") != status:
             continue
+        event = value.get("completion_event")
+        if isinstance(event, dict) and event.get("event_id"):
+            normalized = _normalize_completion_event(event)
+            if normalized != event:
+                value["completion_event"] = normalized
+                _save(value)
         rows.append(value)
     rows.sort(key=lambda item: float(item.get("updated_at") or 0.0), reverse=True)
     return [dict(item) for item in rows[:bounded_limit]]
@@ -312,9 +471,11 @@ def acknowledge_completion(
         raise KeyError(f"job {job_id} has no completion event")
     if str(event.get("event_id")) != str(event_id):
         raise ValueError("completion event identity mismatch")
+    event = _normalize_completion_event(event)
     if event.get("acknowledged_at") is None:
         now = time.time()
         event = dict(event)
+        event["delivery_state"] = "ACKED"
         event["acknowledged_at"] = now
         event["acknowledged_by"] = _bounded(
             acknowledged_by,
@@ -322,6 +483,8 @@ def acknowledge_completion(
             maximum=128,
             required=True,
         )
+        event["claimed_by_session"] = None
+        event["claim_expires_at"] = None
         value["completion_event"] = event
         value["updated_at"] = now
         _save(value)

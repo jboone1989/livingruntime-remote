@@ -26,14 +26,16 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.33"
+VERSION = "0.4.34"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v3.html"
 PI_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
-LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v4.html"
+LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v5.html"
+LONG_JOB_WIDGET_V4_URI = "ui://livingruntime-remote/long-job-watch-v4.html"
 LONG_JOB_WIDGET_V3_URI = "ui://livingruntime-remote/long-job-watch-v3.html"
 LONG_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
 COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v3.html"
-CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v7.html"
+CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v8.html"
+CONTROL_PLANE_WIDGET_V7_URI = "ui://livingruntime-remote/control-plane-v7.html"
 CONTROL_PLANE_WIDGET_V6_URI = "ui://livingruntime-remote/control-plane-v6.html"
 CONTROL_PLANE_WIDGET_V5_URI = "ui://livingruntime-remote/control-plane-v5.html"
 CONTROL_PLANE_WIDGET_V4_URI = "ui://livingruntime-remote/control-plane-v4.html"
@@ -79,6 +81,8 @@ TOOL_TEXT = {
     "start_long_job": ("Start supervised long job", "Start a command under the durable long-job supervisor and return immediately with a watcher-ready job ID."),
     "watch_long_job": ("Watch supervised long job", "Attach the no-polling watcher to an existing supervised long-running command."),
     "get_long_job": ("Get supervised long job", "Refresh one supervised long-running command from its durable remote receipt."),
+    "claim_long_job_completion": ("Claim long-job completion", "App-only lease for one durable completion delivery attempt."),
+    "mark_long_job_completion_delivered": ("Mark long-job completion delivered", "App-only record that a claimed durable completion was handed to ChatGPT."),
     "ack_long_job_completion": ("Acknowledge long-job completion", "Mark one durable long-job completion event handled after ChatGPT has consumed its receipt."),
     "wait_long_job": ("Wait for supervised long job", "App-only bounded wait used by the long-job watcher."),
     "cancel_long_job": ("Cancel supervised long job", "Request cancellation of a supervised long-running command process group."),
@@ -384,14 +388,17 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
     statusEl.textContent = status;
     detailEl.textContent = detail;
   }
-  function persistTerminalState(jobId, status, detail) {
+  function persistTerminalState(jobId, status, detail, deliveryState=null) {
     const openai = typeof window !== "undefined" ? window.openai : undefined;
+    const saved = openai?.widgetState || {};
     openai?.setWidgetState?.({
+      ...saved,
       watcherState:"COMPLETED",
       jobId,
       status,
       detail,
-      terminal:true
+      terminal:true,
+      deliveryState
     });
   }
   function toolResultData(result) {
@@ -399,6 +406,17 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
   }
   function jobIdFrom(output) {
     return output?.runtimeJobId || output?.job?.job_id || null;
+  }
+  function deliveryConsumerId(jobId) {
+    const openai = typeof window !== "undefined" ? window.openai : undefined;
+    const saved = openai?.widgetState || {};
+    if (saved?.deliveryConsumerId) return String(saved.deliveryConsumerId);
+    const suffix = globalThis.crypto?.randomUUID
+      ? globalThis.crypto.randomUUID()
+      : (Date.now().toString(36) + "-" + Math.random().toString(36).slice(2));
+    const value = "long-job-widget:" + jobId + ":" + suffix;
+    openai?.setWidgetState?.({...saved,deliveryConsumerId:value,jobId});
+    return value;
   }
   function describe(data) {
     const job = data?.job || {};
@@ -431,17 +449,74 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
       }
     });
   }
+  async function sendCompletionFollowUp(job, status) {
+    const event = job?.completion_event || {};
+    const jobId = job?.job_id || activeJob;
+    const eventId = event?.event_id || "";
+    const prompt =
+      "LivingRuntime long job " + jobId + " completed with status " + status +
+      " and durable completion event " + eventId + ". Continue the same task now without asking me to type continue. " +
+      "First call get_long_job with job_id=" + jobId + " and inspect the terminal receipt/evidence. " +
+      "Then perform the next required step or repair. After consuming this handoff, call ack_long_job_completion " +
+      "with job_id=" + jobId + " and event_id=" + eventId + ". " +
+      "This delivery is at-least-once; if the event is already acknowledged, do not duplicate completed work.";
+    try {
+      await request("ui/message", {
+        role:"user",
+        content:[{type:"text",text:prompt}]
+      });
+      return;
+    } catch (error) {
+      const openai = typeof window !== "undefined" ? window.openai : undefined;
+      if (openai?.sendFollowUpMessage) {
+        await openai.sendFollowUpMessage({prompt,scrollToBottom:false});
+        return;
+      }
+      throw error;
+    }
+  }
+  async function deliverCompletion(job, status, detail) {
+    const event = job?.completion_event || null;
+    const jobId = job?.job_id || activeJob;
+    const eventId = event?.event_id || null;
+    if (!jobId || !eventId || event?.acknowledged_at) return "ACKED";
+    const sessionId = deliveryConsumerId(jobId);
+    const claimResult = await request("tools/call", {
+      name:"claim_long_job_completion",
+      arguments:{
+        job_id:jobId,
+        event_id:eventId,
+        session_id:sessionId,
+        claim_seconds:300
+      }
+    });
+    const claim = toolResultData(claimResult);
+    if (!claim?.claimed) return claim?.reason || "LEASED";
+    const claimedEvent = claim?.completion_event || event;
+    if (
+      claim?.reason === "ALREADY_CLAIMED" &&
+      claimedEvent?.delivery_state === "DELIVERED"
+    ) {
+      return "DELIVERED";
+    }
+    await publishCompletion(job,status,detail,true).catch(()=>{});
+    await sendCompletionFollowUp(job,status);
+    const delivered = await request("tools/call", {
+      name:"mark_long_job_completion_delivered",
+      arguments:{
+        job_id:jobId,
+        event_id:eventId,
+        session_id:sessionId
+      }
+    });
+    const deliveredData = toolResultData(delivered);
+    return deliveredData?.completion_event?.delivery_state || "DELIVERED";
+  }
 
   async function watch(output) {
     const jobId = jobIdFrom(output);
     if (!connected || !jobId || activeJob === jobId || stopped) return;
     activeJob = jobId;
-    const saved = typeof window !== "undefined" ? window.openai?.widgetState : null;
-    if (saved?.watcherState === "COMPLETED" && saved?.jobId === jobId) {
-      stopped = true;
-      setStatus("COMPLETED", saved?.detail || ("Long job " + jobId + " already reached terminal state."));
-      return;
-    }
     setStatus("ARMED", "Long job " + jobId + " · watcher attached; server process state is checked separately");
     try {
       while (!stopped) {
@@ -457,11 +532,24 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
         if (data?.terminal || job.terminal) {
           const detail = "Server state " + status + " · " + describe(data);
           stopped = true;
-          persistTerminalState(jobId, status, detail);
-          setStatus("COMPLETED", detail);
-          void publishCompletion(job,status,detail,true).catch(()=>{
-            setStatus("WAITING_FOR_CHATGPT_SESSION", detail + " · durable completion is waiting for a ChatGPT session");
-          });
+          setStatus("WAITING_FOR_CHATGPT_SESSION", detail + " · durable completion delivery pending");
+          try {
+            const deliveryState = await deliverCompletion(job,status,detail);
+            persistTerminalState(jobId,status,detail,deliveryState);
+            if (deliveryState === "ACKED") {
+              setStatus("COMPLETED", detail + " · completion already acknowledged");
+            } else if (deliveryState === "DELIVERED") {
+              setStatus("WAITING_FOR_CHATGPT_ACK", detail + " · continuation delivered; awaiting model acknowledgement");
+            } else {
+              setStatus("WAITING_FOR_CHATGPT_SESSION", detail + " · delivery lease held by another/restored session");
+            }
+          } catch (error) {
+            persistTerminalState(jobId,status,detail,"PENDING");
+            setStatus(
+              "WAITING_FOR_CHATGPT_SESSION",
+              detail + " · handoff failed; durable completion remains unacknowledged and will be retryable after the delivery lease expires: " + String(error?.message || error)
+            );
+          }
           return;
         }
         if (status === "STALLED") {
@@ -540,7 +628,7 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
   async function connect() {
     try {
       await request("ui/initialize", {
-        appInfo:{name:"livingruntime-remote-long-job-watch",version:"1.1.0"},
+        appInfo:{name:"livingruntime-remote-long-job-watch",version:"1.2.0"},
         appCapabilities:{},
         protocolVersion:"2026-01-26"
       });
@@ -804,7 +892,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
   <div class="section pip-secondary"><h3>Recent activity</h3><div id="activity" class="grid"></div></div>
 <script>
 (() => {
-  console.info("LivingRuntime control-plane-v7 script loaded");
+  console.info("LivingRuntime control-plane-v8 script loaded");
   const pending = new Map(); let nextId = 1; let connected = false; let latest = null;
   const q = id => document.getElementById(id);
   function request(method, params) {
@@ -838,27 +926,88 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     const overview = snapshot?.overview || snapshot || {};
     return Array.isArray(overview?.completion_events) ? overview.completion_events : [];
   }
+  function controlPlaneConsumerId() {
+    const openai = typeof window !== "undefined" ? window.openai : undefined;
+    const saved = openai?.widgetState || {};
+    if (saved?.completionDeliveryConsumerId) return String(saved.completionDeliveryConsumerId);
+    const suffix = globalThis.crypto?.randomUUID
+      ? globalThis.crypto.randomUUID()
+      : (Date.now().toString(36) + "-" + Math.random().toString(36).slice(2));
+    const value = "control-plane:" + suffix;
+    openai?.setWidgetState?.({...saved,completionDeliveryConsumerId:value});
+    return value;
+  }
+  async function sendCompletionBacklogFollowUp(events) {
+    const rows = events.map(event =>
+      (event.job_id || "?") + ":" + (event.event_id || "?") + ":" + (event.status || "UNKNOWN")
+    ).join(", ");
+    const prompt =
+      "LivingRuntime Remote recovered durable long-job completions: " + rows + ". " +
+      "Continue these same tasks now without asking me to type continue. For each event, call get_long_job, " +
+      "inspect the terminal receipt and next_action, continue or repair as appropriate, then call " +
+      "ack_long_job_completion with the exact job_id and event_id. Delivery is at-least-once; " +
+      "skip any event that is already acknowledged rather than duplicating finished work.";
+    try {
+      await request("ui/message", {
+        role:"user",
+        content:[{type:"text",text:prompt}]
+      });
+      return;
+    } catch (error) {
+      const openai = typeof window !== "undefined" ? window.openai : undefined;
+      if (openai?.sendFollowUpMessage) {
+        await openai.sendFollowUpMessage({prompt,scrollToBottom:false});
+        return;
+      }
+      throw error;
+    }
+  }
   async function publishCompletionBacklog(snapshot) {
     const events = completionEvents(snapshot);
     if (!events.length) return;
-    const openai = typeof window !== "undefined" ? window.openai : undefined;
-    const saved = openai?.widgetState || {};
-    const published = new Set(Array.isArray(saved?.publishedCompletionEventIds) ? saved.publishedCompletionEventIds : []);
-    const fresh = events.filter(event => event?.event_id && !published.has(event.event_id));
-    if (!fresh.length) return;
+    const sessionId = controlPlaneConsumerId();
+    const claimed = [];
+    for (const event of events) {
+      if (!event?.event_id || !event?.job_id) continue;
+      const result = await request("tools/call", {
+        name:"claim_long_job_completion",
+        arguments:{
+          job_id:event.job_id,
+          event_id:event.event_id,
+          session_id:sessionId,
+          claim_seconds:300
+        }
+      }).catch(()=>null);
+      const claim = data(result);
+      if (!claim?.claimed) continue;
+      if (
+        claim?.reason === "ALREADY_CLAIMED" &&
+        claim?.completion_event?.delivery_state === "DELIVERED"
+      ) {
+        continue;
+      }
+      claimed.push(event);
+    }
+    if (!claimed.length) return;
     await request("ui/update-model-context", {
       structuredContent:{
         longJobCompletionBacklog:{
-          events:fresh,
-          instruction:"Handle each durable long-job completion on the next model turn. Inspect get_long_job, continue/repair as appropriate, then call ack_long_job_completion for the exact event_id. Do not ask the user to type continue."
+          events:claimed,
+          instruction:"These durable long-job completions have been claimed for this ChatGPT session. Handle them now, then call ack_long_job_completion for each exact event_id."
         }
       }
-    });
-    for (const event of fresh) published.add(event.event_id);
-    openai?.setWidgetState?.({
-      ...saved,
-      publishedCompletionEventIds:Array.from(published).slice(-100)
-    });
+    }).catch(()=>{});
+    await sendCompletionBacklogFollowUp(claimed);
+    for (const event of claimed) {
+      await request("tools/call", {
+        name:"mark_long_job_completion_delivered",
+        arguments:{
+          job_id:event.job_id,
+          event_id:event.event_id,
+          session_id:sessionId
+        }
+      }).catch(()=>{});
+    }
   }
   function esc(v) { return String(v ?? "").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
   function formatTs(value) {
@@ -1408,6 +1557,13 @@ def create_mcp(
         description="Backward-compatible watcher resource for sessions using the v3 long-job URI.",
     )
     add_widget_resource(
+        LONG_JOB_WIDGET_V4_URI,
+        LONG_JOB_WIDGET_HTML,
+        name="long-job-watch-v4",
+        title="Long-running job watcher",
+        description="Backward-compatible watcher resource for sessions using the v4 long-job URI.",
+    )
+    add_widget_resource(
         LONG_JOB_WIDGET_URI,
         LONG_JOB_WIDGET_HTML,
         name="long-job-watch",
@@ -1448,6 +1604,13 @@ def create_mcp(
         name="remote-control-plane-v6",
         title="LivingRuntime Remote control plane",
         description="Backward-compatible dashboard for sessions using the v6 resource URI.",
+    )
+    add_widget_resource(
+        CONTROL_PLANE_WIDGET_V7_URI,
+        CONTROL_PLANE_WIDGET_HTML,
+        name="remote-control-plane-v7",
+        title="LivingRuntime Remote control plane",
+        description="Backward-compatible dashboard for sessions using the v7 resource URI.",
     )
     add_widget_resource(
         CONTROL_PLANE_WIDGET_URI,
@@ -1785,6 +1948,60 @@ def create_mcp(
         )
 
     @server.tool(
+        name="claim_long_job_completion",
+        title=TOOL_TEXT["claim_long_job_completion"][0],
+        description=TOOL_TEXT["claim_long_job_completion"][1],
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        meta={**WRITE, "ui": {"visibility": ["app"]}},
+    )
+    async def claim_long_job_completion(
+        job_id: str,
+        event_id: str,
+        session_id: str,
+        claim_seconds: int = 300,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "claim_long_job_completion",
+            {
+                "job_id": job_id,
+                "event_id": event_id,
+                "session_id": session_id,
+                "claim_seconds": claim_seconds,
+            },
+        )
+
+    @server.tool(
+        name="mark_long_job_completion_delivered",
+        title=TOOL_TEXT["mark_long_job_completion_delivered"][0],
+        description=TOOL_TEXT["mark_long_job_completion_delivered"][1],
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        meta={**WRITE, "ui": {"visibility": ["app"]}},
+    )
+    async def mark_long_job_completion_delivered(
+        job_id: str,
+        event_id: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"),
+            "mark_long_job_completion_delivered",
+            {
+                "job_id": job_id,
+                "event_id": event_id,
+                "session_id": session_id,
+            },
+        )
+
+    @server.tool(
         name="wait_llm_request",
         title=TOOL_TEXT["wait_llm_request"][0],
         description=TOOL_TEXT["wait_llm_request"][1],
@@ -1870,6 +2087,92 @@ def create_mcp(
         )
 
     @server.tool(
+        name="bind_openai_job_continuation",
+        title="Bind durable job to OpenAI session",
+        description=(
+            "Internal OpenAI hook helper. Bind any durable LivingRuntime job to "
+            "the current session for bounded Stop-hook continuation."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        meta=READ,
+    )
+    async def bind_openai_job_continuation(
+        session_id: str,
+        job_id: str,
+    ) -> dict[str, Any]:
+        user_sub = _principal("remote:read")
+        session_id = str(session_id).strip()
+        job_id = str(job_id).strip()
+        if not session_id or len(session_id) > 256:
+            raise ValueError("session_id must be a bounded non-empty string")
+        if not job_id or len(job_id) > 128:
+            raise ValueError("job_id must be a bounded non-empty string")
+        connector = await relay.call(
+            user_sub,
+            "bind_openai_job_continuation",
+            {"session_id": session_id, "job_id": job_id},
+        )
+        relay.store.bind_continuation(
+            user_sub,
+            session_id,
+            job_id,
+            "",
+            None,
+        )
+        return connector
+
+    @server.tool(
+        name="continue_openai_job",
+        title="Continue OpenAI session after durable job",
+        description=(
+            "Internal OpenAI Stop-hook helper for a bound durable LivingRuntime job."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        meta=READ,
+    )
+    async def continue_openai_job(
+        session_id: str,
+        timeout_seconds: int = 25,
+        interrupted: bool = False,
+        stop_hook_active: bool = False,
+    ) -> dict[str, Any]:
+        user_sub = _principal("remote:read")
+        session_id = str(session_id).strip()
+        if not session_id or len(session_id) > 256:
+            raise ValueError("session_id must be a bounded non-empty string")
+        binding = relay.store.continuation_for_user(user_sub, session_id)
+        if binding is None:
+            return {"continue": True}
+        if interrupted:
+            relay.store.clear_continuation(user_sub, session_id)
+        result = await relay.call(
+            user_sub,
+            "continue_openai_job",
+            {
+                "session_id": session_id,
+                "timeout_seconds": min(25, max(1, int(timeout_seconds))),
+                "interrupted": bool(interrupted),
+                "stop_hook_active": bool(stop_hook_active),
+            },
+        )
+        if (
+            interrupted
+            or stop_hook_active
+            or result.get("decision") == "block"
+            or result.get("continue") is False
+        ):
+            relay.store.clear_continuation(user_sub, session_id)
+        return result
+
+    @server.tool(
         name="bind_openai_pi_continuation",
         title="Bind Pi job to OpenAI session",
         description=(
@@ -1952,7 +2255,7 @@ def create_mcp(
         if not session_id or len(session_id) > 256:
             raise ValueError("session_id must be a bounded non-empty string")
         binding = relay.store.continuation_for_user(user_sub, session_id)
-        if binding is None:
+        if binding is None or not str(binding.get("pi_remote_dir") or ""):
             return {"continue": True}
 
         if interrupted:

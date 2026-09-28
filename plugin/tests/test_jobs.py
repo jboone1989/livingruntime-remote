@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -72,18 +73,105 @@ class JobStoreTests(unittest.TestCase):
         self.assertEqual(event["job_id"], created["job_id"])
         self.assertEqual(event["status"], "SUCCEEDED")
         self.assertTrue(event["terminal"])
+        self.assertEqual(event["delivery_state"], "PENDING")
+        self.assertEqual(event["delivery_attempts"], 0)
         self.assertIsNone(event["acknowledged_at"])
         acknowledged = jobs.acknowledge_completion(
             created["job_id"],
             event["event_id"],
         )
         self.assertIsNotNone(acknowledged["completion_event"]["acknowledged_at"])
+        self.assertEqual(acknowledged["completion_event"]["delivery_state"], "ACKED")
+
+    def test_completion_delivery_is_leased_redeliverable_and_acknowledged(self) -> None:
+        created = jobs.create(goal="Reliable handoff")
+        with patch.object(jobs.time, "time", return_value=100.0):
+            completed = jobs.checkpoint(
+                created["job_id"],
+                summary="done",
+                status="SUCCEEDED",
+            )
+            event_id = completed["completion_event"]["event_id"]
+            first = jobs.claim_completion(
+                created["job_id"],
+                event_id,
+                session_id="session-a",
+                claim_seconds=300,
+            )
+        self.assertTrue(first["claimed"])
+        self.assertEqual(first["completion_event"]["delivery_state"], "CLAIMED")
+        self.assertEqual(first["completion_event"]["delivery_attempts"], 1)
+
+        with patch.object(jobs.time, "time", return_value=101.0):
+            same = jobs.claim_completion(
+                created["job_id"],
+                event_id,
+                session_id="session-a",
+            )
+            other = jobs.claim_completion(
+                created["job_id"],
+                event_id,
+                session_id="session-b",
+            )
+            delivered = jobs.mark_completion_delivered(
+                created["job_id"],
+                event_id,
+                session_id="session-a",
+            )
+        self.assertEqual(same["reason"], "ALREADY_CLAIMED")
+        self.assertEqual(same["completion_event"]["delivery_attempts"], 1)
+        self.assertFalse(other["claimed"])
+        self.assertEqual(other["reason"], "LEASED")
+        self.assertEqual(delivered["completion_event"]["delivery_state"], "DELIVERED")
+
+        with patch.object(jobs.time, "time", return_value=401.0):
+            recovered = jobs.claim_completion(
+                created["job_id"],
+                event_id,
+                session_id="session-b",
+            )
+        self.assertTrue(recovered["claimed"])
+        self.assertEqual(recovered["completion_event"]["delivery_state"], "CLAIMED")
+        self.assertEqual(recovered["completion_event"]["delivery_attempts"], 2)
+        self.assertEqual(recovered["completion_event"]["claimed_by_session"], "session-b")
+
+        acknowledged = jobs.acknowledge_completion(
+            created["job_id"],
+            event_id,
+            acknowledged_by="chatgpt-session-b",
+        )
+        event = acknowledged["completion_event"]
+        self.assertEqual(event["delivery_state"], "ACKED")
+        self.assertIsNone(event["claimed_by_session"])
+        self.assertIsNone(event["claim_expires_at"])
 
     def test_terminal_job_cannot_reopen(self) -> None:
         created = jobs.create(goal="One way")
         jobs.checkpoint(created["job_id"], summary="done", status="FAILED")
         with self.assertRaisesRegex(RuntimeError, "terminal"):
             jobs.checkpoint(created["job_id"], summary="retry", status="RUNNING")
+
+    def test_legacy_completion_event_is_backfilled_as_pending(self) -> None:
+        created = jobs.create(goal="Legacy completion")
+        jobs.checkpoint(created["job_id"], summary="done", status="SUCCEEDED")
+        path = self.root / f"{created['job_id']}.json"
+        raw = json.loads(path.read_text())
+        event = dict(raw["completion_event"])
+        for key in (
+            "delivery_state",
+            "delivery_attempts",
+            "last_delivery_at",
+            "claimed_by_session",
+            "claim_expires_at",
+            "delivered_at",
+        ):
+            event.pop(key, None)
+        raw["completion_event"] = event
+        path.write_text(json.dumps(raw))
+
+        loaded = jobs.get(created["job_id"])
+        self.assertEqual(loaded["completion_event"]["delivery_state"], "PENDING")
+        self.assertEqual(loaded["completion_event"]["delivery_attempts"], 0)
 
     def test_backend_job_is_deduplicated(self) -> None:
         first = jobs.ensure_backend_job(

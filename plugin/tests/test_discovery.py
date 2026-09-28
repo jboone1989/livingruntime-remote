@@ -136,6 +136,8 @@ class DiscoveryTests(unittest.TestCase):
             "start_long_job": (False, True, True),
             "watch_long_job": (True, False, False),
             "get_long_job": (True, False, False),
+            "claim_long_job_completion": (False, False, False),
+            "mark_long_job_completion_delivered": (False, False, False),
             "ack_long_job_completion": (False, False, False),
             "wait_long_job": (True, False, False),
             "cancel_long_job": (False, True, False),
@@ -143,6 +145,8 @@ class DiscoveryTests(unittest.TestCase):
             "start_pi_step": (False, True, False),
             "watch_pi_job": (True, False, False),
             "wait_pi_job_completion": (True, False, False),
+            "bind_openai_job_continuation": (False, False, False),
+            "continue_openai_job": (False, False, False),
             "bind_openai_pi_continuation": (False, False, False),
             "continue_openai_pi_job": (False, False, False),
         }
@@ -869,6 +873,40 @@ class SchemaAndToolTests(unittest.TestCase):
         self.assertEqual(result["execution"]["worker_alive_count"], 0)
         self.assertTrue(result["execution"]["running_requires_live_process"])
         self.assertNotIn("never-return-this-value", json.dumps(result))
+
+    def test_generic_openai_continuation_resumes_terminal_durable_job(self) -> None:
+        jobs_root = Path(self.tmp.name) / "generic-jobs"
+        with patch.dict(
+            os.environ,
+            {"LIVINGRUNTIME_REMOTE_JOBS": str(jobs_root)},
+        ), patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(bridge.Path, "home", return_value=Path(self.tmp.name)):
+            created = bridge.create_job("Generic durable continuation", project="ferro")
+            completed = bridge.checkpoint_job(
+                created["job_id"],
+                summary="terminal evidence ready",
+                status="SUCCEEDED",
+            )
+            event_id = completed["completion_event"]["event_id"]
+            bound = bridge.bind_openai_job_continuation(
+                "session-generic", created["job_id"]
+            )
+            self.assertEqual(bound["runtimeJobId"], created["job_id"])
+            self.assertTrue(bound["goalTerminal"])
+            self.assertEqual(bound["completionEventId"], event_id)
+
+            decision = bridge.continue_openai_job(
+                "session-generic",
+                timeout_seconds=1,
+            )
+            self.assertEqual(decision["decision"], "block")
+            self.assertIn(created["job_id"], decision["reason"])
+            self.assertIn(event_id, decision["reason"])
+            self.assertEqual(
+                bridge.continue_openai_job("session-generic", timeout_seconds=1),
+                {"continue": True},
+            )
 
     def test_openai_continuation_binding_and_terminal_resume(self) -> None:
         with patch.object(bridge.Path, "home", return_value=Path(self.tmp.name)):

@@ -35,6 +35,8 @@ REMOTE_TOOLS = (
     "start_long_job",
     "watch_long_job",
     "get_long_job",
+    "claim_long_job_completion",
+    "mark_long_job_completion_delivered",
     "ack_long_job_completion",
     "wait_long_job",
     "cancel_long_job",
@@ -51,6 +53,8 @@ REMOTE_TOOLS = (
     "start_pi_step",
     "watch_pi_job",
     "wait_pi_job_completion",
+    "bind_openai_job_continuation",
+    "continue_openai_job",
     "bind_openai_pi_continuation",
     "continue_openai_pi_job",
 )
@@ -74,7 +78,7 @@ DISCOVERY_TOOLS = REMOTE_TOOLS
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 DEFAULT_HTTP_PORT = 8766
 PLUGIN_NAME = "LivingRuntime Remote"
-PLUGIN_VERSION = "0.4.33"
+PLUGIN_VERSION = "0.4.34"
 SECRET_KEYS = (
     "token",
     "password",

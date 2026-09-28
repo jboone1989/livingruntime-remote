@@ -51,12 +51,14 @@ from execution_status import (
 from jobs import (
     acknowledge_completion as acknowledge_runtime_completion,
     attach_backend as attach_runtime_backend,
+    claim_completion as claim_runtime_completion,
     checkpoint as checkpoint_runtime_job,
     create as create_runtime_job,
     ensure_backend_job,
     find_by_backend,
     get as get_runtime_job,
     list_jobs as runtime_jobs_snapshot,
+    mark_completion_delivered as mark_runtime_completion_delivered,
     sync_backend_status,
     update_runtime as update_runtime_job,
 )
@@ -1401,6 +1403,12 @@ def remote_overview(include_resources: bool = False) -> dict[str, Any]:
             "status": event.get("status") or job.get("status"),
             "terminal": bool(event.get("terminal")),
             "created_at": event.get("created_at"),
+            "delivery_state": event.get("delivery_state") or "PENDING",
+            "delivery_attempts": int(event.get("delivery_attempts") or 0),
+            "last_delivery_at": event.get("last_delivery_at"),
+            "claimed_by_session": event.get("claimed_by_session"),
+            "claim_expires_at": event.get("claim_expires_at"),
+            "delivered_at": event.get("delivered_at"),
             "goal": job.get("goal"),
             "project": job.get("project"),
             "device": job.get("device"),
@@ -2520,6 +2528,68 @@ def watch_long_job(job_id: str) -> dict[str, Any]:
 
 
 @server.tool(
+    name="claim_long_job_completion",
+    annotations=ToolAnnotations(
+        title="Claim long-job completion delivery",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+def claim_long_job_completion(
+    job_id: str,
+    event_id: str,
+    session_id: str,
+    claim_seconds: int = 300,
+) -> dict[str, Any]:
+    """Lease one durable completion for a specific UI/session delivery attempt."""
+    result = claim_runtime_completion(
+        job_id,
+        event_id,
+        session_id=session_id,
+        claim_seconds=claim_seconds,
+    )
+    _audit("claim_long_job_completion", True, {
+        "job_id": job_id,
+        "event_id": event_id,
+        "session_id": session_id,
+        "claimed": bool(result.get("claimed")),
+        "reason": result.get("reason"),
+    })
+    return result
+
+
+@server.tool(
+    name="mark_long_job_completion_delivered",
+    annotations=ToolAnnotations(
+        title="Mark long-job completion delivered",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def mark_long_job_completion_delivered(
+    job_id: str,
+    event_id: str,
+    session_id: str,
+) -> dict[str, Any]:
+    """Record successful handoff while leaving acknowledgement to the model."""
+    job = mark_runtime_completion_delivered(
+        job_id,
+        event_id,
+        session_id=session_id,
+    )
+    _audit("mark_long_job_completion_delivered", True, {
+        "job_id": job_id,
+        "event_id": event_id,
+        "session_id": session_id,
+    })
+    return {"job": job, "completion_event": job.get("completion_event")}
+
+
+@server.tool(
     name="ack_long_job_completion",
     annotations=ToolAnnotations(
         title="Acknowledge long-job completion",
@@ -2566,6 +2636,53 @@ def wait_long_job(job_id: str, timeout_seconds: int = 30) -> dict[str, Any]:
         if remaining <= 0:
             return {**latest, "timedOut": True}
         time.sleep(min(1.0, remaining))
+
+
+@server.tool(
+    name="bind_openai_job_continuation",
+    annotations=ToolAnnotations(
+        title="Bind durable job to OpenAI session",
+        readOnlyHint=False,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def bind_openai_job_continuation(
+    session_id: str,
+    job_id: str,
+) -> dict[str, Any]:
+    """Bind any durable runtime job to the current OpenAI session."""
+    session_id = str(session_id).strip()
+    job_id = str(job_id).strip()
+    if not session_id or len(session_id) > 256:
+        raise ValueError("session_id must be a bounded non-empty string")
+    if not job_id or len(job_id) > 128:
+        raise ValueError("job_id must be a bounded non-empty string")
+    job = _reconcile_runtime_job(get_runtime_job(job_id))
+    _save_openai_continuation(session_id, {
+        "kind": "runtime-job",
+        "session_id": session_id,
+        "runtime_job_id": job_id,
+        "remaining_continuations": 1,
+        "updated_at": time.time(),
+    })
+    event = (
+        job.get("completion_event")
+        if isinstance(job.get("completion_event"), dict)
+        else None
+    )
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": (
+                f"LivingRuntime durable job continuation is armed for {job_id}. "
+                f"Current status: {job.get('status')}."
+            ),
+        },
+        "runtimeJobId": job_id,
+        "goalTerminal": bool(job.get("terminal")),
+        "completionEventId": None if event is None else event.get("event_id"),
+    }
 
 
 @server.tool(
@@ -2640,6 +2757,110 @@ def _clear_openai_continuation(session_id: str) -> None:
         _openai_continuation_path(session_id).unlink()
     except FileNotFoundError:
         pass
+
+
+@server.tool(
+    name="continue_openai_job",
+    annotations=ToolAnnotations(
+        title="Continue OpenAI session after durable job",
+        readOnlyHint=False,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def continue_openai_job(
+    session_id: str,
+    timeout_seconds: int = 25,
+    interrupted: bool = False,
+    stop_hook_active: bool = False,
+) -> dict[str, Any]:
+    """Bounded Stop-hook continuation for any durable runtime job."""
+    binding = _load_openai_continuation(session_id)
+    if binding is None or binding.get("kind") != "runtime-job":
+        return {"continue": True}
+    runtime_job_id = str(binding.get("runtime_job_id") or "")
+    if not runtime_job_id:
+        _clear_openai_continuation(session_id)
+        return {"continue": True}
+
+    if interrupted:
+        _clear_openai_continuation(session_id)
+        current = _reconcile_runtime_job(get_runtime_job(runtime_job_id))
+        backend = current.get("backend") if isinstance(current.get("backend"), dict) else {}
+        cancel = None
+        if not current.get("terminal"):
+            try:
+                if backend.get("type") == "exec":
+                    cancel = cancel_long_job(runtime_job_id)
+                elif backend.get("type") in {"pi", "pi-agent", "pi-step"}:
+                    cancel = _pi_job_command(
+                        "job-cancel",
+                        str(backend.get("job_id") or ""),
+                        str(backend.get("pi_remote_dir") or "/home/ubuntu/src/pi-remote"),
+                        backend.get("job_root"),
+                        timeout_seconds=3,
+                    )
+            finally:
+                latest = get_runtime_job(runtime_job_id)
+                if not latest.get("terminal"):
+                    checkpoint_runtime_job(
+                        runtime_job_id,
+                        summary="User interrupted the OpenAI turn; durable continuation was cancelled.",
+                        current_step="Cancelled by user",
+                        next_action="None. A new user request is required to resume this goal.",
+                        status="CANCELLED_BY_USER",
+                        source="user",
+                    )
+        return {"continue": False, "cancelledByUser": True, "cancel": cancel}
+
+    if bool(stop_hook_active):
+        _clear_openai_continuation(session_id)
+        return {
+            "continue": False,
+            "stopReason": "Automatic continuation budget exhausted for this turn.",
+        }
+
+    deadline = time.monotonic() + min(25, max(1, int(timeout_seconds)))
+    latest = _reconcile_runtime_job(get_runtime_job(runtime_job_id))
+    while not latest.get("terminal") and latest.get("status") != "STALLED":
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {
+                "continue": True,
+                "job_id": runtime_job_id,
+                "status": latest.get("status"),
+                "watch_mode": "durable_outbox",
+                "message": (
+                    "Durable job is still active; the watcher/outbox owns future "
+                    "completion delivery."
+                ),
+            }
+        time.sleep(min(1.0, remaining))
+        latest = _reconcile_runtime_job(get_runtime_job(runtime_job_id))
+
+    _clear_openai_continuation(session_id)
+    event = (
+        latest.get("completion_event")
+        if isinstance(latest.get("completion_event"), dict)
+        else {}
+    )
+    if latest.get("status") == "STALLED":
+        return {
+            "decision": "block",
+            "reason": (
+                f"LivingRuntime durable job {runtime_job_id} is STALLED. "
+                "Inspect get_long_job and repair or cancel it now."
+            ),
+        }
+    return {
+        "decision": "block",
+        "reason": (
+            f"LivingRuntime durable job {runtime_job_id} completed with status "
+            f"{latest.get('status')}. Completion event "
+            f"{event.get('event_id') or 'unknown'} is durable. Inspect get_long_job, "
+            "continue the original task, then acknowledge the exact completion event."
+        ),
+    }
 
 
 def _pi_runtime_settings() -> tuple[str, str, str, str]:
@@ -3256,6 +3477,7 @@ def bind_openai_pi_continuation(
         _clear_openai_continuation(session_id)
         return {"runtimeJobId": runtime_job["job_id"], "armed": False, "goalTerminal": True}
     _save_openai_continuation(session_id, {
+        "kind": "runtime-job",
         "session_id": session_id,
         "job_id": job_id,
         "runtime_job_id": runtime_job["job_id"],

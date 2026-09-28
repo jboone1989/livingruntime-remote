@@ -1,5 +1,5 @@
 {
-  "description": "Continue OpenAI Codex runtime sessions when a watched Pi Remote job finishes.",
+  "description": "Continue OpenAI runtime sessions when any watched LivingRuntime durable job finishes.",
   "hooks": {
     "PostToolUse": [
       {
@@ -17,6 +17,22 @@
             "statusMessage": "Arming Pi Remote continuation"
           }
         ]
+      },
+      {
+        "matcher": "watch_long_job$",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "livingruntime_remote",
+            "tool": "bind_openai_job_continuation",
+            "input": {
+              "session_id": "${session_id}",
+              "job_id": "${tool_input.job_id}"
+            },
+            "timeout": 30,
+            "statusMessage": "Arming durable job continuation"
+          }
+        ]
       }
     ],
     "Stop": [
@@ -25,14 +41,14 @@
           {
             "type": "mcp_tool",
             "server": "livingruntime_remote",
-            "tool": "continue_openai_pi_job",
+            "tool": "continue_openai_job",
             "input": {
               "session_id": "${session_id}",
-              "timeout_seconds": 30,
+              "timeout_seconds": 25,
               "stop_hook_active": "${stop_hook_active}"
             },
             "timeout": 30,
-            "statusMessage": "Checking Pi Remote continuation"
+            "statusMessage": "Checking durable job continuation"
           }
         ]
       }
@@ -43,14 +59,14 @@
           {
             "type": "mcp_tool",
             "server": "livingruntime_remote",
-            "tool": "continue_openai_pi_job",
+            "tool": "continue_openai_job",
             "input": {
               "session_id": "${session_id}",
               "timeout_seconds": 3,
               "interrupted": true
             },
-            "timeout": 3,
-            "statusMessage": "Cancelling Pi Remote continuation"
+            "timeout": 5,
+            "statusMessage": "Cancelling durable job continuation"
           }
         ]
       }

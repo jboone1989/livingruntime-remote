@@ -619,6 +619,54 @@
         "open_world_justification": "The cancellation signal stays on the user's paired private host.",
         "destructive_justification": "Cancellation stops the running worker/child process group and may interrupt in-progress work."
       }
+    },
+    "claim_long_job_completion": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Leases one durable completion event to a specific ChatGPT/app delivery consumer so delivery can be retried safely after expiry.",
+        "open_world_justification": "Operates only on private LivingRuntime Remote continuation/completion state.",
+        "destructive_justification": "Does not modify project files, services, external accounts, or completed job results."
+      }
+    },
+    "mark_long_job_completion_delivered": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Marks a leased durable completion as handed to ChatGPT while leaving final acknowledgement to the model after it consumes the receipt.",
+        "open_world_justification": "Operates only on private LivingRuntime Remote continuation/completion state.",
+        "destructive_justification": "Does not modify project files, services, external accounts, or completed job results."
+      }
+    },
+    "bind_openai_job_continuation": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Stores bounded private continuation metadata linking the current OpenAI session to an existing durable LivingRuntime job.",
+        "open_world_justification": "Operates only on private LivingRuntime Remote continuation/completion state.",
+        "destructive_justification": "Does not modify project files, services, external accounts, or completed job results."
+      }
+    },
+    "continue_openai_job": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads the bound durable job and returns a bounded OpenAI continuation decision; on explicit user interrupt it may cancel only that bound job.",
+        "open_world_justification": "Operates only on private LivingRuntime Remote continuation/completion state.",
+        "destructive_justification": "Normal checks are non-destructive; an explicit Interrupt hook may cancel only the already-bound durable job at the user's request."
+      }
     }
   },
   "test_cases": [

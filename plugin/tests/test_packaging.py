@@ -20,7 +20,7 @@ class PackagingTests(unittest.TestCase):
         openai = plugin["extensions"]["com.openai"]
         self.assertEqual(plugin["name"], "livingruntime-remote")
         self.assertEqual(plugin["version"], PLUGIN_VERSION)
-        self.assertEqual(PLUGIN_VERSION, "0.4.33")
+        self.assertEqual(PLUGIN_VERSION, "0.4.34")
         self.assertEqual(REMOTE_IDENTITY, "livingruntime.remote")
         self.assertEqual(openai["apps"], "./.app.json")
         self.assertEqual(openai["hooks"], "./hooks/hooks.json")
@@ -69,34 +69,38 @@ class PackagingTests(unittest.TestCase):
 
     def test_openai_hooks_bind_watch_and_continue_on_stop(self) -> None:
         hooks = json.loads((self.root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
-        post = hooks["hooks"]["PostToolUse"][0]
-        self.assertEqual(post["matcher"], "watch_pi_job$")
-        binder = post["hooks"][0]
-        self.assertEqual(binder["type"], "mcp_tool")
-        self.assertEqual(binder["server"], "livingruntime_remote")
-        self.assertEqual(binder["tool"], "bind_openai_pi_continuation")
-        self.assertEqual(binder["input"]["session_id"], "${session_id}")
-        self.assertEqual(binder["input"]["job_id"], "${tool_input.job_id}")
-        self.assertNotIn("pi_remote_dir", binder["input"])
-        self.assertNotIn("job_root", binder["input"])
+        posts = {row["matcher"]: row["hooks"][0] for row in hooks["hooks"]["PostToolUse"]}
+        self.assertEqual(set(posts), {"watch_pi_job$", "watch_long_job$"})
+        pi_binder = posts["watch_pi_job$"]
+        self.assertEqual(pi_binder["type"], "mcp_tool")
+        self.assertEqual(pi_binder["server"], "livingruntime_remote")
+        self.assertEqual(pi_binder["tool"], "bind_openai_pi_continuation")
+        self.assertEqual(pi_binder["input"]["session_id"], "${session_id}")
+        self.assertEqual(pi_binder["input"]["job_id"], "${tool_input.job_id}")
+        self.assertNotIn("pi_remote_dir", pi_binder["input"])
+        self.assertNotIn("job_root", pi_binder["input"])
+        job_binder = posts["watch_long_job$"]
+        self.assertEqual(job_binder["tool"], "bind_openai_job_continuation")
+        self.assertEqual(job_binder["input"]["session_id"], "${session_id}")
+        self.assertEqual(job_binder["input"]["job_id"], "${tool_input.job_id}")
 
         stop = hooks["hooks"]["Stop"][0]["hooks"][0]
         self.assertEqual(stop["type"], "mcp_tool")
         self.assertEqual(stop["server"], "livingruntime_remote")
-        self.assertEqual(stop["tool"], "continue_openai_pi_job")
+        self.assertEqual(stop["tool"], "continue_openai_job")
         self.assertEqual(stop["input"]["session_id"], "${session_id}")
-        self.assertEqual(stop["input"]["timeout_seconds"], 30)
+        self.assertEqual(stop["input"]["timeout_seconds"], 25)
         self.assertEqual(stop["input"]["stop_hook_active"], "${stop_hook_active}")
         self.assertEqual(stop["timeout"], 30)
 
         interrupt = hooks["hooks"]["Interrupt"][0]["hooks"][0]
         self.assertEqual(interrupt["type"], "mcp_tool")
         self.assertEqual(interrupt["server"], "livingruntime_remote")
-        self.assertEqual(interrupt["tool"], "continue_openai_pi_job")
+        self.assertEqual(interrupt["tool"], "continue_openai_job")
         self.assertEqual(interrupt["input"]["session_id"], "${session_id}")
         self.assertTrue(interrupt["input"]["interrupted"])
         self.assertEqual(interrupt["input"]["timeout_seconds"], 3)
-        self.assertEqual(interrupt["timeout"], 3)
+        self.assertEqual(interrupt["timeout"], 5)
 
     def test_submission_covers_public_tools_and_review_case_contract(self) -> None:
         submission = json.loads((self.root / "chatgpt-app-submission.json").read_text(encoding="utf-8"))
