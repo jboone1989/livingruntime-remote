@@ -2103,15 +2103,17 @@ def watch_agent_cognition(agent_id: str) -> dict[str, Any]:
 )
 def wait_llm_request(
     agent_id: str,
-    watcher_id: str,
+    watcher_id: str | None = None,
     timeout_seconds: int = 30,
 ) -> dict[str, Any]:
     """App-side bounded read-only wait for one pending cognition request."""
+    resolved_watcher_id = str(watcher_id or "").strip() or cognition_watcher_id(agent_id)
     result = wait_pending_cognition_request(
         agent_id=agent_id,
-        watcher_id=watcher_id,
+        watcher_id=resolved_watcher_id,
         timeout_seconds=timeout_seconds,
     )
+    result["watcherId"] = resolved_watcher_id
     result["watcherState"] = (
         "WAITING_FOR_CHATGPT_SESSION"
         if isinstance(result.get("request"), dict)
@@ -2120,7 +2122,7 @@ def wait_llm_request(
     request = result.get("request")
     _audit("wait_llm_request", True, {
         "agent_id": agent_id,
-        "watcher_id": watcher_id,
+        "watcher_id": resolved_watcher_id,
         "request_id": None if not isinstance(request, dict) else request.get("request_id"),
         "timed_out": bool(result.get("timed_out")),
     })

@@ -26,7 +26,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.37"
+VERSION = "0.4.38"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v3.html"
 PI_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v5.html"
@@ -646,6 +646,11 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
       connected=true;
       void requestDisplayMode("pip");
       if (!latestOutput && window.openai?.toolOutput) latestOutput=window.openai.toolOutput;
+      if (!latestOutput && window.openai?.toolInput) {
+        const input=window.openai.toolInput;
+        const agentId=input?.agent_id || input?.agentId;
+        if (agentId) latestOutput={agentId};
+      }
       await watch(latestOutput);
     } catch (error) {
       setStatus("Widget initialization failed",String(error?.message || error));
@@ -740,10 +745,12 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
     }
   }
   async function watch(output) {
-    const agentId = output?.agentId;
-    const watcherId = output?.watcherId;
-    if (!connected || !agentId || !watcherId || activeWatcher === watcherId || stopped) return;
-    activeWatcher = watcherId;
+    const toolInput = window.openai?.toolInput || {};
+    const agentId = output?.agentId || toolInput?.agent_id || toolInput?.agentId;
+    let watcherId = output?.watcherId || null;
+    const watchKey = watcherId || agentId;
+    if (!connected || !agentId || !watchKey || activeWatcher === watchKey || stopped) return;
+    activeWatcher = watchKey;
     let handedOffRequestId = null;
     setStatus("ARMED", "Agent " + agentId + " · waiting for the next durable cognition request");
     try {
@@ -752,11 +759,12 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
           name:"wait_llm_request",
           arguments:{
             agent_id:agentId,
-            watcher_id:watcherId,
+            ...(watcherId ? {watcher_id:watcherId} : {}),
             timeout_seconds:30
           }
         });
         const payload = data(result);
+        if (!watcherId && payload?.watcherId) watcherId = payload.watcherId;
         const llmRequest = payload?.request || null;
         if (llmRequest?.request_id) {
           const requestId = llmRequest.request_id;
@@ -2042,7 +2050,7 @@ def create_mcp(
     )
     async def wait_llm_request(
         agent_id: str,
-        watcher_id: str,
+        watcher_id: str | None = None,
         timeout_seconds: int = 30,
     ) -> dict[str, Any]:
         return await relay.call(

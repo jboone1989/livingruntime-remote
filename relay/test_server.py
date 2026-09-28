@@ -45,7 +45,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.37")
+            self.assertEqual(health.json()["version"], "0.4.38")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -356,6 +356,10 @@ class RelayServerTests(unittest.TestCase):
             tools["wait_llm_request"].meta["ui"]["visibility"],
             ["app"],
         )
+        self.assertNotIn(
+            "watcher_id",
+            (tools["wait_llm_request"].parameters or {}).get("required", []),
+        )
         self.assertTrue(tools["wait_llm_request"].annotations.read_only_hint)
         self.assertEqual(
             tools["claim_llm_request_for_watcher"].meta["ui"]["visibility"],
@@ -638,6 +642,9 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn('"tools/call"', html)
         self.assertIn('"wait_llm_request"', html)
         self.assertIn('"claim_llm_request_for_watcher"', html)
+        self.assertIn("window.openai?.toolInput", html)
+        self.assertIn("payload?.watcherId", html)
+        self.assertIn("...(watcherId ? {watcher_id:watcherId} : {})", html)
         self.assertIn('availableDisplayModes:["inline","pip"]', html)
         self.assertIn('requestDisplayMode("pip")', html)
         self.assertIn("claim_seconds:300", html)

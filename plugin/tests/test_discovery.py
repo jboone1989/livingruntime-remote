@@ -68,6 +68,10 @@ class DiscoveryTests(unittest.TestCase):
             schema = by_name[name].inputSchema or {}
             self.assertEqual(schema.get("type"), "object")
             self.assertTrue(by_name[name].description)
+        self.assertNotIn(
+            "watcher_id",
+            (by_name["wait_llm_request"].inputSchema or {}).get("required", []),
+        )
 
     def test_complete_llm_request_accepts_structured_response_text(self) -> None:
         tools = asyncio.run(bridge.server.list_tools())
