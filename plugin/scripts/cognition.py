@@ -486,6 +486,28 @@ def _candidate_rows(agent_id: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _expire_stale_text_backlog(agent_id: str, now: float) -> None:
+    """Retire ancient text backlog before a watcher selects its next turn."""
+    for row in _candidate_rows(agent_id):
+        if str(row.get("status") or "") not in {"PENDING", "DISPATCHED"}:
+            continue
+        purpose = str(row.get("purpose") or "").strip().lower()
+        if purpose not in {"general_text", "simple_public_text"}:
+            continue
+        created_at = float(row.get("created_at") or 0.0)
+        if not created_at or now < created_at + MAX_UNCLAIMED_DURABLE_AGE_SECONDS:
+            continue
+        claim = row.get("claim") if isinstance(row.get("claim"), dict) else {}
+        if float(claim.get("expires_at") or 0.0) > now:
+            continue
+        row["status"] = "TIMED_OUT"
+        row["finished_at"] = now
+        row["updated_at"] = now
+        row["timeout_phase"] = "DISPATCH_STALE"
+        row["claim"] = None
+        _save(row)
+
+
 def _dispatch_priority(value: dict[str, Any]) -> int:
     """Prefer latency-sensitive dialogue while preserving durable backlog."""
     purpose = str(value.get("purpose") or "").strip().lower()
@@ -513,6 +535,7 @@ def peek_next(
     watcher = None if watcher_id is None else _validate_watcher_id(watcher_id)
     now = time.time()
     with _queue_lock():
+        _expire_stale_text_backlog(agent, now)
         rows = [_refresh_timeout(row, now) for row in _candidate_rows(agent)]
 
     for row in rows:
@@ -666,6 +689,7 @@ def claim_next(
         raise ValueError("claim_seconds must be within 15..600")
     now = time.time()
     with _queue_lock():
+        _expire_stale_text_backlog(agent, now)
         rows = _candidate_rows(agent)
         active_dispatch = False
         for row in rows:
@@ -850,6 +874,7 @@ def resumable_watcher_id(agent_id: str) -> str:
     agent = _validate_agent_id(agent_id)
     now = time.time()
     with _queue_lock():
+        _expire_stale_text_backlog(agent, now)
         rows = [_refresh_timeout(row, now) for row in _candidate_rows(agent)]
     for row in rows:
         if row.get("status") != "DISPATCHED":
