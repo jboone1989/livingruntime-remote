@@ -26,7 +26,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.35"
+VERSION = "0.4.36"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v3.html"
 PI_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v5.html"
@@ -847,12 +847,13 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
   async function connect() {
     try {
       await request("ui/initialize", {
-        appInfo:{name:"livingruntime-remote-agent-cognition-watch",version:"1.0.0"},
-        appCapabilities:{},
+        appInfo:{name:"livingruntime-remote-agent-cognition-watch",version:"1.1.0"},
+        appCapabilities:{availableDisplayModes:["inline","pip"]},
         protocolVersion:"2026-01-26"
       });
       notify("ui/notifications/initialized");
       connected=true;
+      void requestDisplayMode("pip");
       if (!latestOutput && window.openai?.toolOutput) latestOutput=window.openai.toolOutput;
       await watch(latestOutput);
     } catch (error) {
@@ -1799,7 +1800,7 @@ def create_mcp(
             destructiveHint=False,
             openWorldHint=False,
         ),
-        meta=READ,
+        meta={**READ, "openai/outputTemplate": COGNITION_WIDGET_URI},
     )
     async def watch_agent_cognition(agent_id: str) -> dict[str, Any]:
         return await relay.call(

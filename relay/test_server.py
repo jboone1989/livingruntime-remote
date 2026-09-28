@@ -45,7 +45,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.35")
+            self.assertEqual(health.json()["version"], "0.4.36")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -349,6 +349,10 @@ class RelayServerTests(unittest.TestCase):
             ["model", "app"],
         )
         self.assertEqual(
+            tools["watch_agent_cognition"].meta["openai/outputTemplate"],
+            server.COGNITION_WIDGET_URI,
+        )
+        self.assertEqual(
             tools["wait_llm_request"].meta["ui"]["visibility"],
             ["app"],
         )
@@ -625,6 +629,8 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn('"tools/call"', html)
         self.assertIn('"wait_llm_request"', html)
         self.assertIn('"claim_llm_request_for_watcher"', html)
+        self.assertIn('availableDisplayModes:["inline","pip"]', html)
+        self.assertIn('requestDisplayMode("pip")', html)
         self.assertIn("claim_seconds:300", html)
         self.assertNotIn("claim_seconds:120", html)
         self.assertIn('"ui/message"', html)
