@@ -190,6 +190,61 @@ class CognitionQueueTests(unittest.TestCase):
         self.assertIsNone(waiting["deadline_at"])
         self.assertIsNone(waiting["timeout_phase"])
 
+    def test_unclaimed_durable_request_eventually_times_out_as_stale_dispatch(self) -> None:
+        with patch.object(cognition.time, "time", return_value=1000.0):
+            cognition.submit(
+                agent_id="ferro",
+                purpose="general_text",
+                messages=[{"role": "user", "content": "hello"}],
+                timeout_seconds=300,
+                dispatch_timeout_seconds=15,
+                request_id="llmreq_dispatch_stale",
+            )
+        stale_at = 1000.0 + cognition.MAX_UNCLAIMED_DURABLE_AGE_SECONDS
+        with patch.object(cognition.time, "time", return_value=stale_at + 1):
+            expired = cognition.get("llmreq_dispatch_stale")
+        self.assertEqual(expired["status"], "TIMED_OUT")
+        self.assertEqual(expired["timeout_phase"], "DISPATCH_STALE")
+        self.assertEqual(expired["finished_at"], stale_at + 1)
+
+    def test_interactive_request_preempts_older_pending_background_backlog(self) -> None:
+        with patch.object(cognition.time, "time", return_value=1000.0):
+            cognition.submit(
+                agent_id="ferro",
+                purpose="general_text",
+                messages=[{"role": "user", "content": "old background work"}],
+                timeout_seconds=300,
+                dispatch_timeout_seconds=15,
+                request_id="llmreq_old_background",
+            )
+        with patch.object(cognition.time, "time", return_value=1001.0):
+            cognition.submit(
+                agent_id="ferro",
+                purpose="simple_public_text",
+                messages=[{"role": "user", "content": "live visitor"}],
+                timeout_seconds=300,
+                dispatch_timeout_seconds=20,
+                request_id="llmreq_live_chat",
+            )
+            peeked = cognition.peek_next(agent_id="ferro")
+            claimed = cognition.claim_next(
+                agent_id="ferro",
+                watcher_id="watcher_live_chat",
+            )
+            cognition.complete(
+                request_id=claimed["request_id"],
+                response_text="live reply",
+                claim_token=claimed["claim"]["token"],
+            )
+            background = cognition.claim_next(
+                agent_id="ferro",
+                watcher_id="watcher_background",
+            )
+
+        self.assertEqual(peeked["request_id"], "llmreq_live_chat")
+        self.assertEqual(claimed["request_id"], "llmreq_live_chat")
+        self.assertEqual(background["request_id"], "llmreq_old_background")
+
     def test_zero_dispatch_timeout_keeps_request_pending_until_claimed(self) -> None:
         with patch.object(cognition.time, "time", return_value=1000.0):
             created = cognition.submit(

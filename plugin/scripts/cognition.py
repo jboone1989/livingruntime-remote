@@ -25,6 +25,7 @@ MAX_PAYLOAD_BYTES = 262144
 MAX_RESPONSE_BYTES = 262144
 DEFAULT_TIMEOUT_SECONDS = 300
 DEFAULT_CLAIM_SECONDS = 120
+MAX_UNCLAIMED_DURABLE_AGE_SECONDS = 6 * 60 * 60
 
 
 def cognition_root() -> Path:
@@ -289,10 +290,24 @@ def _refresh_timeout(value: dict[str, Any], now: float | None = None) -> dict[st
         and dispatch_deadline
         and now >= dispatch_deadline
     ):
-        # A durable request must outlive the absence of an attached ChatGPT
-        # session. Dispatch grace is an observability threshold, not request
-        # lifetime: once it elapses the request remains claimable until a
-        # watcher/session returns. Response timeout begins only after claim.
+        # Dispatch grace is not the request lifetime: short watcher/session
+        # absences keep the request durable. But an unclaimed request must not
+        # remain globally dispatchable forever, otherwise days-old backlog can
+        # monopolize a newly attached ChatGPT session and starve live dialogue.
+        created_at = float(value.get("created_at") or 0.0)
+        stale_at = (
+            created_at + MAX_UNCLAIMED_DURABLE_AGE_SECONDS
+            if created_at
+            else dispatch_deadline + MAX_UNCLAIMED_DURABLE_AGE_SECONDS
+        )
+        if now >= stale_at:
+            value["status"] = "TIMED_OUT"
+            value["finished_at"] = now
+            value["updated_at"] = now
+            value["timeout_phase"] = "DISPATCH_STALE"
+            value["claim"] = None
+            _save(value)
+            return value
         if value.get("dispatch_waiting_since") is None:
             value["dispatch_waiting_since"] = dispatch_deadline
         value["deadline_at"] = None
@@ -440,6 +455,25 @@ def _candidate_rows(agent_id: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _dispatch_priority(value: dict[str, Any]) -> int:
+    """Prefer latency-sensitive dialogue while preserving durable backlog."""
+    purpose = str(value.get("purpose") or "").strip().lower()
+    if purpose == "simple_public_text":
+        return 100
+    return 0
+
+
+def _pending_rows_by_priority(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        rows,
+        key=lambda item: (
+            -_dispatch_priority(item),
+            float(item.get("created_at") or 0.0),
+            str(item.get("request_id") or ""),
+        ),
+    )
+
+
 def peek_next(
     *, agent_id: str, watcher_id: str | None = None
 ) -> dict[str, Any] | None:
@@ -490,7 +524,7 @@ def peek_next(
                 "owned_by_watcher": False,
             }
 
-    for row in rows:
+    for row in _pending_rows_by_priority(rows):
         deadline = float(row.get("deadline_at") or 0.0)
         if deadline and now >= deadline:
             continue
@@ -618,7 +652,7 @@ def claim_next(
             _save(row)
         if active_dispatch:
             return None
-        for row in rows:
+        for row in _pending_rows_by_priority(rows):
             row = _refresh_timeout(row, now)
             if row.get("status") != "PENDING":
                 continue
