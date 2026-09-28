@@ -58,6 +58,38 @@ class ConfigModelTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             join_project_path("/home/ubuntu/virtualbrain", "../secret")
 
+    def test_native_windows_local_paths_round_trip(self) -> None:
+        cfg = normalize(
+            {
+                "default_host": "main",
+                "hosts": {
+                    "main": {
+                        "transport": "local",
+                        "ssh_host": "local",
+                        "path_style": "windows",
+                        "roots": [r"D:\Projects"],
+                        "units": [],
+                    }
+                },
+                "projects": {
+                    "workspace": {
+                        "host": "main",
+                        "path": r"D:\Projects",
+                    }
+                },
+            }
+        )
+        self.assertEqual(cfg["hosts"]["main"]["transport"], "local")
+        self.assertEqual(cfg["hosts"]["main"]["path_style"], "windows")
+        self.assertEqual(cfg["hosts"]["main"]["roots"], [r"D:\Projects"])
+        self.assertEqual(
+            resolve_path(cfg, r"repo\README.md", project="workspace"),
+            r"D:\Projects\repo\README.md",
+        )
+        stored = to_storage(cfg)
+        self.assertEqual(stored["hosts"]["main"]["transport"], "local")
+        self.assertEqual(stored["hosts"]["main"]["path_style"], "windows")
+
     def test_storage_round_trip(self) -> None:
         cfg = seed_projects(normalize({"ssh_host": "livingruntime-vm", "roots": ["/home/ubuntu"]}))
         with tempfile.TemporaryDirectory() as tmp:

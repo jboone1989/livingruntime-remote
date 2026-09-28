@@ -138,13 +138,39 @@ class RelayStore:
             db.execute("UPDATE devices SET last_seen=? WHERE device_id=?", (time.time(), row["device_id"]))
         return dict(row)
 
-    def device_for_user(self, user_sub: str) -> dict[str, Any] | None:
+    def devices_for_user(self, user_sub: str) -> list[dict[str, Any]]:
         with self.db() as db:
-            row = db.execute(
-                "SELECT device_id,name,last_seen FROM devices WHERE user_sub=? AND enabled=1 "
-                "ORDER BY last_seen DESC LIMIT 1", (user_sub,)
-            ).fetchone()
-        return dict(row) if row else None
+            rows = db.execute(
+                "SELECT device_id,name,created_at,last_seen FROM devices "
+                "WHERE user_sub=? AND enabled=1 ORDER BY created_at ASC,device_id ASC",
+                (user_sub,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def device_for_user(
+        self, user_sub: str, selector: str | None = None
+    ) -> dict[str, Any] | None:
+        devices = self.devices_for_user(user_sub)
+        if not devices:
+            return None
+        if selector:
+            token = str(selector).strip()
+            exact = [
+                item
+                for item in devices
+                if item["device_id"] == token or item["name"] == token
+            ]
+            if len(exact) == 1:
+                return exact[0]
+            if len(exact) > 1:
+                raise RuntimeError(
+                    f"connector selector {token!r} matches multiple paired connectors; "
+                    "use the connector device_id"
+                )
+            raise RuntimeError(f"unknown paired connector {token!r}")
+        # The oldest enabled connector is the stable account default. Heartbeats
+        # must never change routing when multiple connectors are online.
+        return devices[0]
 
     def cancel_if_queued(self, user_sub: str, task_id: str) -> bool:
         """Cancel a task only if no device has claimed it yet.

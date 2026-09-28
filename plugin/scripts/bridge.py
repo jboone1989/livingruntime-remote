@@ -17,6 +17,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+import localexec
 from contract import (
     DEFAULT_HTTP_PORT,
     HANDSHAKE_TOOLS,
@@ -796,6 +797,10 @@ def _host(project: str | None = None, device: str | None = None) -> str:
     return host_for(_config(), project=project, host_id=device)["ssh_host"]
 
 
+def _transport(project: str | None = None, device: str | None = None) -> str:
+    return host_for(_config(), project=project, host_id=device).get("transport", "ssh")
+
+
 def _roots(project: str | None = None, device: str | None = None) -> tuple[str, ...]:
     return tuple(host_for(_config(), project=project, host_id=device)["roots"])
 
@@ -833,6 +838,8 @@ def _ssh(
     project: str | None = None,
     device: str | None = None,
 ) -> dict[str, Any]:
+    if _transport(project, device) != "ssh":
+        raise RuntimeError("SSH operation requested for a native local device")
     command = shlex.join(remote_argv)
     started = time.monotonic()
     proc = subprocess.run(
@@ -871,6 +878,8 @@ def _remote(
     device: str | None = None,
 ) -> dict[str, Any]:
     request = {"op": op, "roots": list(_roots(project, device)), **payload}
+    if _transport(project, device) == "local":
+        return localexec.handle(request)
     result = _ssh(
         ["python3", "-c", _REMOTE_AGENT],
         stdin=json.dumps(request, ensure_ascii=False).encode("utf-8"),
@@ -1105,21 +1114,27 @@ def _inventory_for_device(cfg: dict[str, Any], device_id: str) -> dict[str, Any]
         "projects": projects,
         "units": sorted(all_units(cfg, host_id=device_id)),
     }
-    result = _ssh(
-        ["python3", "-c", _HOST_INVENTORY_AGENT],
-        stdin=json.dumps(request, ensure_ascii=False).encode("utf-8"),
-        timeout=20,
-        device=device_id,
-    )
-    if result["returncode"] != 0:
-        return {
-            "ok": False,
-            "error": _sanitized_error(result["stderr"] or result["stdout"] or "inventory probe failed"),
-        }
-    try:
-        payload = json.loads(result["stdout"])
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return {"ok": False, "error": "inventory probe returned invalid JSON"}
+    if host.get("transport") == "local":
+        try:
+            payload = localexec.inventory(request)
+        except Exception as exc:
+            return {"ok": False, "error": _sanitized_error(str(exc))}
+    else:
+        result = _ssh(
+            ["python3", "-c", _HOST_INVENTORY_AGENT],
+            stdin=json.dumps(request, ensure_ascii=False).encode("utf-8"),
+            timeout=20,
+            device=device_id,
+        )
+        if result["returncode"] != 0:
+            return {
+                "ok": False,
+                "error": _sanitized_error(result["stderr"] or result["stdout"] or "inventory probe failed"),
+            }
+        try:
+            payload = json.loads(result["stdout"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {"ok": False, "error": "inventory probe returned invalid JSON"}
     if not isinstance(payload, dict):
         return {"ok": False, "error": "inventory probe returned invalid payload"}
     if _contains_secret(payload):
@@ -1177,10 +1192,15 @@ def connection_status(device: str | None = None) -> dict[str, Any]:
     selected_host = host_for(cfg, host_id=device)
     device_id = selected_host["id"]
     host_alias = selected_host["ssh_host"]
-    result = _ssh(
-        ["python3", "-c", "import getpass,json,os,socket; print(json.dumps({'user':getpass.getuser(),'hostname':socket.gethostname(),'cwd':os.getcwd()}))"],
-        timeout=12,
-        device=device_id,
+    transport = selected_host.get("transport", "ssh")
+    result = (
+        localexec.identity()
+        if transport == "local"
+        else _ssh(
+            ["python3", "-c", "import getpass,json,os,socket; print(json.dumps({'user':getpass.getuser(),'hostname':socket.gethostname(),'cwd':os.getcwd()}))"],
+            timeout=12,
+            device=device_id,
+        )
     )
     ok = result["returncode"] == 0
     remote = None
@@ -1198,7 +1218,7 @@ def connection_status(device: str | None = None) -> dict[str, Any]:
         "endpoint": _transport_endpoint(),
         "gateway": {
             "reachable": ok,
-            "kind": "bounded-ssh",
+            "kind": "bounded-local" if transport == "local" else "bounded-ssh",
             "name": NAME,
             "identity": IDENTITY,
             "version": VERSION,
@@ -1211,7 +1231,9 @@ def connection_status(device: str | None = None) -> dict[str, Any]:
             "cwd": None if remote is None else remote.get("cwd"),
         },
         "connectivity": {
-            "ssh": ok,
+            "ssh": ok if transport == "ssh" else None,
+            "local": ok if transport == "local" else None,
+            "transport": transport,
             "gateway": ok,
             "authenticated": ok,
             "authorized": ok,
@@ -1260,7 +1282,8 @@ def list_devices(include_resources: bool = False) -> dict[str, Any]:
         "import getpass,json,os,socket; print(json.dumps({'user':getpass.getuser(),'hostname':socket.gethostname(),'cwd':os.getcwd()}))",
     ]
     for device_id, host in cfg["hosts"].items():
-        probe = _ssh(identity_argv, timeout=12, device=device_id)
+        transport = host.get("transport", "ssh")
+        probe = localexec.identity() if transport == "local" else _ssh(identity_argv, timeout=12, device=device_id)
         online = probe["returncode"] == 0
         remote: dict[str, Any] | None = None
         if online:
@@ -1275,6 +1298,7 @@ def list_devices(include_resources: bool = False) -> dict[str, Any]:
             "name": device_id,
             "default": device_id == cfg["default_host"],
             "online": online,
+            "transport": transport,
             "ssh_host": host["ssh_host"],
             "hostname": None if remote is None else remote.get("hostname") or remote.get("host"),
             "user": None if remote is None else remote.get("user"),
@@ -1284,9 +1308,11 @@ def list_devices(include_resources: bool = False) -> dict[str, Any]:
                 project["name"] for project in catalog_projects(cfg)
                 if project["host"] == device_id
             ],
-            "capabilities": [
-                "filesystem", "git", "exec", "process", "systemd", "logs"
-            ],
+            "capabilities": (
+                ["filesystem", "git", "exec", "durable_jobs"]
+                if transport == "local"
+                else ["filesystem", "git", "exec", "process", "systemd", "logs", "durable_jobs"]
+            ),
             "error": None if online else _sanitized_error(
                 probe["stderr"] or probe["stdout"] or "SSH connection failed"
             ),
@@ -1527,7 +1553,7 @@ def exec(
     cfg = _config()
     selected_host = host_for(cfg, project=project, host_id=device)
     host_id = selected_host["id"]
-    workdir = resolve_path(cfg, cwd, project=project) if (cwd or project) else _roots(project, device)[0]
+    workdir = resolve_path(cfg, cwd, project=project, host_id=device) if (cwd or project) else _roots(project, device)[0]
     executable = os.path.basename(str(argv[0]))
     if detached or executable not in _ALLOWED_EXECUTABLES:
         grant = dynamic_exec_grant(
@@ -2408,7 +2434,7 @@ def start_long_job(
         raise RuntimeError("detached exec returned no execution id")
     cfg = _config()
     selected = host_for(cfg, project=project, host_id=device)
-    workdir = str(launched.get("cwd") or resolve_path(cfg, cwd, project=project))
+    workdir = str(launched.get("cwd") or resolve_path(cfg, cwd, project=project, host_id=device))
     runtime_job = create_runtime_job(
         goal=goal,
         project=project,
@@ -3713,7 +3739,7 @@ def read_file(
     """Read a bounded byte range from a file. Prefer project= plus a project-relative path."""
     cfg = _config()
     host_for(cfg, project=project, host_id=device)
-    target = resolve_path(cfg, path, project=project)
+    target = resolve_path(cfg, path, project=project, host_id=device)
     result = _remote("read_file", {
         "path": target, "offset": max(0, int(offset)),
         "max_bytes": min(MAX_OUTPUT_BYTES, max(1, int(max_bytes))),
@@ -3747,7 +3773,7 @@ def write_file(
         raise ValueError("content exceeds maximum write size")
     cfg = _config()
     host_for(cfg, project=project, host_id=device)
-    target = resolve_path(cfg, path, project=project)
+    target = resolve_path(cfg, path, project=project, host_id=device)
     result = _remote("write_file", {
         "path": target, "content": content, "mode": mode,
         "expected_sha256": expected_sha256,
@@ -3776,7 +3802,7 @@ def apply_patch(
     """Apply a unified diff under a configured root. Failure leaves the file unchanged."""
     cfg = _config()
     host_for(cfg, project=project, host_id=device)
-    target = resolve_path(cfg, path, project=project)
+    target = resolve_path(cfg, path, project=project, host_id=device)
     current = _remote("read_file", {
         "path": target, "offset": 0, "max_bytes": MAX_OUTPUT_BYTES,
     }, project=project, device=device)
@@ -3836,7 +3862,7 @@ def list_dir(
     """List one remote directory under a configured root or named project."""
     cfg = _config()
     host_for(cfg, project=project, host_id=device)
-    target = resolve_path(cfg, path, project=project) if (path or project) else _roots(device=device)[0]
+    target = resolve_path(cfg, path, project=project, host_id=device) if (path or project) else _roots(device=device)[0]
     result = _remote("list_dir", {
         "path": target, "max_entries": min(1000, max(1, int(max_entries))),
     }, project=project, device=device)
@@ -3866,7 +3892,7 @@ def git(
     timeout = min(120, max(1, int(timeout_seconds)))
     cfg = _config()
     host_for(cfg, project=project, host_id=device)
-    cwd = resolve_path(cfg, repo_path, project=project)
+    cwd = resolve_path(cfg, repo_path, project=project, host_id=device)
     result = _remote("exec", {
         "argv": ["git", *args], "cwd": cwd,
         "timeout": timeout, "max_output": MAX_OUTPUT_BYTES,
@@ -3892,7 +3918,9 @@ def process(
     device: str | None = None,
 ) -> dict[str, Any]:
     """List scoped same-user processes or SIGTERM one process whose cwd is under a configured root."""
-    host_for(_config(), host_id=device)
+    selected_host = host_for(_config(), host_id=device)
+    if selected_host.get("transport") == "local":
+        raise RuntimeError("process inspection is not exposed by the native local transport")
     result = _remote("process", {"action": action, "pid": pid, "contains": contains}, device=device)
     _audit("process", True, {"action": action, "pid": pid, "device": device})
     return result
@@ -3967,6 +3995,8 @@ def systemd(
     """Inspect or control an explicitly allowlisted remote systemd service."""
     cfg = _config()
     selected_host = host_for(cfg, project=project, host_id=device)
+    if selected_host.get("transport") == "local":
+        raise RuntimeError("systemd is unavailable on native Windows local devices")
     selected = resolve_unit(cfg, unit, project=project, host_id=device)
     if action not in {"status", "is-active", "start", "stop", "restart"}:
         raise ValueError("unsupported systemd action")
@@ -4013,7 +4043,9 @@ def logs(
 ) -> dict[str, Any]:
     """Read bounded journal logs. Prefer project=ferro instead of guessing a unit name."""
     cfg = _config()
-    host_for(cfg, project=project, host_id=device)
+    selected_host = host_for(cfg, project=project, host_id=device)
+    if selected_host.get("transport") == "local":
+        raise RuntimeError("journal logs are unavailable on native Windows local devices")
     selected = resolve_unit(cfg, unit, project=project, host_id=device)
     result = _ssh([
         "journalctl", "--no-pager", "-u", selected,

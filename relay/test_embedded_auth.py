@@ -139,6 +139,57 @@ class EmbeddedOAuthTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
+    def test_new_user_can_sign_up_during_oauth_and_reach_pairing_identity(self):
+        with TestClient(self.app, base_url="http://127.0.0.1") as client:
+            registered = self.register(client)
+            verifier = "pkce-signup-" + "x" * 48
+            auth = client.get(
+                "/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": registered["client_id"],
+                    "redirect_uri": "https://client.example.test/callback",
+                    "scope": "remote:read remote:write openid email offline_access",
+                    "state": "signup-state",
+                    "code_challenge": _challenge(verifier),
+                    "code_challenge_method": "S256",
+                    "resource": self.resource,
+                },
+                follow_redirects=False,
+            )
+            request_id = parse_qs(urlsplit(auth.headers["location"]).query)["request_id"][0]
+
+            login = client.get(f"/oauth/login?request_id={request_id}")
+            self.assertIn("Create an account", login.text)
+
+            signup = client.get(f"/oauth/signup?request_id={request_id}")
+            self.assertEqual(signup.status_code, 200)
+            self.assertIn("Create your LivingRuntime Remote account", signup.text)
+
+            created = client.post(
+                "/oauth/signup",
+                data={
+                    "request_id": request_id,
+                    "email": "new-user@example.test",
+                    "password": "a sufficiently long password",
+                    "confirm": "a sufficiently long password",
+                },
+                follow_redirects=False,
+            )
+            self.assertEqual(created.status_code, 303, created.text)
+            callback = urlsplit(created.headers["location"])
+            code = parse_qs(callback.query)["code"][0]
+            tokens = self.exchange(client, registered["client_id"], code, verifier)
+            info = client.get(
+                "/userinfo",
+                headers={"authorization": "Bearer " + tokens["access_token"]},
+            )
+            self.assertEqual(info.status_code, 200, info.text)
+            self.assertEqual(info.json()["email"], "new-user@example.test")
+            self.assertFalse(info.json()["email_verified"])
+            pairing = self.store.create_pairing_code(info.json()["sub"])
+            self.assertRegex(pairing["code"], r"^[A-Z0-9]{4}-[A-Z0-9]{4}$")
+
     def test_metadata_registration_pkce_refresh_revoke_and_mcp_access(self):
         with TestClient(self.app, base_url="http://127.0.0.1") as client:
             metadata = client.get("/.well-known/oauth-authorization-server")

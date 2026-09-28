@@ -2,7 +2,7 @@
 
 Identity: `livingruntime.remote`
 
-Current version: `0.4.39`
+Current version: `0.4.40`
 
 This directory contains the ChatGPT/Codex-facing MCP runtime and the local Connector implementation.
 
@@ -104,7 +104,7 @@ Linux/macOS:
 curl -fsSL https://remote.livingruntime.com/install.sh | sh
 ```
 
-The Connector asks for only the pairing code, SSH host, and allowed workspace root. SSH credentials remain in the user's normal SSH configuration.
+On Windows, the default installer asks for the pairing code and a bounded local workspace such as `D:\\Projects`; it uses the native local executor and does not require localhost SSH. On Linux/macOS, or when Windows is explicitly configured with an SSH host, the Connector uses key-based SSH. Pairing codes are created by an authenticated LivingRuntime Remote user in ChatGPT.
 
 ## Local development
 

@@ -45,6 +45,32 @@ class RelayStoreTests(unittest.TestCase):
             self.store.result("user-b", task)
         self.assertEqual(self.store.result("user-a", task)["result"]["ok"], True)
 
+    def test_multiple_connectors_keep_stable_default_and_support_explicit_selector(self):
+        first = self.pair("user-a", "owner-main")
+        second = self.pair("user-a", "windows-pc")
+        with self.store.db() as db:
+            db.execute(
+                "UPDATE devices SET last_seen=? WHERE device_id=?",
+                (9999999999.0, second["device_id"]),
+            )
+
+        default = self.store.device_for_user("user-a")
+        self.assertEqual(default["device_id"], first["device_id"])
+        self.assertEqual(
+            self.store.device_for_user("user-a", "windows-pc")["device_id"],
+            second["device_id"],
+        )
+        self.assertEqual(
+            self.store.device_for_user("user-a", second["device_id"])["name"],
+            "windows-pc",
+        )
+        self.assertEqual(
+            [item["name"] for item in self.store.devices_for_user("user-a")],
+            ["owner-main", "windows-pc"],
+        )
+        with self.assertRaisesRegex(RuntimeError, "unknown paired connector"):
+            self.store.device_for_user("user-a", "missing")
+
     def test_device_authentication_rejects_unknown_token(self):
         paired = self.pair("user-a", "a")
         self.assertEqual(

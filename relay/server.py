@@ -26,7 +26,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.39"
+VERSION = "0.4.40"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v3.html"
 PI_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v5.html"
@@ -1273,8 +1273,10 @@ class Relay:
         if event is not None:
             event.set()
 
-    def device_status(self, user_sub: str) -> dict[str, Any] | None:
-        device = self.store.device_for_user(user_sub)
+    def device_status(
+        self, user_sub: str, selector: str | None = None
+    ) -> dict[str, Any] | None:
+        device = self.store.device_for_user(user_sub, selector)
         if not device:
             return None
         age = max(0.0, time.time() - float(device.get("last_seen") or 0.0))
@@ -1284,10 +1286,43 @@ class Relay:
             "stale_for_seconds": round(age, 3),
         }
 
-    async def _wait_for_online_device(self, user_sub: str) -> dict[str, Any]:
+    def connector_statuses(self, user_sub: str) -> list[dict[str, Any]]:
+        rows = []
+        default = self.store.device_for_user(user_sub)
+        default_id = default.get("device_id") if default else None
+        now = time.time()
+        for device in self.store.devices_for_user(user_sub):
+            age = max(0.0, now - float(device.get("last_seen") or 0.0))
+            rows.append({
+                **device,
+                "default": device.get("device_id") == default_id,
+                "online": age <= self.device_stale_after,
+                "stale_for_seconds": round(age, 3),
+            })
+        return rows
+
+    @staticmethod
+    def _connector_route(
+        args: dict[str, Any],
+        connector: str | None = None,
+    ) -> tuple[str | None, dict[str, Any]]:
+        forwarded = dict(args)
+        selector = str(connector or "").strip() or None
+        raw_device = forwarded.get("device")
+        if selector is None and isinstance(raw_device, str):
+            token = raw_device.strip()
+            if "::" in token:
+                selector, inner = token.split("::", 1)
+                selector = selector.strip() or None
+                forwarded["device"] = inner.strip() or None
+        return selector, forwarded
+
+    async def _wait_for_online_device(
+        self, user_sub: str, selector: str | None = None
+    ) -> dict[str, Any]:
         deadline = time.monotonic() + self.reconnect_grace
         while True:
-            device = self.device_status(user_sub)
+            device = self.device_status(user_sub, selector)
             if device and device["online"]:
                 return device
             if time.monotonic() >= deadline:
@@ -1301,14 +1336,39 @@ class Relay:
                 )
             await asyncio.sleep(0.25)
 
-    async def call(self, user_sub: str, tool: str, args: dict[str, Any]) -> dict[str, Any]:
-        device = await self._wait_for_online_device(user_sub)
-        task_id = self.store.enqueue(user_sub, device["device_id"], tool, args)
+    async def call(
+        self,
+        user_sub: str,
+        tool: str,
+        args: dict[str, Any],
+        *,
+        connector: str | None = None,
+    ) -> dict[str, Any]:
+        selector, forwarded_args = self._connector_route(args, connector)
+        if selector is None:
+            raw_device = forwarded_args.get("device")
+            if isinstance(raw_device, str) and raw_device.strip():
+                token = raw_device.strip()
+                try:
+                    matched = self.store.device_for_user(user_sub, token)
+                except RuntimeError as exc:
+                    if not str(exc).startswith("unknown paired connector"):
+                        raise
+                else:
+                    # A bare exact connector name/id targets that connector's
+                    # default managed device. Inner-device routing remains
+                    # backward-compatible through the stable default connector.
+                    selector = token
+                    forwarded_args["device"] = None
+        device = await self._wait_for_online_device(user_sub, selector)
+        task_id = self.store.enqueue(
+            user_sub, device["device_id"], tool, forwarded_args
+        )
         result_event = self._result_event(task_id)
         self.notify_task(device["device_id"])
         requested_timeout = 0.0
         try:
-            requested_timeout = float(args.get("timeout_seconds") or 0.0)
+            requested_timeout = float(forwarded_args.get("timeout_seconds") or 0.0)
         except (TypeError, ValueError):
             requested_timeout = 0.0
         wait_timeout = max(self.timeout, min(120.0, max(0.0, requested_timeout)) + 30.0)
@@ -1394,7 +1454,57 @@ button{{width:100%;margin-top:20px;padding:12px;border:0;border-radius:10px;font
 <input id="password" name="password" type="password" autocomplete="current-password" required>
 <button type="submit">Continue</button>
 </form>
+<p class="small">New here? <a href="/oauth/signup?request_id={html.escape(request_id, quote=True)}">Create an account</a>.</p>
 <p class="small">Credentials are used only by this LivingRuntime Remote authorization server.</p>
+</div></main></body></html>"""
+    return HTMLResponse(
+        body,
+        headers={
+            "cache-control": "no-store",
+            "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+            "x-content-type-options": "nosniff",
+        },
+    )
+
+
+
+def _signup_page(request_id: str, *, error: str | None = None, email: str = "") -> HTMLResponse:
+    error_html = f'<p class="error">{html.escape(error)}</p>' if error else ""
+    body = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Create a LivingRuntime Remote account</title>
+<style>
+body{{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#111;color:#eee;margin:0}}
+main{{max-width:420px;margin:10vh auto;padding:28px}}
+.card{{background:#1a1a1a;border:1px solid #333;border-radius:16px;padding:24px}}
+h1{{font-size:22px;margin:0 0 8px}}
+p{{color:#aaa;line-height:1.5}}
+label{{display:block;margin:16px 0 6px;font-size:14px}}
+input{{box-sizing:border-box;width:100%;padding:12px;border-radius:10px;border:1px solid #444;background:#0d0d0d;color:#fff}}
+button{{width:100%;margin-top:20px;padding:12px;border:0;border-radius:10px;font-weight:700;cursor:pointer}}
+a{{color:#b9ccff}}
+.error{{color:#ff9d9d}}
+.small{{font-size:12px}}
+</style>
+</head>
+<body><main><div class="card">
+<h1>Create your LivingRuntime Remote account</h1>
+<p>This account isolates your paired devices from other users. Passwords are stored only as salted scrypt hashes.</p>
+{error_html}
+<form method="post" action="/oauth/signup">
+<input type="hidden" name="request_id" value="{html.escape(request_id, quote=True)}">
+<label for="email">Email</label>
+<input id="email" name="email" type="email" autocomplete="username" required value="{html.escape(email, quote=True)}">
+<label for="password">Password</label>
+<input id="password" name="password" type="password" autocomplete="new-password" minlength="12" required>
+<label for="confirm">Confirm password</label>
+<input id="confirm" name="confirm" type="password" autocomplete="new-password" minlength="12" required>
+<button type="submit">Create account and continue</button>
+</form>
+<p class="small"><a href="/oauth/login?request_id={html.escape(request_id, quote=True)}">Already have an account?</a></p>
 </div></main></body></html>"""
     return HTMLResponse(
         body,
@@ -1932,6 +2042,60 @@ def create_mcp(
     )
 
     if embedded_provider is not None:
+        signup_limiter = PairRateLimiter(
+            int(os.environ.get("LIVINGRUNTIME_SIGNUP_LIMIT", "5")),
+            float(os.environ.get("LIVINGRUNTIME_SIGNUP_WINDOW", "60")),
+        )
+
+        @server.custom_route("/oauth/signup", methods=["GET", "POST"], include_in_schema=False)
+        async def oauth_signup(request: Request):
+            request_id = request.query_params.get("request_id", "")
+            if request.method == "POST":
+                forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+                client_key = forwarded or (request.client.host if request.client else "unknown")
+                if not signup_limiter.allow(client_key):
+                    return PlainTextResponse(
+                        "too many signup attempts",
+                        status_code=429,
+                        headers={"retry-after": str(int(signup_limiter.window_seconds))},
+                    )
+                raw = await request.body()
+                if len(raw) > 8192:
+                    return PlainTextResponse("request too large", status_code=413)
+                form = parse_qs(raw.decode("utf-8", errors="replace"), keep_blank_values=True)
+                request_id = (form.get("request_id") or [""])[0]
+                email = (form.get("email") or [""])[0].strip()
+                password = (form.get("password") or [""])[0]
+                confirm = (form.get("confirm") or [""])[0]
+                pending = embedded_provider.store.load_pending_auth(request_id)
+                if not pending:
+                    return PlainTextResponse("authorization request expired", status_code=400)
+                if password != confirm:
+                    response = _signup_page(request_id, error="Passwords do not match.", email=email)
+                    response.status_code = 400
+                    return response
+                try:
+                    subject = embedded_provider.store.create_user(
+                        email, password, email_verified=False
+                    )
+                except ValueError as exc:
+                    response = _signup_page(request_id, error=str(exc), email=email)
+                    response.status_code = 400
+                    return response
+                code, state = embedded_provider.store.consume_pending_auth(request_id, subject)
+                return RedirectResponse(
+                    _append_query(
+                        str(code.redirect_uri),
+                        {"code": code.code, "state": state},
+                    ),
+                    status_code=303,
+                    headers={"cache-control": "no-store"},
+                )
+
+            if not request_id or embedded_provider.store.load_pending_auth(request_id) is None:
+                return PlainTextResponse("authorization request expired", status_code=400)
+            return _signup_page(request_id)
+
         @server.custom_route("/oauth/login", methods=["GET", "POST"], include_in_schema=False)
         async def oauth_login(request: Request):
             request_id = request.query_params.get("request_id", "")
@@ -1980,18 +2144,36 @@ def create_mcp(
         description=TOOL_TEXT["device_status"][1], annotations=ToolAnnotations(
         readOnlyHint=True, destructiveHint=False, openWorldHint=False), meta=READ)
     def device_status() -> dict[str, Any]:
-        """Report paired-device recency and online state without exposing credentials."""
+        """Report paired Connector recency and stable routing without exposing credentials."""
         user = _principal("remote:read")
-        device = relay.device_status(user)
-        if not device:
-            return {"paired": False, "device": None}
-        public_device = {
-            "name": device.get("name"),
-            "last_seen": device.get("last_seen"),
-            "online": device.get("online"),
-            "stale_for_seconds": device.get("stale_for_seconds"),
+        connectors = relay.connector_statuses(user)
+        if not connectors:
+            return {"paired": False, "device": None, "connectors": []}
+        public_connectors = [
+            {
+                "device_id": item.get("device_id"),
+                "name": item.get("name"),
+                "default": bool(item.get("default")),
+                "last_seen": item.get("last_seen"),
+                "online": item.get("online"),
+                "stale_for_seconds": item.get("stale_for_seconds"),
+            }
+            for item in connectors
+        ]
+        default = next(
+            (item for item in public_connectors if item["default"]),
+            public_connectors[0],
+        )
+        return {
+            "paired": True,
+            "device": default,
+            "connectors": public_connectors,
+            "routing": {
+                "default": "oldest enabled connector",
+                "explicit": "<connector-name-or-id>::<inner-device>",
+                "bare_connector": "a connector name/id targets its default inner device",
+            },
         }
-        return {"paired": True, "device": public_device}
 
     @server.tool(name="disconnect_device", title=TOOL_TEXT["disconnect_device"][0],
         description=TOOL_TEXT["disconnect_device"][1], annotations=ToolAnnotations(
@@ -2930,16 +3112,21 @@ nav a{{margin-right:18px}}
         return public_page(
             "Install",
             f"""<h1>LivingRuntime Remote Connector</h1>
-<p>Install the small connector on a computer that already has key-based SSH access to your Linux host. Python is not required.</p>
+<p>Install the small connector on the machine you want to control, or on a computer that has key-based SSH access to another host. Python is not required.</p>
 <div class="card">
-<h2>Windows</h2>
+<h2>1. Get a pairing code</h2>
+<p>Connect LivingRuntime Remote in ChatGPT. During OAuth, sign in or create an account. Then ask ChatGPT to <strong>Create pairing code</strong>. The short-lived code binds only to that authenticated account.</p>
+</div>
+<div class="card">
+<h2>2. Windows</h2>
 <pre>irm {origin}/install.ps1 | iex</pre>
+<p>Windows defaults to the native local executor. Enter a bounded workspace such as <code>D:\\Projects</code> or <code>D:\\</code>. OpenSSH and localhost SSH are not required.</p>
 </div>
 <div class="card">
-<h2>Linux / macOS</h2>
+<h2>2. Linux / macOS</h2>
 <pre>curl -fsSL {origin}/install.sh | sh</pre>
+<p>The SSH flow asks for the target host and an allowed POSIX workspace root.</p>
 </div>
-<p>The installer asks for the pairing code shown in ChatGPT, your SSH host, and the workspace root ChatGPT may access. It verifies SSH before consuming the pairing code.</p>
 """,
         )
 

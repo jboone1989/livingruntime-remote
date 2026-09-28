@@ -25,6 +25,20 @@ class ConnectorTests(unittest.TestCase):
                 self.assertEqual(payload["hosts"]["main"]["roots"], ["/srv/project"])
                 self.assertEqual(payload["projects"]["workspace"]["path"], "/srv/project")
 
+    def test_write_remote_config_supports_native_windows_local_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(connector.Path, "home", return_value=Path(tmp)):
+                path = connector.write_remote_config(
+                    "local", "D:\\", local=True
+                )
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                host = payload["hosts"]["main"]
+                self.assertEqual(host["transport"], "local")
+                self.assertEqual(host["ssh_host"], "local")
+                self.assertEqual(host["path_style"], "windows")
+                self.assertEqual(host["roots"], ["D:\\"])
+                self.assertEqual(payload["projects"]["workspace"]["path"], "D:\\")
+
     def test_write_remote_config_rejects_non_posix_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(connector.Path, "home", return_value=Path(tmp)):

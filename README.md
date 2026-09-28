@@ -89,7 +89,9 @@ remote.livingruntime.com
         v
 Local Connector
         |
-        | existing key-based SSH
+        +-- native local executor (Windows/local machine)
+        |
+        +-- existing key-based SSH (remote hosts)
         v
 Your host(s)
   - repositories
@@ -99,11 +101,11 @@ Your host(s)
   - bounded commands
 ```
 
-LivingRuntime Remote does **not** need your SSH password or private key in the public relay. SSH credentials stay in your normal local SSH configuration on the Connector machine.
+LivingRuntime Remote does **not** need your SSH password or private key in the public relay. Native local execution needs no SSH credentials at all; when SSH routing is used, SSH credentials stay in your normal local SSH configuration on the Connector machine.
 
 ## Quick start
 
-Public users install the Connector on a computer that already has key-based SSH access to the target machine.
+Public users install the Connector on the machine they want ChatGPT to control, or on a machine that already has key-based SSH access to another target. Windows can now run as a native local target; localhost SSH is not required.
 
 ### Linux / macOS
 
@@ -117,7 +119,9 @@ curl -fsSL https://remote.livingruntime.com/install.sh | sh
 irm https://remote.livingruntime.com/install.ps1 | iex
 ```
 
-The Connector asks for a one-time pairing code, the SSH host, and the workspace root that the agent is allowed to access.
+The default Windows flow uses the native local executor. It asks for a one-time pairing code and a bounded Windows workspace such as `D:\\Projects` or `D:\\`; it does not require OpenSSH or `localhost`. Advanced users can still pass an SSH host explicitly when they want the Windows Connector to control a separate Linux machine.
+
+To obtain the pairing code, connect the LivingRuntime Remote app in ChatGPT, sign in or create an account during OAuth, then ask ChatGPT to **Create pairing code**. The code is short-lived and binds the Connector to that authenticated account.
 
 The ChatGPT app/MCP endpoint is served from:
 

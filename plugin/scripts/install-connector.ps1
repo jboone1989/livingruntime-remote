@@ -11,14 +11,18 @@ $url = "https://github.com/jboone1989/livingruntime-remote/releases/latest/downl
 $temp = Join-Path $env:TEMP $asset
 
 if (-not $PairCode) { $PairCode = Read-Host "Pairing code from ChatGPT (XXXX-XXXX)" }
-if (-not $HostName) { $HostName = Read-Host "SSH host or user@host" }
-if (-not $Root) { $Root = Read-Host "Allowed workspace root on that host (for example /home/ubuntu)" }
+if (-not $Root) { $Root = Read-Host "Allowed Windows workspace root (for example D:\Projects)" }
 
 Write-Host "Downloading LivingRuntime Remote Connector..."
 Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $temp
 
-Write-Host "Checking SSH, pairing this computer, and enabling autostart..."
-& $temp install --pair $PairCode --host $HostName --root $Root --relay $Relay
+if ($HostName) {
+  Write-Host "Checking SSH, pairing this computer, and enabling autostart..."
+  & $temp install --pair $PairCode --host $HostName --root $Root --relay $Relay
+} else {
+  Write-Host "Pairing this computer with the native Windows executor and enabling autostart..."
+  & $temp install --pair $PairCode --local --root $Root --relay $Relay
+}
 if ($LASTEXITCODE -ne 0) { throw "LivingRuntime Remote Connector installation failed." }
 
 Write-Host ""

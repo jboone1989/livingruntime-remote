@@ -45,7 +45,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.39")
+            self.assertEqual(health.json()["version"], "0.4.40")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -230,6 +230,62 @@ class RelayServerTests(unittest.TestCase):
         result = asyncio.run(exercise())
         self.assertTrue(result["ok"])
         self.assertEqual(store.result_calls, 2)
+
+    def test_multi_connector_routing_is_stable_and_explicit(self):
+        owner = self.store.pair_device(
+            self.store.create_pairing_code("user-a")["code"], "owner-main"
+        )
+        windows = self.store.pair_device(
+            self.store.create_pairing_code("user-a")["code"], "windows-pc"
+        )
+        relay = server.Relay(
+            self.store, timeout=1.0, reconnect_grace=0, device_stale_after=30
+        )
+
+        async def complete_call(call, expected_device, expected_forwarded_device):
+            await asyncio.sleep(0.05)
+            task = self.store.claim(expected_device)
+            self.assertIsNotNone(task)
+            self.assertEqual(task["args"].get("device"), expected_forwarded_device)
+            self.store.complete(
+                expected_device,
+                task["task_id"],
+                {"ok": True, "result": {"device": expected_device}},
+            )
+            relay.notify_result(task["task_id"])
+            return await call
+
+        async def exercise():
+            default_call = asyncio.create_task(
+                relay.call("user-a", "connection_status", {"device": "vultr"})
+            )
+            default_result = await complete_call(
+                default_call, owner["device_id"], "vultr"
+            )
+
+            windows_call = asyncio.create_task(
+                relay.call("user-a", "connection_status", {"device": "windows-pc"})
+            )
+            windows_result = await complete_call(
+                windows_call, windows["device_id"], None
+            )
+
+            nested_call = asyncio.create_task(
+                relay.call(
+                    "user-a",
+                    "connection_status",
+                    {"device": "windows-pc::main"},
+                )
+            )
+            nested_result = await complete_call(
+                nested_call, windows["device_id"], "main"
+            )
+            return default_result, windows_result, nested_result
+
+        default_result, windows_result, nested_result = asyncio.run(exercise())
+        self.assertEqual(default_result["device"], owner["device_id"])
+        self.assertEqual(windows_result["device"], windows["device_id"])
+        self.assertEqual(nested_result["device"], windows["device_id"])
 
     def test_pair_endpoint_rate_limits_repeated_failures(self):
         with TestClient(self.app) as client:

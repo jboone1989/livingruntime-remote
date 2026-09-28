@@ -9,12 +9,14 @@ import shutil
 import socket
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from xml.sax.saxutils import escape
 
 import configure
+import localexec
 import relay_agent
+from configmodel import normalize, normalize_workspace_path, path_style, to_storage
 from contract import PLUGIN_VERSION
 
 PRODUCT = "LivingRuntime Remote"
@@ -57,16 +59,27 @@ def _chmod_private(path: Path) -> None:
         pass
 
 
-def write_remote_config(host: str, root: str, project: str = "workspace") -> Path:
-    host = configure.validate_host(host)
-    root = str(root or "").strip().replace("\\", "/")
-    if not root.startswith("/"):
-        raise ValueError("root must be an absolute POSIX path on the SSH target")
+def write_remote_config(
+    host: str,
+    root: str,
+    project: str = "workspace",
+    *,
+    local: bool = False,
+) -> Path:
+    root = normalize_workspace_path(root)
+    style = path_style(root)
+    parsed_root = PureWindowsPath(root) if style == "windows" else PurePosixPath(root)
+    if not parsed_root.is_absolute():
+        raise ValueError("root must be an absolute workspace path")
+    transport = "local" if local else "ssh"
+    host_token = "local" if local else configure.validate_host(host)
     payload = {
         "default_host": "main",
         "hosts": {
             "main": {
-                "ssh_host": host,
+                "transport": transport,
+                "ssh_host": host_token,
+                "path_style": style,
                 "roots": [root],
                 "units": [],
             }
@@ -78,6 +91,7 @@ def write_remote_config(host: str, root: str, project: str = "workspace") -> Pat
             }
         },
     }
+    payload = to_storage(normalize(payload))
     path = remote_config_path()
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     _chmod_private(path)
@@ -239,10 +253,11 @@ def install(
     name: str,
     project: str,
     skip_ssh_test: bool = False,
+    local: bool = False,
 ) -> dict[str, Any]:
-    if not skip_ssh_test:
+    if not local and not skip_ssh_test:
         configure.test_ssh(host)
-    remote_path = write_remote_config(host, root, project)
+    remote_path = write_remote_config(host, root, project, local=local)
     relay_path = relay_config_path()
     paired: dict[str, Any] | None = None
     if pair_code:
@@ -265,6 +280,7 @@ def install(
         "device_id": paired.get("device_id") if paired else None,
         "autostart": autostart,
         "command": command,
+        "transport": "local" if local else "ssh",
     }
 
 
@@ -290,9 +306,14 @@ def status(check_ssh: bool = False) -> dict[str, Any]:
     if check_ssh and remote_path.exists():
         try:
             payload = json.loads(remote_path.read_text(encoding="utf-8"))
-            host = payload["hosts"][payload.get("default_host", "main")]["ssh_host"]
-            configure.test_ssh(host)
-            result["ssh"] = "ok"
+            cfg = normalize(payload)
+            host = cfg["hosts"][cfg["default_host"]]
+            if host["transport"] == "local":
+                result["transport"] = "local"
+                result["local"] = "ok"
+            else:
+                configure.test_ssh(host["ssh_host"])
+                result["ssh"] = "ok"
         except Exception as exc:
             result["ssh"] = f"error: {exc}"
     return result
@@ -310,12 +331,22 @@ def run_connector(config: Path, daemon_log: bool = False) -> None:
 def interactive_setup() -> None:
     print(f"{PRODUCT} Connector {PLUGIN_VERSION}")
     print()
-    print("This connects ChatGPT to a Linux host you can already access with SSH keys.")
-    print("SSH credentials stay in your normal SSH configuration and are never uploaded.")
+    if os.name == "nt":
+        print("This connects ChatGPT directly to a bounded workspace on this Windows computer.")
+        print("Native Windows mode does not require localhost SSH.")
+    else:
+        print("This connects ChatGPT to a Linux host you can already access with SSH keys.")
+        print("SSH credentials stay in your normal SSH configuration and are never uploaded.")
     print()
     pair_code = input("Pairing code from ChatGPT (XXXX-XXXX): ").strip()
-    host = input("SSH host or user@host: ").strip()
-    root = input("Allowed workspace root (for example /home/ubuntu): ").strip()
+    if os.name == "nt":
+        host = "local"
+        root = input(r"Allowed Windows workspace root (for example D:\Projects): ").strip()
+        local = True
+    else:
+        host = input("SSH host or user@host: ").strip()
+        root = input("Allowed workspace root (for example /home/ubuntu): ").strip()
+        local = False
     result = install(
         pair_code=pair_code,
         host=host,
@@ -323,6 +354,7 @@ def interactive_setup() -> None:
         relay_url=DEFAULT_RELAY_URL,
         name=socket.gethostname(),
         project="workspace",
+        local=local,
     )
     print()
     print("Connected successfully.")
@@ -349,8 +381,13 @@ def main(argv: list[str] | None = None) -> None:
 
     install_parser = sub.add_parser("install", help="Pair, configure SSH access, and enable autostart")
     install_parser.add_argument("--pair", dest="pair_code", help="One-time pairing code from ChatGPT")
-    install_parser.add_argument("--host", required=True, help="SSH alias or user@host")
-    install_parser.add_argument("--root", required=True, help="Allowed workspace root on the SSH target")
+    install_parser.add_argument("--host", help="SSH alias or user@host")
+    install_parser.add_argument("--root", required=True, help="Allowed workspace root")
+    install_parser.add_argument(
+        "--local",
+        action="store_true",
+        help="Use the Connector machine itself as the target instead of SSH",
+    )
     install_parser.add_argument("--relay", default=DEFAULT_RELAY_URL)
     install_parser.add_argument("--name", default=socket.gethostname())
     install_parser.add_argument("--project", default="workspace")
@@ -366,16 +403,23 @@ def main(argv: list[str] | None = None) -> None:
     uninstall_parser = sub.add_parser("uninstall", help="Remove connector autostart")
     uninstall_parser.add_argument("--purge", action="store_true", help="Also delete local connector configs")
 
+    worker_parser = sub.add_parser("local-worker", help=argparse.SUPPRESS)
+    worker_parser.add_argument("receipt_path")
+    worker_parser.add_argument("spec_path")
+
     args = parser.parse_args(actual_argv)
     if args.command == "install":
+        if not args.local and not args.host:
+            parser.error("--host is required unless --local is used")
         result = install(
             pair_code=args.pair_code,
-            host=args.host,
+            host=args.host or "local",
             root=args.root,
             relay_url=args.relay,
             name=args.name,
             project=args.project,
             skip_ssh_test=args.skip_ssh_test,
+            local=args.local,
         )
         print(json.dumps(result, indent=2))
         print("LivingRuntime Remote is connected. Return to ChatGPT and call connection_status.")
@@ -397,6 +441,8 @@ def main(argv: list[str] | None = None) -> None:
         print("LivingRuntime Remote Connector autostart removed.")
         print("Use disconnect_device in ChatGPT to revoke the paired device.")
         return
+    if args.command == "local-worker":
+        raise SystemExit(localexec.detached_worker(args.receipt_path, args.spec_path))
 
 
 if __name__ == "__main__":

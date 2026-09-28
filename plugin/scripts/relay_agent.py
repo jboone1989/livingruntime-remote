@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import bridge
 from contract import PLUGIN_VERSION, REMOTE_TOOLS
 
 TOOLS = set(REMOTE_TOOLS)
@@ -82,8 +83,6 @@ def _dispatch(task: dict[str, Any]) -> dict[str, Any]:
     if tool not in TOOLS:
         return {"ok": False, "error": f"relay tool is not allowlisted: {tool}"}
     try:
-        import bridge
-
         fn = getattr(bridge, tool)
         result = fn(**dict(task.get("args") or {}))
         return {"ok": True, "result": result}
