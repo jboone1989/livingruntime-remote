@@ -26,6 +26,7 @@ jobs:
             plugin/scripts/install-personal.py \
             plugin/scripts/tunnel.py \
             plugin/scripts/relay_agent.py \
+            plugin/scripts/localexec.py \
             plugin/scripts/connector.py \
             plugin/scripts/contract.py \
             plugin/scripts/selfcheck.py
@@ -34,6 +35,22 @@ jobs:
       - name: Install plugin MCP runtime
         run: python -m pip install --disable-pip-version-check -r plugin/requirements.txt
       - name: Run plugin tests
+        run: python -m unittest discover -s plugin/tests -v
+
+
+  plugin-windows:
+    name: Native Windows Connector tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install plugin MCP runtime
+        run: python -m pip install --disable-pip-version-check -r plugin/requirements.txt
+      - name: Compile Windows connector sources
+        run: python -m py_compile plugin/scripts/bridge.py plugin/scripts/configmodel.py plugin/scripts/localexec.py plugin/scripts/relay_agent.py plugin/scripts/connector.py plugin/scripts/contract.py
+      - name: Run Windows-safe connector tests
         run: python -m unittest discover -s plugin/tests -v
 
   gateway:
