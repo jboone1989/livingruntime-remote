@@ -26,7 +26,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.38"
+VERSION = "0.4.39"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v3.html"
 PI_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v5.html"
@@ -1812,18 +1812,56 @@ def create_mcp(
         title=TOOL_TEXT["watch_agent_cognition"][0],
         description=TOOL_TEXT["watch_agent_cognition"][1],
         annotations=ToolAnnotations(
-            readOnlyHint=True,
+            readOnlyHint=False,
             destructiveHint=False,
+            idempotentHint=True,
             openWorldHint=False,
         ),
-        meta={**READ, "openai/outputTemplate": COGNITION_WIDGET_URI},
+        meta={**WRITE, "openai/outputTemplate": COGNITION_WIDGET_URI},
     )
     async def watch_agent_cognition(agent_id: str) -> dict[str, Any]:
-        return await relay.call(
-            _principal("remote:read"),
+        principal = _principal("remote:write")
+        armed = await relay.call(
+            principal,
             "watch_agent_cognition",
             {"agent_id": agent_id},
         )
+        watcher_id = str(armed.get("watcherId") or "").strip()
+        if not watcher_id:
+            return armed
+        waited = await relay.call(
+            principal,
+            "wait_llm_request",
+            {
+                "agent_id": agent_id,
+                "watcher_id": watcher_id,
+                "timeout_seconds": 20,
+            },
+        )
+        request = waited.get("request") if isinstance(waited, dict) else None
+        if not isinstance(request, dict) or not request.get("request_id"):
+            return {
+                **armed,
+                "watcherState": "ARMED",
+                "timedOut": bool(waited.get("timed_out")) if isinstance(waited, dict) else False,
+            }
+        claimed = await relay.call(
+            principal,
+            "claim_llm_request",
+            {
+                "request_id": request["request_id"],
+                "watcher_id": watcher_id,
+                "claim_seconds": 300,
+            },
+        )
+        return {
+            **claimed,
+            "agentId": agent_id,
+            "watcherId": watcher_id,
+            "watchRecommended": True,
+            "watcherState": "WAITING_FOR_CHATGPT_SESSION",
+            "autoClaimed": True,
+        }
 
     @apps.tool(
         resource_uri=CONTROL_PLANE_WIDGET_URI,
