@@ -51,7 +51,13 @@ jobs:
       - name: Compile Windows connector sources
         run: python -m py_compile plugin/scripts/bridge.py plugin/scripts/configmodel.py plugin/scripts/localexec.py plugin/scripts/relay_agent.py plugin/scripts/connector.py plugin/scripts/contract.py
       - name: Run Windows-safe connector tests
-        run: python -m unittest discover -s plugin/tests -v
+        run: |
+          python plugin/tests/test_config.py
+          python plugin/tests/test_connector.py
+          python plugin/tests/test_localexec.py
+          python plugin/tests/test_native_local_bridge.py
+          python plugin/tests/test_cognition.py
+          python plugin/tests/test_packaging.py
 
   gateway:
     name: Gateway tests
