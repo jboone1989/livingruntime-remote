@@ -245,6 +245,31 @@ class CognitionQueueTests(unittest.TestCase):
         self.assertEqual(claimed["request_id"], "llmreq_live_chat")
         self.assertEqual(background["request_id"], "llmreq_old_background")
 
+    def test_legacy_unbounded_unclaimed_request_expires_after_stale_cap(self) -> None:
+        with patch.object(cognition.time, "time", return_value=1000.0):
+            created = cognition.submit(
+                agent_id="ferro",
+                purpose="general_text",
+                messages=[{"role": "user", "content": "legacy"}],
+                timeout_seconds=300,
+                dispatch_timeout_seconds=0,
+                request_id="llmreq_legacy_stale",
+            )
+        path = self.root / "requests" / "llmreq_legacy_stale.json"
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        stored["dispatch_timeout_seconds"] = None
+        stored["dispatch_deadline_at"] = None
+        stored["deadline_at"] = None
+        path.write_text(json.dumps(stored), encoding="utf-8")
+
+        stale_at = 1000.0 + cognition.MAX_UNCLAIMED_DURABLE_AGE_SECONDS
+        with patch.object(cognition.time, "time", return_value=stale_at + 1):
+            expired = cognition.get("llmreq_legacy_stale")
+
+        self.assertEqual(created["status"], "PENDING")
+        self.assertEqual(expired["status"], "TIMED_OUT")
+        self.assertEqual(expired["timeout_phase"], "DISPATCH_STALE")
+
     def test_zero_dispatch_timeout_keeps_request_pending_until_claimed(self) -> None:
         with patch.object(cognition.time, "time", return_value=1000.0):
             created = cognition.submit(

@@ -282,6 +282,27 @@ def _refresh_timeout(value: dict[str, Any], now: float | None = None) -> dict[st
     if value.get("status") in TERMINAL_STATUSES:
         return value
     prior_status = str(value.get("status") or "")
+    created_at = float(value.get("created_at") or 0.0)
+    dispatch_timeout = value.get("dispatch_timeout_seconds")
+    deadline = float(value.get("deadline_at") or 0.0)
+    if (
+        prior_status == "PENDING"
+        and created_at
+        and now >= created_at + MAX_UNCLAIMED_DURABLE_AGE_SECONDS
+        and deadline == 0.0
+        and dispatch_timeout != 0
+    ):
+        # Legacy durable requests (created before dispatch deadlines existed)
+        # can otherwise survive forever and starve every newly attached watcher.
+        # Explicit zero-dispatch-timeout requests retain their intentionally
+        # unbounded semantics.
+        value["status"] = "TIMED_OUT"
+        value["finished_at"] = now
+        value["updated_at"] = now
+        value["timeout_phase"] = "DISPATCH_STALE"
+        value["claim"] = None
+        _save(value)
+        return value
     dispatch_deadline = float(value.get("dispatch_deadline_at") or 0.0)
     if (
         prior_status == "PENDING"
