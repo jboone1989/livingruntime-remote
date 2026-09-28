@@ -26,7 +26,7 @@ from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
 
 NAME = "LivingRuntime Remote"
-VERSION = "0.4.40"
+VERSION = "0.4.41"
 PI_JOB_WIDGET_URI = "ui://livingruntime-remote/pi-job-watch-v3.html"
 PI_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/pi-job-watch-v2.html"
 LONG_JOB_WIDGET_URI = "ui://livingruntime-remote/long-job-watch-v5.html"
@@ -2881,10 +2881,48 @@ def create_mcp(
             "watch_agent_cognition",
             {"agent_id": agent_id},
         )
+        watcher_id = str(watcher.get("watcherId") or "").strip()
+        if not watcher_id:
+            return {
+                **result,
+                **watcher,
+                "watcherAutoRearmed": True,
+            }
+        waited = await relay.call(
+            user_sub,
+            "wait_llm_request",
+            {
+                "agent_id": agent_id,
+                "watcher_id": watcher_id,
+                "timeout_seconds": 20,
+            },
+        )
+        next_request = waited.get("request") if isinstance(waited, dict) else None
+        if not isinstance(next_request, dict) or not next_request.get("request_id"):
+            return {
+                **result,
+                **watcher,
+                "watcherAutoRearmed": True,
+                "nextRequestAutoClaimed": False,
+            }
+        claimed = await relay.call(
+            user_sub,
+            "claim_llm_request",
+            {
+                "request_id": next_request["request_id"],
+                "watcher_id": watcher_id,
+                "claim_seconds": 300,
+            },
+        )
         return {
             **result,
-            **watcher,
+            **claimed,
+            "agentId": agent_id,
+            "watcherId": watcher_id,
+            "watchRecommended": True,
+            "watcherState": "WAITING_FOR_CHATGPT_SESSION",
             "watcherAutoRearmed": True,
+            "nextRequestAutoClaimed": True,
         }
 
     @expose("get_long_job", True, False, False)
