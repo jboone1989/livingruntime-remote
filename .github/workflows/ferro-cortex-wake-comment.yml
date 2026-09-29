@@ -1,0 +1,48 @@
+name: Ferro public cortex wake bridge
+
+on:
+  push:
+    branches:
+      - livingruntime/ferro-cortex-wake
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  ring-cortex:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish bounded cortex wake comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_base="https://api.github.com/repos/${REPO}"
+          auth_header="Authorization: Bearer ${GH_TOKEN}"
+          accept_header="Accept: application/vnd.github+json"
+
+          marker_payload="$(curl -fsSL -H "${auth_header}" -H "${accept_header}" "${api_base}/contents/FERRO_CORTEX_WAKE.json?ref=${HEAD_SHA}")"
+          marker_encoded="$(jq -er '.content' <<<"${marker_payload}")"
+          marker="$(printf '%s' "${marker_encoded}" | base64 --decode)"
+          schema_version="$(jq -r '.schema_version // empty' <<<"${marker}")"
+          event_name="$(jq -r '.event // empty' <<<"${marker}")"
+          agent_id="$(jq -r '.agent_id // empty' <<<"${marker}")"
+          request_id="$(jq -r '.request_id // empty' <<<"${marker}")"
+
+          [[ "${schema_version}" == "livingruntime-cortex-wake.v1" ]]
+          [[ "${event_name}" == "FERRO_CORTEX_WAKE" ]]
+          [[ "${agent_id}" == "ferro" ]]
+          [[ "${request_id}" =~ ^llmreq_[A-Za-z0-9._-]{1,120}$ ]]
+
+          comments="$(curl -fsSL -H "${auth_header}" -H "${accept_header}" "${api_base}/issues/3/comments?per_page=100")"
+          if jq -e --arg needle "wake_commit=${HEAD_SHA}" 'any(.[]; ((.body // "") | contains($needle)))' <<<"${comments}" >/dev/null; then
+            exit 0
+          fi
+
+          comment="$(printf '%s\n' 'FERRO_CORTEX_WAKE' 'agent_id=ferro' "request_id=${request_id}" 'source=github-action-comment-bridge' "wake_commit=${HEAD_SHA}" '' 'Activation only. Authoritative cognition content remains in LivingRuntime.')"
+          body="$(jq -n --arg body "${comment}" '{body: $body}')"
+          curl -fsSL -X POST -H "${auth_header}" -H "${accept_header}" -H "X-GitHub-Api-Version: 2022-11-28" -d "${body}" "${api_base}/issues/3/comments" >/dev/null
