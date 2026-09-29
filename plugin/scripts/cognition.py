@@ -492,6 +492,7 @@ def get_status(request_id: str) -> dict[str, Any]:
         "request_id": value["request_id"],
         "agent_id": value["agent_id"],
         "purpose": value["purpose"],
+        "dispatch_lane": dispatch_lane(value),
         "status": value["status"],
         "attempts": value.get("attempts", 0),
         "created_at": value.get("created_at"),
@@ -564,6 +565,22 @@ def _dispatch_priority(value: dict[str, Any]) -> int:
     return 0
 
 
+def dispatch_lane(value: dict[str, Any]) -> str:
+    """Isolate latency-sensitive cognition from long-running/background work."""
+    purpose = str(value.get("purpose") or "").strip().lower()
+    metadata = value.get("metadata") if isinstance(value.get("metadata"), dict) else {}
+    task_class = str(metadata.get("routing_task_class") or purpose).strip().lower()
+    if purpose == "simple_public_text":
+        return "public"
+    if task_class == "owner_dialogue":
+        return "owner"
+    if task_class == "self_repair" or purpose.startswith("ferro.harness-rsi."):
+        return "repair"
+    if task_class == "content_cognition":
+        return "content"
+    return "background"
+
+
 def _pending_rows_by_priority(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(
         rows,
@@ -576,7 +593,10 @@ def _pending_rows_by_priority(rows: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def peek_next(
-    *, agent_id: str, watcher_id: str | None = None
+    *,
+    agent_id: str,
+    watcher_id: str | None = None,
+    lane: str | None = None,
 ) -> dict[str, Any] | None:
     """Read the next dispatchable request while settling expired lifecycle state."""
     agent = _validate_agent_id(agent_id)
@@ -586,45 +606,58 @@ def peek_next(
         _expire_stale_text_backlog(agent, now)
         rows = [_refresh_timeout(row, now) for row in _candidate_rows(agent)]
 
+    active_lanes: set[str] = set()
     for row in rows:
         if row.get("status") != "DISPATCHED":
+            continue
+        row_lane = dispatch_lane(row)
+        if lane is not None and row_lane != lane:
             continue
         deadline = float(row.get("deadline_at") or 0.0)
         if deadline and now >= deadline:
             continue
         claim = row.get("claim") if isinstance(row.get("claim"), dict) else {}
         if float(claim.get("expires_at") or 0.0) > now:
+            active_lanes.add(row_lane)
             if watcher is not None and claim.get("watcher_id") == watcher:
                 return {
                     "request_id": row.get("request_id"),
                     "agent_id": row.get("agent_id"),
                     "purpose": row.get("purpose"),
+                    "dispatch_lane": row_lane,
                     "status": "DISPATCHED",
                     "deadline_at": row.get("deadline_at"),
                     "dispatch_waiting_since": row.get("dispatch_waiting_since"),
                     "reclaimable": False,
                     "owned_by_watcher": True,
                 }
-            return None
 
+    reclaimable = []
     for row in rows:
         deadline = float(row.get("deadline_at") or 0.0)
         if deadline and now >= deadline:
             continue
         if row.get("status") != "DISPATCHED":
             continue
+        row_lane = dispatch_lane(row)
+        if lane is not None and row_lane != lane:
+            continue
         claim = row.get("claim") if isinstance(row.get("claim"), dict) else {}
         if float(claim.get("expires_at") or 0.0) <= now:
-            return {
-                "request_id": row.get("request_id"),
-                "agent_id": row.get("agent_id"),
-                "purpose": row.get("purpose"),
-                "status": "DISPATCHED",
-                "deadline_at": row.get("deadline_at"),
-                "dispatch_waiting_since": row.get("dispatch_waiting_since"),
-                "reclaimable": True,
-                "owned_by_watcher": False,
-            }
+            reclaimable.append(row)
+    if reclaimable:
+        row = _pending_rows_by_priority(reclaimable)[0]
+        return {
+            "request_id": row.get("request_id"),
+            "agent_id": row.get("agent_id"),
+            "purpose": row.get("purpose"),
+            "dispatch_lane": dispatch_lane(row),
+            "status": "DISPATCHED",
+            "deadline_at": row.get("deadline_at"),
+            "dispatch_waiting_since": row.get("dispatch_waiting_since"),
+            "reclaimable": True,
+            "owned_by_watcher": False,
+        }
 
     for row in _pending_rows_by_priority(rows):
         deadline = float(row.get("deadline_at") or 0.0)
@@ -632,10 +665,16 @@ def peek_next(
             continue
         if row.get("status") != "PENDING":
             continue
+        row_lane = dispatch_lane(row)
+        if lane is not None and row_lane != lane:
+            continue
+        if row_lane in active_lanes:
+            continue
         return {
             "request_id": row.get("request_id"),
             "agent_id": row.get("agent_id"),
             "purpose": row.get("purpose"),
+            "dispatch_lane": row_lane,
             "status": "PENDING",
             "deadline_at": row.get("deadline_at"),
             "dispatch_waiting_since": row.get("dispatch_waiting_since"),
@@ -650,12 +689,17 @@ def wait_pending(
     agent_id: str,
     watcher_id: str | None = None,
     timeout_seconds: int = 30,
+    lane: str | None = None,
 ) -> dict[str, Any]:
     """Bounded, side-effect-free wait used by the ChatGPT widget."""
     timeout = min(90, max(1, int(timeout_seconds)))
     deadline = time.monotonic() + timeout
     while True:
-        request = peek_next(agent_id=agent_id, watcher_id=watcher_id)
+        request = peek_next(
+            agent_id=agent_id,
+            watcher_id=watcher_id,
+            lane=lane,
+        )
         if request is not None:
             return {"request": request, "timed_out": False}
         remaining = deadline - time.monotonic()
@@ -684,15 +728,20 @@ def claim_request(
         if value.get("status") == "TIMED_OUT":
             raise RuntimeError("cognition request already timed out")
 
+        target_lane = dispatch_lane(value)
         for row in _candidate_rows(str(value.get("agent_id") or "")):
             if row.get("request_id") == rid or row.get("status") != "DISPATCHED":
+                continue
+            if dispatch_lane(row) != target_lane:
                 continue
             row_deadline = float(row.get("deadline_at") or 0.0)
             if row_deadline and now >= row_deadline:
                 continue
             other_claim = row.get("claim") if isinstance(row.get("claim"), dict) else {}
             if float(other_claim.get("expires_at") or 0.0) > now:
-                raise RuntimeError("another cognition request is already dispatched for this agent")
+                raise RuntimeError(
+                    f"another cognition request is already dispatched in lane {target_lane}"
+                )
 
         if value.get("status") == "DISPATCHED":
             claim = value.get("claim") if isinstance(value.get("claim"), dict) else {}
@@ -739,7 +788,7 @@ def claim_next(
     with _queue_lock():
         _expire_stale_text_backlog(agent, now)
         rows = _candidate_rows(agent)
-        active_dispatch = False
+        active_lanes: set[str] = set()
         for row in rows:
             row = _refresh_timeout(row, now)
             if row.get("status") != "DISPATCHED":
@@ -747,17 +796,17 @@ def claim_next(
             claim = row.get("claim") if isinstance(row.get("claim"), dict) else {}
             expires = float(claim.get("expires_at") or 0.0)
             if expires > now:
-                active_dispatch = True
-                break
+                active_lanes.add(dispatch_lane(row))
+                continue
             row["status"] = "PENDING"
             row["claim"] = None
             row["updated_at"] = now
             _save(row)
-        if active_dispatch:
-            return None
         for row in _pending_rows_by_priority(rows):
             row = _refresh_timeout(row, now)
             if row.get("status") != "PENDING":
+                continue
+            if dispatch_lane(row) in active_lanes:
                 continue
             token = uuid.uuid4().hex
             row["status"] = "DISPATCHED"

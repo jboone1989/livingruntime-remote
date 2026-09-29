@@ -236,6 +236,125 @@ class CognitionQueueTests(unittest.TestCase):
         second = cognition.claim_next(agent_id="ferro", watcher_id="watcher_2")
         self.assertEqual(second["request_id"], "llmreq_two")
 
+    def test_dispatch_lanes_allow_public_text_while_owner_dialogue_is_running(self) -> None:
+        owner = cognition.submit(
+            agent_id="ferro",
+            purpose="owner_dialogue",
+            messages=[{"role": "user", "content": "long owner turn"}],
+            metadata={"routing_task_class": "owner_dialogue"},
+            request_id="llmreq_owner_lane",
+        )
+        public = cognition.submit(
+            agent_id="ferro",
+            purpose="simple_public_text",
+            messages=[{"role": "user", "content": "latency sensitive visitor"}],
+            request_id="llmreq_public_lane",
+        )
+
+        owner_claim = cognition.claim_request(
+            request_id=owner["request_id"],
+            watcher_id="watcher_owner",
+            claim_seconds=300,
+        )
+        public_claim = cognition.claim_request(
+            request_id=public["request_id"],
+            watcher_id="watcher_public",
+            claim_seconds=300,
+        )
+
+        self.assertEqual(cognition.dispatch_lane(owner_claim), "owner")
+        self.assertEqual(cognition.dispatch_lane(public_claim), "public")
+        self.assertEqual(owner_claim["status"], "DISPATCHED")
+        self.assertEqual(public_claim["status"], "DISPATCHED")
+
+    def test_same_dispatch_lane_remains_serialized(self) -> None:
+        first = cognition.submit(
+            agent_id="ferro",
+            purpose="owner_dialogue",
+            messages=[{"role": "user", "content": "first"}],
+            metadata={"routing_task_class": "owner_dialogue"},
+            request_id="llmreq_owner_lane_first",
+        )
+        second = cognition.submit(
+            agent_id="ferro",
+            purpose="owner_dialogue",
+            messages=[{"role": "user", "content": "second"}],
+            metadata={"routing_task_class": "owner_dialogue"},
+            request_id="llmreq_owner_lane_second",
+        )
+        cognition.claim_request(
+            request_id=first["request_id"],
+            watcher_id="watcher_owner_first",
+            claim_seconds=300,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "lane owner"):
+            cognition.claim_request(
+                request_id=second["request_id"],
+                watcher_id="watcher_owner_second",
+                claim_seconds=300,
+            )
+
+    def test_claim_next_skips_busy_lane_and_claims_highest_free_lane(self) -> None:
+        owner = cognition.submit(
+            agent_id="ferro",
+            purpose="owner_dialogue",
+            messages=[{"role": "user", "content": "owner"}],
+            metadata={"routing_task_class": "owner_dialogue"},
+            request_id="llmreq_busy_owner",
+        )
+        cognition.submit(
+            agent_id="ferro",
+            purpose="self_repair",
+            messages=[{"role": "user", "content": "repair"}],
+            metadata={"routing_task_class": "self_repair"},
+            request_id="llmreq_free_repair",
+        )
+        cognition.claim_request(
+            request_id=owner["request_id"],
+            watcher_id="watcher_owner_busy",
+            claim_seconds=300,
+        )
+
+        claimed = cognition.claim_next(
+            agent_id="ferro",
+            watcher_id="watcher_repair",
+        )
+
+        self.assertEqual(claimed["request_id"], "llmreq_free_repair")
+        self.assertEqual(cognition.dispatch_lane(claimed), "repair")
+
+    def test_lane_scoped_wait_does_not_attach_to_other_active_lane(self) -> None:
+        owner = cognition.submit(
+            agent_id="ferro",
+            purpose="owner_dialogue",
+            messages=[{"role": "user", "content": "owner"}],
+            metadata={"routing_task_class": "owner_dialogue"},
+            request_id="llmreq_active_owner",
+        )
+        public = cognition.submit(
+            agent_id="ferro",
+            purpose="simple_public_text",
+            messages=[{"role": "user", "content": "public"}],
+            request_id="llmreq_wait_public",
+        )
+        cognition.claim_request(
+            request_id=owner["request_id"],
+            watcher_id="chatgpt-work-ferro-cortex",
+            claim_seconds=300,
+        )
+
+        waited = cognition.wait_pending(
+            agent_id="ferro",
+            watcher_id="chatgpt-work-ferro-cortex",
+            timeout_seconds=1,
+            lane="public",
+        )
+
+        self.assertFalse(waited["timed_out"])
+        self.assertEqual(waited["request"]["request_id"], public["request_id"])
+        self.assertEqual(waited["request"]["dispatch_lane"], "public")
+
     def test_priority_prefers_self_repair_over_older_background_cognition(self) -> None:
         with patch.object(cognition.time, "time", return_value=1000.0):
             cognition.submit(

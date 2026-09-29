@@ -66,6 +66,7 @@ from jobs import (
 from cognition import (
     claim_request as claim_cognition_request,
     complete as complete_cognition_request,
+    dispatch_lane as cognition_dispatch_lane,
     get as get_cognition_request,
     get_status as get_cognition_request_status,
     resumable_watcher_id as cognition_watcher_id,
@@ -2285,6 +2286,7 @@ def complete_llm_request(
         agent_id=agent_id,
         watcher_id=watcher_id,
         timeout_seconds=20,
+        lane=cognition_dispatch_lane(current),
     )
     next_request = waited.get("request") if isinstance(waited, dict) else None
     if not isinstance(next_request, dict) or not next_request.get("request_id"):
