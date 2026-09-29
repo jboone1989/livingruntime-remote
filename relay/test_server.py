@@ -45,7 +45,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.46")
+            self.assertEqual(health.json()["version"], "0.4.47")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -617,6 +617,9 @@ class RelayServerTests(unittest.TestCase):
             v3_cognition_widget.model_dump(by_alias=True)["_meta"]["openai/widgetDomain"],
             server.PI_JOB_WIDGET_DOMAIN,
         )
+        self.assertEqual(v3_cognition_widget.text, server.COGNITION_WIDGET_HTML)
+        self.assertIn("wait_llm_request", v3_cognition_widget.text)
+        self.assertIn("claim_llm_request_for_watcher", v3_cognition_widget.text)
         self.assertNotIn("tools/call", server.COGNITION_WIDGET_LEGACY_HTML)
         self.assertNotIn("ui/message", server.COGNITION_WIDGET_LEGACY_HTML)
         self.assertIn("superseded", server.COGNITION_WIDGET_LEGACY_HTML)
