@@ -40,9 +40,8 @@ def _config() -> dict[str, Any]:
 
 
 def _setting(env_name: str, config_key: str, default: str = "") -> str:
-    explicit = _env(env_name)
-    if explicit:
-        return explicit
+    if env_name in os.environ:
+        return str(os.environ.get(env_name) or "").strip()
     return str(_config().get(config_key) or default).strip()
 
 

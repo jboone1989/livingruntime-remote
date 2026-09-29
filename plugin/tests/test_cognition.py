@@ -21,9 +21,13 @@ class CognitionQueueTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name) / "cognition"
+        self.wake_config = Path(self.tmp.name) / "no-cognition-wake-config.json"
         self.env = patch.dict(
             os.environ,
-            {"LIVINGRUNTIME_COGNITION_ROOT": str(self.root)},
+            {
+                "LIVINGRUNTIME_COGNITION_ROOT": str(self.root),
+                "LIVINGRUNTIME_COGNITION_GITHUB_WAKE_CONFIG": str(self.wake_config),
+            },
         )
         self.env.start()
 
