@@ -15,6 +15,8 @@ else:
 from pathlib import Path
 from typing import Any, Iterator
 
+from cortex_wake import emit as emit_cognition_wake
+
 STORE_VERSION = 1
 REQUEST_ID_RE = re.compile(r"^llmreq_[A-Za-z0-9._-]{1,120}$")
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
@@ -409,34 +411,43 @@ def submit(
         if existing is not None:
             if existing.get("payload_sha256") != digest:
                 raise RuntimeError("request_id idempotency conflict")
-            return _refresh_timeout(existing, now)
-        value = {
-            "version": STORE_VERSION,
-            "request_id": rid,
-            **payload,
-            "payload_sha256": digest,
-            "status": "PENDING",
-            "claim": None,
-            "attempts": 0,
-            "response": None,
-            "created_at": now,
-            "updated_at": now,
-            "dispatch_deadline_at": (
-                None
-                if dispatch_timeout in (None, 0)
-                else now + dispatch_timeout
-            ),
-            "deadline_at": (
-                None
-                if dispatch_timeout is not None
-                else now + timeout
-            ),
-            "dispatch_waiting_since": None,
-            "timeout_phase": None,
-            "finished_at": None,
+            result = dict(_refresh_timeout(existing, now))
+        else:
+            value = {
+                "version": STORE_VERSION,
+                "request_id": rid,
+                **payload,
+                "payload_sha256": digest,
+                "status": "PENDING",
+                "claim": None,
+                "attempts": 0,
+                "response": None,
+                "created_at": now,
+                "updated_at": now,
+                "dispatch_deadline_at": (
+                    None
+                    if dispatch_timeout in (None, 0)
+                    else now + dispatch_timeout
+                ),
+                "deadline_at": (
+                    None
+                    if dispatch_timeout is not None
+                    else now + timeout
+                ),
+                "dispatch_waiting_since": None,
+                "timeout_phase": None,
+                "finished_at": None,
+            }
+            _save(value)
+            result = dict(value)
+    if result.get("status") == "PENDING":
+        result["activation"] = emit_cognition_wake(result)
+    else:
+        result["activation"] = {
+            "status": "NOT_REQUIRED",
+            "request_status": result.get("status"),
         }
-        _save(value)
-        return dict(value)
+    return result
 
 
 def get(request_id: str) -> dict[str, Any]:

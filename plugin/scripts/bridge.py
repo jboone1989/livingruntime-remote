@@ -2088,6 +2088,8 @@ def submit_llm_request(
         "agent_id": result["agent_id"],
         "purpose": result["purpose"],
         "status": result["status"],
+        "activation_status": (result.get("activation") or {}).get("status"),
+        "activation_transport": (result.get("activation") or {}).get("transport"),
     })
     return result
 

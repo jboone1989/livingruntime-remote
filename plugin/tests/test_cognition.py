@@ -56,6 +56,30 @@ class CognitionQueueTests(unittest.TestCase):
         self.assertTrue(path.exists())
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
+    def test_submit_only_emits_activation_for_pending_request(self) -> None:
+        with patch.object(
+            cognition,
+            "emit_cognition_wake",
+            return_value={"status": "EMITTED"},
+        ) as emit:
+            first = self.submit("llmreq_activation")
+            claimed = cognition.claim_request(
+                request_id="llmreq_activation",
+                watcher_id="watcher_activation",
+                claim_seconds=30,
+            )
+            cognition.complete(
+                request_id="llmreq_activation",
+                response_text="done",
+                claim_token=claimed["claim"]["token"],
+            )
+            repeated = self.submit("llmreq_activation")
+
+        self.assertEqual(first["activation"]["status"], "EMITTED")
+        self.assertEqual(repeated["status"], "COMPLETED")
+        self.assertEqual(repeated["activation"]["status"], "NOT_REQUIRED")
+        self.assertEqual(emit.call_count, 1)
+
     def test_request_id_conflict_is_rejected(self) -> None:
         self.submit("llmreq_conflict")
         with self.assertRaisesRegex(RuntimeError, "idempotency conflict"):
