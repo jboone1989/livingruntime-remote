@@ -715,6 +715,8 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
   let latestOutput = null;
   let activeWatcher = null;
   let stopped = false;
+  let reconnectAttempts = 0;
+  const maxReconnectAttempts = 3;
   const statusEl = document.getElementById("status");
   const detailEl = document.getElementById("detail");
 
@@ -741,6 +743,19 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
   }
   function data(result) {
     return result?.structuredContent || result?.structured_content || result || null;
+  }
+  async function callTool(name, arguments_) {
+    if (window.openai?.callTool) {
+      return await window.openai.callTool(name, arguments_);
+    }
+    return await request("tools/call", {name, arguments:arguments_});
+  }
+  function isTransientResourceError(message) {
+    const text = String(message || "");
+    return (
+      text.includes("Resource not found") ||
+      text.includes("Internal Server Error")
+    );
   }
   async function followUp(agentId, requestId, purpose, watcherId, claimToken) {
     const prompt =
@@ -780,14 +795,12 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
     setStatus("ARMED", "Agent " + agentId + " · waiting for the next durable cognition request");
     try {
       while (!stopped) {
-        const result = await request("tools/call", {
-          name:"wait_llm_request",
-          arguments:{
-            agent_id:agentId,
-            ...(watcherId ? {watcher_id:watcherId} : {}),
-            timeout_seconds:30
-          }
+        const result = await callTool("wait_llm_request", {
+          agent_id:agentId,
+          ...(watcherId ? {watcher_id:watcherId} : {}),
+          timeout_seconds:30
         });
+        reconnectAttempts = 0;
         const payload = data(result);
         if (!watcherId && payload?.watcherId) watcherId = payload.watcherId;
         const llmRequest = payload?.request || null;
@@ -805,14 +818,12 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
           }
           handedOffRequestId = requestId;
           setStatus("WAITING_FOR_CHATGPT_SESSION", "Request " + requestId + " · handing durable cognition to ChatGPT");
-          const claimResult = await request("tools/call", {
-            name:"claim_llm_request_for_watcher",
-            arguments:{
-              request_id:requestId,
-              watcher_id:watcherId,
-              claim_seconds:300
-            }
+          const claimResult = await callTool("claim_llm_request_for_watcher", {
+            request_id:requestId,
+            watcher_id:watcherId,
+            claim_seconds:300
           });
+          reconnectAttempts = 0;
           const claimed = data(claimResult);
           const claimToken = claimed?.claim?.token;
           if (!claimToken) throw new Error("cognition watcher claim returned no token");
@@ -841,6 +852,13 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
       }
     } catch (error) {
       const message = String(error?.message || error);
+      if (!stopped && isTransientResourceError(message) && reconnectAttempts < maxReconnectAttempts) {
+        reconnectAttempts += 1;
+        activeWatcher = null;
+        setStatus("RECONNECTING", "Temporary app connection issue");
+        await new Promise(resolve=>setTimeout(resolve,1000 * reconnectAttempts));
+        return watch({...output,agentId,watcherId});
+      }
       setStatus("DISCONNECTED", message);
       try {
         await request("ui/message", {
@@ -1414,6 +1432,19 @@ class Relay:
                 raise TimeoutError(
                     "paired device did not claim task before relay timeout; queued task was cancelled"
                 )
+            if tool in {"wait_llm_request", "wait_long_job"}:
+                return {
+                    "status": "RELAY_WAIT_TIMEOUT",
+                    "timed_out": True,
+                    "timedOut": True,
+                    "relay_timeout": True,
+                    "relayTimeout": True,
+                    "task_id": task_id,
+                    "detail": (
+                        "paired device claimed bounded wait task but did not "
+                        "complete before relay timeout; caller may remain armed"
+                    ),
+                }
             raise TimeoutError(
                 "paired device claimed task but did not complete before relay timeout"
             )

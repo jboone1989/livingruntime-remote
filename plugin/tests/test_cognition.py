@@ -161,6 +161,52 @@ class CognitionQueueTests(unittest.TestCase):
         second = cognition.claim_next(agent_id="ferro", watcher_id="watcher_2")
         self.assertEqual(second["request_id"], "llmreq_two")
 
+    def test_priority_prefers_self_repair_over_older_background_cognition(self) -> None:
+        with patch.object(cognition.time, "time", return_value=1000.0):
+            cognition.submit(
+                agent_id="ferro",
+                purpose="general_text",
+                messages=[{"role": "user", "content": "WORLD_SCAN_PLAN"}],
+                metadata={"source": "ferro", "routing_task_class": "general_text"},
+                request_id="llmreq_background_old",
+            )
+        with patch.object(cognition.time, "time", return_value=1001.0):
+            cognition.submit(
+                agent_id="ferro",
+                purpose="self_repair",
+                messages=[{"role": "user", "content": "GENERATE_BOUNDED_SELF_REPAIR_PLAN"}],
+                metadata={"source": "ferro", "routing_task_class": "self_repair"},
+                request_id="llmreq_repair_new",
+            )
+
+        with patch.object(cognition.time, "time", return_value=1002.0):
+            claimed = cognition.claim_next(
+                agent_id="ferro",
+                watcher_id="watcher_priority",
+            )
+
+        self.assertEqual(claimed["request_id"], "llmreq_repair_new")
+
+    def test_priority_prefers_owner_dialogue_over_older_background_cognition(self) -> None:
+        cognition.submit(
+            agent_id="ferro",
+            purpose="general_text",
+            messages=[{"role": "user", "content": "background"}],
+            metadata={"source": "ferro", "routing_task_class": "general_text"},
+            request_id="llmreq_background",
+        )
+        cognition.submit(
+            agent_id="ferro",
+            purpose="owner_dialogue",
+            messages=[{"role": "user", "content": "advance owner goal"}],
+            metadata={"source": "ferro", "routing_task_class": "owner_dialogue"},
+            request_id="llmreq_owner_dialogue",
+        )
+
+        peeked = cognition.peek_next(agent_id="ferro")
+
+        self.assertEqual(peeked["request_id"], "llmreq_owner_dialogue")
+
     def test_ancient_expired_dispatched_text_request_is_not_reclaimed(self) -> None:
         with patch.object(cognition.time, "time", return_value=1000.0):
             cognition.submit(

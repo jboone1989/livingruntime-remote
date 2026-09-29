@@ -520,9 +520,17 @@ def _expire_stale_text_backlog(agent_id: str, now: float) -> None:
 
 
 def _dispatch_priority(value: dict[str, Any]) -> int:
-    """Prefer latency-sensitive dialogue while preserving durable backlog."""
+    """Prefer user-facing and recovery-critical cognition over background scans."""
     purpose = str(value.get("purpose") or "").strip().lower()
+    metadata = value.get("metadata") if isinstance(value.get("metadata"), dict) else {}
+    task_class = str(metadata.get("routing_task_class") or purpose).strip().lower()
     if purpose == "simple_public_text":
+        return 400
+    if task_class == "self_repair":
+        return 300
+    if task_class == "owner_dialogue":
+        return 250
+    if task_class == "content_cognition":
         return 100
     return 0
 

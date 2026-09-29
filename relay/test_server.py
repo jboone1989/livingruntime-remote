@@ -702,6 +702,11 @@ class RelayServerTests(unittest.TestCase):
     def test_cognition_widget_waits_claims_and_rearms_same_conversation(self):
         html = server.COGNITION_WIDGET_HTML
         self.assertIn('"tools/call"', html)
+        self.assertIn("window.openai?.callTool", html)
+        self.assertIn("RECONNECTING", html)
+        self.assertIn("Resource not found", html)
+        self.assertIn("Internal Server Error", html)
+        self.assertIn("maxReconnectAttempts = 3", html)
         self.assertIn('"wait_llm_request"', html)
         self.assertIn('"claim_llm_request_for_watcher"', html)
         self.assertIn("window.openai?.toolInput", html)
@@ -729,6 +734,27 @@ class RelayServerTests(unittest.TestCase):
         self.assertNotIn("the next turn will re-arm this channel", html)
         self.assertIn("do not ask the user to type continue", html)
         self.assertNotIn("setInterval(", html)
+
+    def test_bounded_wait_relay_timeout_is_not_promoted_to_tool_failure(self):
+        source = inspect.getsource(server.Relay.call)
+        self.assertIn('tool in {"wait_llm_request", "wait_long_job"}', source)
+        self.assertIn('"RELAY_WAIT_TIMEOUT"', source)
+        self.assertIn('"timedOut": True', source)
+        self.assertIn('"relayTimeout": True', source)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required to validate widget JavaScript")
+    def test_cognition_widget_javascript_parses(self):
+        scripts = re.findall(r"<script>([\s\S]*?)</script>", server.COGNITION_WIDGET_HTML)
+        self.assertTrue(scripts, "Cognition watcher must contain its initialization script")
+        for script in scripts:
+            result = subprocess.run(
+                [shutil.which("node"), "--check"],
+                input=script,
+                text=True,
+                capture_output=True,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is required to validate widget JavaScript")
     def test_control_plane_widget_javascript_parses(self):
