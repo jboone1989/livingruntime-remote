@@ -23,34 +23,73 @@ def _env(name: str) -> str:
     return str(os.environ.get(name) or "").strip()
 
 
+def _config() -> dict[str, Any]:
+    raw_path = _env("LIVINGRUNTIME_COGNITION_GITHUB_WAKE_CONFIG")
+    path = (
+        Path(raw_path).expanduser()
+        if raw_path
+        else Path.home() / ".livingruntime" / "cognition-github-wake.json"
+    )
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    if not isinstance(value, dict):
+        raise RuntimeError("invalid cognition GitHub wake config")
+    return value
+
+
+def _setting(env_name: str, config_key: str, default: str = "") -> str:
+    explicit = _env(env_name)
+    if explicit:
+        return explicit
+    return str(_config().get(config_key) or default).strip()
+
+
 def _configured_repo() -> Path | None:
-    raw = _env("LIVINGRUNTIME_COGNITION_GITHUB_WAKE_REPO")
+    raw = _setting("LIVINGRUNTIME_COGNITION_GITHUB_WAKE_REPO", "repo")
     return Path(raw).expanduser().resolve() if raw else None
 
 
 def _branch() -> str:
-    value = _env("LIVINGRUNTIME_COGNITION_GITHUB_WAKE_BRANCH") or "livingruntime/ferro-cortex-wake"
+    value = _setting(
+        "LIVINGRUNTIME_COGNITION_GITHUB_WAKE_BRANCH",
+        "branch",
+        "livingruntime/ferro-cortex-wake",
+    )
     if not _BRANCH_RE.fullmatch(value) or ".." in value or value.startswith("/") or value.endswith("/"):
         raise ValueError("invalid cognition GitHub wake branch")
     return value
 
 
 def _agent_filter() -> str:
-    value = _env("LIVINGRUNTIME_COGNITION_GITHUB_WAKE_AGENT") or "ferro"
+    value = _setting(
+        "LIVINGRUNTIME_COGNITION_GITHUB_WAKE_AGENT",
+        "agent",
+        "ferro",
+    )
     if not _AGENT_RE.fullmatch(value):
         raise ValueError("invalid cognition GitHub wake agent")
     return value
 
 
 def _marker_name() -> str:
-    value = _env("LIVINGRUNTIME_COGNITION_GITHUB_WAKE_FILE") or _DEFAULT_MARKER
+    value = _setting(
+        "LIVINGRUNTIME_COGNITION_GITHUB_WAKE_FILE",
+        "file",
+        _DEFAULT_MARKER,
+    )
     if value != Path(value).name or value in {".", ".."}:
         raise ValueError("cognition GitHub wake file must be a repo-root filename")
     return value
 
 
 def _remote() -> str:
-    value = _env("LIVINGRUNTIME_COGNITION_GITHUB_WAKE_REMOTE") or "origin"
+    value = _setting(
+        "LIVINGRUNTIME_COGNITION_GITHUB_WAKE_REMOTE",
+        "remote",
+        "origin",
+    )
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", value):
         raise ValueError("invalid cognition GitHub wake remote")
     return value
