@@ -526,7 +526,7 @@ def _dispatch_priority(value: dict[str, Any]) -> int:
     task_class = str(metadata.get("routing_task_class") or purpose).strip().lower()
     if purpose == "simple_public_text":
         return 400
-    if task_class == "self_repair":
+    if task_class == "self_repair" or purpose.startswith("ferro.harness-rsi."):
         return 300
     if task_class == "owner_dialogue":
         return 250

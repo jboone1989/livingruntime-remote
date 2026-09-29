@@ -187,6 +187,27 @@ class CognitionQueueTests(unittest.TestCase):
 
         self.assertEqual(claimed["request_id"], "llmreq_repair_new")
 
+    def test_priority_recognizes_legacy_harness_rsi_purpose_without_metadata(self) -> None:
+        cognition.submit(
+            agent_id="ferro",
+            purpose="owner_dialogue",
+            messages=[{"role": "user", "content": "advance owner goal"}],
+            metadata={"source": "ferro", "routing_task_class": "owner_dialogue"},
+            request_id="llmreq_owner_waiting",
+        )
+        cognition.submit(
+            agent_id="ferro",
+            purpose="ferro.harness-rsi.propose",
+            messages=[{"role": "user", "content": "repair harness"}],
+            metadata={"parent_repair_request_id": "repair-legacy"},
+            request_id="llmreq_legacy_rrsi",
+        )
+
+        peeked = cognition.peek_next(agent_id="ferro")
+
+        self.assertEqual(peeked["request_id"], "llmreq_legacy_rrsi")
+
+
     def test_priority_prefers_owner_dialogue_over_older_background_cognition(self) -> None:
         cognition.submit(
             agent_id="ferro",
