@@ -45,7 +45,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.45")
+            self.assertEqual(health.json()["version"], "0.4.46")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -526,6 +526,9 @@ class RelayServerTests(unittest.TestCase):
         resource_uris = {str(resource.uri) for resource in resources}
         self.assertTrue(server.PI_JOB_WIDGET_URI.endswith("pi-job-watch-v3.html"))
         self.assertTrue(server.LONG_JOB_WIDGET_URI.endswith("long-job-watch-v5.html"))
+        self.assertTrue(server.COGNITION_WIDGET_URI.endswith("agent-cognition-watch-v4.html"))
+        self.assertIn(server.COGNITION_WIDGET_LEGACY_URI, resource_uris)
+        self.assertIn(server.COGNITION_WIDGET_V3_URI, resource_uris)
         self.assertIn(server.PI_JOB_WIDGET_LEGACY_URI, resource_uris)
         self.assertIn(server.LONG_JOB_WIDGET_LEGACY_URI, resource_uris)
         self.assertIn(server.LONG_JOB_WIDGET_V3_URI, resource_uris)
@@ -605,6 +608,18 @@ class RelayServerTests(unittest.TestCase):
             legacy_cognition_widget.model_dump(by_alias=True)["_meta"]["openai/widgetDomain"],
             server.PI_JOB_WIDGET_DOMAIN,
         )
+        v3_cognition_widget = next(
+            resource
+            for resource in resources
+            if str(resource.uri) == server.COGNITION_WIDGET_V3_URI
+        )
+        self.assertEqual(
+            v3_cognition_widget.model_dump(by_alias=True)["_meta"]["openai/widgetDomain"],
+            server.PI_JOB_WIDGET_DOMAIN,
+        )
+        self.assertNotIn("tools/call", server.COGNITION_WIDGET_LEGACY_HTML)
+        self.assertNotIn("ui/message", server.COGNITION_WIDGET_LEGACY_HTML)
+        self.assertIn("superseded", server.COGNITION_WIDGET_LEGACY_HTML)
         control_widget = next(
             resource
             for resource in resources
@@ -699,11 +714,22 @@ class RelayServerTests(unittest.TestCase):
         self.assertNotIn("Long job is working", html)
         self.assertNotIn("setInterval(", html)
 
+    def test_legacy_cognition_widgets_are_inert_compatibility_cards(self):
+        html = server.COGNITION_WIDGET_LEGACY_HTML
+        self.assertIn("Legacy cognition watcher", html)
+        self.assertNotIn("wait_llm_request", html)
+        self.assertNotIn("claim_llm_request_for_watcher", html)
+        self.assertNotIn("ui/message", html)
+        self.assertNotIn("sendFollowUpMessage", html)
+        self.assertNotIn("<script>", html)
+
     def test_cognition_widget_waits_claims_and_rearms_same_conversation(self):
         html = server.COGNITION_WIDGET_HTML
         self.assertIn('"tools/call"', html)
         self.assertIn("window.openai?.callTool", html)
         self.assertIn("RECONNECTING", html)
+        self.assertIn('text.includes("Load failed")', html)
+        self.assertIn('text.includes("Failed to fetch")', html)
         self.assertIn("Resource not found", html)
         self.assertIn("Internal Server Error", html)
         self.assertIn("maxReconnectAttempts = 3", html)
