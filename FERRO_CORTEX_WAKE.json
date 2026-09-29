@@ -1,7 +1,7 @@
 {
   "agent_id": "ferro",
   "event": "FERRO_CORTEX_WAKE",
-  "request_id": "llmreq_2acc24447639488f992774ff",
+  "request_id": "llmreq_337ff7a16940eaec7ac94b68c5d47313",
   "schema_version": "livingruntime-cortex-wake.v1",
-  "wake_sequence": 19
+  "wake_sequence": 20
 }
