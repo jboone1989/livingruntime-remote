@@ -147,6 +147,64 @@ class CortexWakeTests(unittest.TestCase):
         self.assertEqual(second["status"], "ALREADY_EMITTED")
         self.assertEqual(count_before, count_after)
 
+    def test_rearm_same_request_is_cooldown_bounded_then_emits_new_commit(self) -> None:
+        first = cortex_wake.emit(self.request())
+        self.assertEqual(first["status"], "EMITTED")
+        first_commit_at = int(
+            subprocess.run(
+                ["git", "-C", str(self.repo), "log", "-1", "--format=%ct"],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+        )
+        count_before = int(
+            subprocess.run(
+                ["git", "-C", str(self.repo), "rev-list", "--count", "HEAD"],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+        )
+
+        with patch.object(cortex_wake.time, "time", return_value=first_commit_at + 30):
+            cooling = cortex_wake.rearm(
+                self.request(),
+                min_interval_seconds=60,
+            )
+        self.assertEqual(cooling["status"], "REARM_COOLDOWN")
+        count_during_cooldown = int(
+            subprocess.run(
+                ["git", "-C", str(self.repo), "rev-list", "--count", "HEAD"],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+        )
+        self.assertEqual(count_during_cooldown, count_before)
+
+        with patch.object(cortex_wake.time, "time", return_value=first_commit_at + 61):
+            rearmed = cortex_wake.rearm(
+                self.request(),
+                min_interval_seconds=60,
+            )
+        self.assertEqual(rearmed["status"], "REARMED")
+        self.assertEqual(rearmed["wake_sequence"], 2)
+        count_after = int(
+            subprocess.run(
+                ["git", "-C", str(self.repo), "rev-list", "--count", "HEAD"],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+        )
+        self.assertEqual(count_after, count_before + 1)
+        marker = json.loads(
+            (self.repo / "FERRO_CORTEX_WAKE.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(marker["request_id"], "llmreq_test")
+        self.assertEqual(marker["wake_sequence"], 2)
+
     def test_other_agents_do_not_ring_ferro_bus(self) -> None:
         request = self.request()
         request["agent_id"] = "other-agent"

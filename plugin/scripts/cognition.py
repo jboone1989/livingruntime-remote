@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from cortex_wake import emit as emit_cognition_wake
+from cortex_wake import rearm as rearm_cognition_wake
 
 STORE_VERSION = 1
 REQUEST_ID_RE = re.compile(r"^llmreq_[A-Za-z0-9._-]{1,120}$")
@@ -453,6 +454,34 @@ def submit(
 def get(request_id: str) -> dict[str, Any]:
     with _queue_lock():
         return dict(_refresh_timeout(_load(request_id)))
+
+
+def rearm_pending(
+    request_id: str,
+    *,
+    min_interval_seconds: int = 60,
+) -> dict[str, Any]:
+    """Re-emit activation for a durable request only while it is still pending."""
+    interval = int(min_interval_seconds)
+    if not 15 <= interval <= 600:
+        raise ValueError("min_interval_seconds must be within 15..600")
+    with _queue_lock():
+        value = dict(_refresh_timeout(_load(request_id)))
+    if value.get("status") != "PENDING":
+        return {
+            **value,
+            "activation": {
+                "status": "NOT_REQUIRED",
+                "request_status": value.get("status"),
+            },
+        }
+    return {
+        **value,
+        "activation": rearm_cognition_wake(
+            value,
+            min_interval_seconds=interval,
+        ),
+    }
 
 
 def get_status(request_id: str) -> dict[str, Any]:

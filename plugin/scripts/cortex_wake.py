@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import time
 from typing import Any, Iterator
 
 if os.name == "nt":
@@ -156,7 +157,30 @@ def _load_marker(path: Path) -> dict[str, Any]:
     return value
 
 
-def emit(request: dict[str, Any]) -> dict[str, Any]:
+def _last_request_wake_at(repo: Path, request_id: str) -> float | None:
+    raw = _run_git(
+        repo,
+        "log",
+        "-1",
+        "--format=%ct",
+        "--fixed-strings",
+        f"--grep={request_id}",
+        "--",
+    ).strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise RuntimeError("invalid cognition wake commit timestamp") from exc
+
+
+def _emit(
+    request: dict[str, Any],
+    *,
+    allow_repeat: bool,
+    min_interval_seconds: int,
+) -> dict[str, Any]:
     """Emit one privacy-bounded GitHub PR activity event for a cognition request."""
     repo = _configured_repo()
     if repo is None:
@@ -180,6 +204,9 @@ def emit(request: dict[str, Any]) -> dict[str, Any]:
     marker_name = _marker_name()
     marker_path = repo / marker_name
     remote = _remote()
+    interval = int(min_interval_seconds)
+    if not 15 <= interval <= 600:
+        raise ValueError("min_interval_seconds must be within 15..600")
 
     with _wake_lock(repo):
         current_branch = _run_git(repo, "branch", "--show-current")
@@ -198,12 +225,29 @@ def emit(request: dict[str, Any]) -> dict[str, Any]:
 
         previous = _load_marker(marker_path)
         if str(previous.get("request_id") or "") == request_id:
-            return {
-                "status": "ALREADY_EMITTED",
-                "transport": "github-pr-commit",
-                "request_id": request_id,
-                "branch": branch,
-            }
+            if not allow_repeat:
+                return {
+                    "status": "ALREADY_EMITTED",
+                    "transport": "github-pr-commit",
+                    "request_id": request_id,
+                    "branch": branch,
+                }
+
+        if allow_repeat:
+            last_wake_at = _last_request_wake_at(repo, request_id)
+            now = time.time()
+            if last_wake_at is not None and now < last_wake_at + interval:
+                return {
+                    "status": "REARM_COOLDOWN",
+                    "transport": "github-pr-commit",
+                    "request_id": request_id,
+                    "branch": branch,
+                    "last_wake_at": last_wake_at,
+                    "retry_after_seconds": max(
+                        1,
+                        int((last_wake_at + interval) - now),
+                    ),
+                }
 
         sequence = int(previous.get("wake_sequence") or 0) + 1
         marker = {
@@ -218,11 +262,12 @@ def emit(request: dict[str, Any]) -> dict[str, Any]:
             encoding="utf-8",
         )
         _run_git(repo, "add", "--", marker_name)
-        _run_git(repo, "commit", "-m", f"wake: {agent_id} {request_id}")
+        verb = "wake-rearm" if allow_repeat else "wake"
+        _run_git(repo, "commit", "-m", f"{verb}: {agent_id} {request_id}")
         _run_git(repo, "push", remote, f"HEAD:{branch}")
         commit_sha = _run_git(repo, "rev-parse", "HEAD")
         return {
-            "status": "EMITTED",
+            "status": "REARMED" if allow_repeat else "EMITTED",
             "transport": "github-pr-commit",
             "request_id": request_id,
             "branch": branch,
@@ -231,4 +276,24 @@ def emit(request: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-__all__ = ["emit"]
+def emit(request: dict[str, Any]) -> dict[str, Any]:
+    return _emit(
+        request,
+        allow_repeat=False,
+        min_interval_seconds=60,
+    )
+
+
+def rearm(
+    request: dict[str, Any],
+    *,
+    min_interval_seconds: int = 60,
+) -> dict[str, Any]:
+    return _emit(
+        request,
+        allow_repeat=True,
+        min_interval_seconds=min_interval_seconds,
+    )
+
+
+__all__ = ["emit", "rearm"]

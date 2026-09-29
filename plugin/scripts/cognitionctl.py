@@ -5,7 +5,7 @@ import json
 import sys
 from typing import Any
 
-from cognition import complete, get, get_status, submit, wait_response
+from cognition import complete, get, get_status, rearm_pending, submit, wait_response
 
 
 def _stdin_object() -> dict[str, Any]:
@@ -77,6 +77,8 @@ def main() -> int:
 
     get_p = sub.add_parser("get")
     get_p.add_argument("request_id")
+    get_p.add_argument("--rearm-pending", action="store_true")
+    get_p.add_argument("--rearm-min-interval-seconds", type=int, default=60)
 
     complete_p = sub.add_parser("complete")
     complete_p.add_argument("request_id")
@@ -104,7 +106,13 @@ def main() -> int:
         _print(get_status(args.request_id))
         return 0
     if args.command == "get":
-        _print(get(args.request_id))
+        if args.rearm_pending:
+            _print(rearm_pending(
+                args.request_id,
+                min_interval_seconds=args.rearm_min_interval_seconds,
+            ))
+        else:
+            _print(get(args.request_id))
         return 0
     if args.command == "complete":
         _print(complete_request(

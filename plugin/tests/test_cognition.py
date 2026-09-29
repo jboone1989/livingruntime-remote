@@ -84,6 +84,81 @@ class CognitionQueueTests(unittest.TestCase):
         self.assertEqual(repeated["activation"]["status"], "NOT_REQUIRED")
         self.assertEqual(emit.call_count, 1)
 
+    def test_rearm_pending_only_reemits_while_request_is_pending(self) -> None:
+        with patch.object(
+            cognition,
+            "rearm_cognition_wake",
+            return_value={"status": "REARMED"},
+        ) as rearm:
+            created = self.submit("llmreq_rearm_pending")
+            pending = cognition.rearm_pending(
+                "llmreq_rearm_pending",
+                min_interval_seconds=60,
+            )
+            claimed = cognition.claim_request(
+                request_id="llmreq_rearm_pending",
+                watcher_id="watcher_rearm",
+                claim_seconds=30,
+            )
+            dispatched = cognition.rearm_pending(
+                "llmreq_rearm_pending",
+                min_interval_seconds=60,
+            )
+            cognition.complete(
+                request_id="llmreq_rearm_pending",
+                response_text="done",
+                claim_token=claimed["claim"]["token"],
+            )
+            completed = cognition.rearm_pending(
+                "llmreq_rearm_pending",
+                min_interval_seconds=60,
+            )
+
+        self.assertEqual(created["status"], "PENDING")
+        self.assertEqual(pending["activation"]["status"], "REARMED")
+        self.assertEqual(dispatched["activation"]["status"], "NOT_REQUIRED")
+        self.assertEqual(dispatched["activation"]["request_status"], "DISPATCHED")
+        self.assertEqual(completed["activation"]["status"], "NOT_REQUIRED")
+        self.assertEqual(completed["activation"]["request_status"], "COMPLETED")
+        rearm.assert_called_once()
+        self.assertEqual(
+            rearm.call_args.kwargs["min_interval_seconds"],
+            60,
+        )
+
+    def test_cognitionctl_get_can_explicitly_rearm_pending_request(self) -> None:
+        rearmed = {
+            "request_id": "llmreq_cli_rearm",
+            "status": "PENDING",
+            "activation": {"status": "REARMED"},
+        }
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "cognitionctl.py",
+                "get",
+                "llmreq_cli_rearm",
+                "--rearm-pending",
+                "--rearm-min-interval-seconds",
+                "45",
+            ],
+        ), patch.object(
+            cognitionctl,
+            "rearm_pending",
+            return_value=rearmed,
+        ) as rearm_mock, patch.object(
+            cognitionctl,
+            "_print",
+        ) as print_mock:
+            self.assertEqual(cognitionctl.main(), 0)
+
+        rearm_mock.assert_called_once_with(
+            "llmreq_cli_rearm",
+            min_interval_seconds=45,
+        )
+        print_mock.assert_called_once_with(rearmed)
+
     def test_request_id_conflict_is_rejected(self) -> None:
         self.submit("llmreq_conflict")
         with self.assertRaisesRegex(RuntimeError, "idempotency conflict"):

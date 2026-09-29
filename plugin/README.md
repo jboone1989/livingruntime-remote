@@ -2,7 +2,7 @@
 
 Identity: `livingruntime.remote`
 
-Current version: `0.4.47`
+Current version: `0.4.48`
 
 This directory contains the ChatGPT/Codex-facing MCP runtime and the local Connector implementation.
 
