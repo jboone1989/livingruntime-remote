@@ -173,7 +173,6 @@ def emit(request: dict[str, Any]) -> dict[str, Any]:
         }
 
     request_id = str(request.get("request_id") or "").strip()
-    purpose = str(request.get("purpose") or "").strip()
     if not request_id.startswith("llmreq_"):
         raise ValueError("cognition wake requires a durable request_id")
 
@@ -212,10 +211,7 @@ def emit(request: dict[str, Any]) -> dict[str, Any]:
             "event": "FERRO_CORTEX_WAKE",
             "agent_id": agent_id,
             "request_id": request_id,
-            "purpose": purpose[:512],
             "wake_sequence": sequence,
-            "created_at": request.get("created_at"),
-            "payload_sha256": request.get("payload_sha256"),
         }
         marker_path.write_text(
             json.dumps(marker, ensure_ascii=False, sort_keys=True, indent=2) + "\n",

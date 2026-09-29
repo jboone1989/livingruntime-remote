@@ -39,7 +39,6 @@ class CortexWakeTests(unittest.TestCase):
                     "schema_version": "livingruntime-cortex-wake.v1",
                     "agent_id": "ferro",
                     "request_id": None,
-                    "purpose": "bootstrap",
                     "wake_sequence": 0,
                 }
             )
@@ -105,7 +104,13 @@ class CortexWakeTests(unittest.TestCase):
         )
         self.assertEqual(marker["event"], "FERRO_CORTEX_WAKE")
         self.assertEqual(marker["request_id"], "llmreq_test")
-        self.assertEqual(marker["purpose"], "content_cognition")
+        self.assertEqual(
+            set(marker),
+            {"schema_version", "event", "agent_id", "request_id", "wake_sequence"},
+        )
+        self.assertNotIn("purpose", marker)
+        self.assertNotIn("created_at", marker)
+        self.assertNotIn("payload_sha256", marker)
         self.assertNotIn("messages", marker)
         self.assertNotIn("metadata", marker)
 
