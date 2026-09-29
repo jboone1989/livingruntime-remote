@@ -1,0 +1,8 @@
+{
+  "schema_version": "livingruntime-cortex-wake.v1",
+  "event": "FERRO_CORTEX_WAKE",
+  "agent_id": "ferro",
+  "request_id": null,
+  "purpose": "bootstrap",
+  "wake_sequence": 0
+}
