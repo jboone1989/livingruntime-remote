@@ -3,7 +3,7 @@ name: remote-development
 description: Safely develop, inspect, test, and operate the user's LivingRuntime remote host through the livingruntime_remote MCP tools.
 ---
 
-Identity is `livingruntime.remote`, version `0.4.49`. Use `capabilities` then `list_devices` / `connection_status` before the first remote write in a session. Pass `device` when a specific configured host is intended; omitting it preserves the configured default, while project aliases continue to route to their bound host. A conflicting `project` + `device` selection fails closed. Those names are stable; do not guess `gateway_status` unless an older gateway client only exposes the compatibility alias. `capabilities.healthy` and `server_tools` are the MCP process registry (`tools/list`). ChatGPT may cache an older Custom App action list independently of that snapshot.
+Identity is `livingruntime.remote`, version `0.4.50`. Use `capabilities` then `list_devices` / `connection_status` before the first remote write in a session. Pass `device` when a specific configured host is intended; omitting it preserves the configured default, while project aliases continue to route to their bound host. A conflicting `project` + `device` selection fails closed. Those names are stable; do not guess `gateway_status` unless an older gateway client only exposes the compatibility alias. `capabilities.healthy` and `server_tools` are the MCP process registry (`tools/list`). ChatGPT may cache an older Custom App action list independently of that snapshot.
 
 When the user names a repo such as VirtualBrain, Ferro, agent-runtime, or trading, call `list_projects` first and then pass `project=` to the other tools. Do not ask the user for `/home/ubuntu/...` paths when a project alias exists.
 
@@ -54,3 +54,13 @@ Never ask the user to paste an SSH password or private key into chat. This plugi
 The configured remote roots constrain file tools and process scoping, but the SSH Unix account remains the ultimate execution boundary. Development executables can access whatever that Unix account can access; do not describe the bridge as a hostile-code sandbox.
 
 For deployment work, run focused tests first, then the relevant regression checks, inspect the diff, and only restart an allowlisted service after the code and configuration are ready.
+
+## Workflow modules
+
+Use the focused workflow module when the request matches:
+- `DEBUG_AND_REPAIR.md` for fault diagnosis and capability-preserving repair.
+- `DEPLOY.md` for pushing validated work to `main` and verifying the real deployment.
+- `LONG_JOB_RECOVERY.md` for disconnected/stalled durable jobs and completion delivery.
+- `FERRO_CORTEX.md` for event-triggered Ferro ChatGPT-only cognition.
+
+These modules define orchestration policy; MCP tools remain the execution capability surface. The default plugin lifecycle must not block a finished model turn waiting for future long-job completion. Durable state plus activation/session recovery is the continuation mechanism.

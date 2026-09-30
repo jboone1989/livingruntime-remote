@@ -45,7 +45,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.49")
+            self.assertEqual(health.json()["version"], "0.4.50")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -362,6 +362,55 @@ class RelayServerTests(unittest.TestCase):
             )
         self.assertIsNone(self.store.claim(backup["device_id"]))
 
+    def test_approval_request_reports_connector_provenance(self):
+        owner = self.store.pair_device(
+            self.store.create_pairing_code("user-a")["code"], "owner-main"
+        )
+        backup = self.store.pair_device(
+            self.store.create_pairing_code("user-a")["code"], "owner-vultr"
+        )
+        relay = server.Relay(
+            self.store, timeout=1.0, reconnect_grace=0, device_stale_after=30
+        )
+
+        async def exercise():
+            call = asyncio.create_task(
+                relay.call(
+                    "user-a",
+                    "exec",
+                    {"argv": ["demo"], "device": None},
+                    connector=backup["device_id"],
+                )
+            )
+            await asyncio.sleep(0.05)
+            self.assertIsNone(self.store.claim(owner["device_id"]))
+            task = self.store.claim(backup["device_id"])
+            self.assertIsNotNone(task)
+            self.store.complete(
+                backup["device_id"],
+                task["task_id"],
+                {
+                    "ok": True,
+                    "result": {
+                        "ok": False,
+                        "approval_required": True,
+                        "request": {"request_id": "exec_req_demo"},
+                    },
+                },
+            )
+            relay.notify_result(task["task_id"])
+            return await call
+
+        result = asyncio.run(exercise())
+        self.assertTrue(result["approval_required"])
+        self.assertEqual(result["connector"], "owner-vultr")
+        self.assertEqual(result["connector_id"], backup["device_id"])
+        self.assertEqual(result["request"]["connector"], "owner-vultr")
+        self.assertEqual(
+            result["request"]["connector_id"],
+            backup["device_id"],
+        )
+
     def test_pair_endpoint_rate_limits_repeated_failures(self):
         with TestClient(self.app) as client:
             headers = {"x-forwarded-for": "203.0.113.10"}
@@ -588,6 +637,16 @@ class RelayServerTests(unittest.TestCase):
             "include_resources",
             (tools["list_devices"].parameters or {}).get("properties", {}),
         )
+        for permission_tool in (
+            "list_exec_permissions",
+            "approve_exec_permission",
+            "deny_exec_permission",
+            "revoke_exec_permission",
+        ):
+            self.assertIn(
+                "connector",
+                (tools[permission_tool].parameters or {}).get("properties", {}),
+            )
         self.assertTrue(tools["remote_overview"].annotations.read_only_hint)
         self.assertFalse(tools["github_identity"].annotations.read_only_hint)
         self.assertTrue(tools["github_identity"].annotations.open_world_hint)

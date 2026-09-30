@@ -2,7 +2,7 @@
 
 Identity: `livingruntime.remote`
 
-Current version: `0.4.49`
+Current version: `0.4.50`
 
 This directory contains the ChatGPT/Codex-facing MCP runtime and the local Connector implementation.
 
@@ -136,3 +136,19 @@ python plugin/scripts/selfcheck.py
 - destructive operations are audited
 
 See `PUBLIC_RELEASE.md` and `docs/` for release details.
+
+## Runtime boundary after DevDay 2026
+
+LivingRuntime Remote is an execution substrate, not a second general-purpose agent framework.
+
+- OpenAI runtime owns model reasoning, Work/event activation, generic agent session behavior, and plugin discovery.
+- LivingRuntime Remote owns remote/local execution, bounded workspaces, multi-host routing, process/service lifecycle, durable jobs, logs, Git/filesystem operations, and execution receipts.
+- Higher-level agents such as Ferro own identity, internal state, goals, context selection, experience/outcome learning, and self-improvement policy.
+
+The primary skill is `skills/remote-development/SKILL.md`. Its focused workflow modules are:
+- `DEBUG_AND_REPAIR.md`
+- `DEPLOY.md`
+- `LONG_JOB_RECOVERY.md`
+- `FERRO_CORTEX.md`
+
+The plugin lifecycle intentionally does not contain a blocking `Stop` hook. Long-job/cognition completion is durable and is recovered from authoritative receipts on activation or session resume rather than keeping a completed model turn open.

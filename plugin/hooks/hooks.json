@@ -1,5 +1,5 @@
 {
-  "description": "Continue OpenAI runtime sessions when any watched LivingRuntime durable job finishes, and recover durable bindings after session resume.",
+  "description": "Recover durable LivingRuntime bindings on session activity and bind watched jobs without holding model turns open.",
   "hooks": {
     "SessionStart": [
       {
@@ -66,42 +66,6 @@
             },
             "timeout": 30,
             "statusMessage": "Arming durable job continuation"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "mcp_tool",
-            "server": "livingruntime_remote",
-            "tool": "continue_openai_job",
-            "input": {
-              "session_id": "${session_id}",
-              "timeout_seconds": 110,
-              "stop_hook_active": "${stop_hook_active}"
-            },
-            "timeout": 125,
-            "statusMessage": "Waiting for durable job continuation"
-          }
-        ]
-      }
-    ],
-    "Interrupt": [
-      {
-        "hooks": [
-          {
-            "type": "mcp_tool",
-            "server": "livingruntime_remote",
-            "tool": "continue_openai_job",
-            "input": {
-              "session_id": "${session_id}",
-              "timeout_seconds": 3,
-              "interrupted": true
-            },
-            "timeout": 5,
-            "statusMessage": "Cancelling durable job continuation"
           }
         ]
       }

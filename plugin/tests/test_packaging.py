@@ -20,7 +20,7 @@ class PackagingTests(unittest.TestCase):
         openai = plugin["extensions"]["com.openai"]
         self.assertEqual(plugin["name"], "livingruntime-remote")
         self.assertEqual(plugin["version"], PLUGIN_VERSION)
-        self.assertEqual(PLUGIN_VERSION, "0.4.49")
+        self.assertEqual(PLUGIN_VERSION, "0.4.50")
         self.assertEqual(REMOTE_IDENTITY, "livingruntime.remote")
         self.assertEqual(openai["apps"], "./.app.json")
         self.assertEqual(openai["hooks"], "./hooks/hooks.json")
@@ -67,7 +67,24 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(overlay["hooks"], "./hooks/hooks.json")
         self.assertEqual(overlay["version"], PLUGIN_VERSION)
 
-    def test_openai_hooks_bind_watch_and_continue_on_stop(self) -> None:
+    def test_remote_development_skill_has_focused_workflow_modules(self) -> None:
+        skill_dir = self.root / "skills" / "remote-development"
+        modules = {
+            "DEBUG_AND_REPAIR.md",
+            "DEPLOY.md",
+            "LONG_JOB_RECOVERY.md",
+            "FERRO_CORTEX.md",
+        }
+        self.assertTrue((skill_dir / "SKILL.md").exists())
+        self.assertEqual(
+            {path.name for path in skill_dir.glob("*.md")} & modules,
+            modules,
+        )
+        skill = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        for module in modules:
+            self.assertIn(module, skill)
+
+    def test_openai_hooks_bind_watch_and_recover_without_blocking_stop(self) -> None:
         hooks = json.loads((self.root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
         posts = {row["matcher"]: row["hooks"][0] for row in hooks["hooks"]["PostToolUse"]}
         self.assertEqual(set(posts), {"watch_pi_job$", "watch_long_job$"})
@@ -92,23 +109,8 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(user_prompt["tool"], "recover_openai_job_continuation")
         self.assertEqual(user_prompt["input"]["hook_event_name"], "UserPromptSubmit")
 
-        stop = hooks["hooks"]["Stop"][0]["hooks"][0]
-        self.assertEqual(stop["type"], "mcp_tool")
-        self.assertEqual(stop["server"], "livingruntime_remote")
-        self.assertEqual(stop["tool"], "continue_openai_job")
-        self.assertEqual(stop["input"]["session_id"], "${session_id}")
-        self.assertEqual(stop["input"]["timeout_seconds"], 110)
-        self.assertEqual(stop["input"]["stop_hook_active"], "${stop_hook_active}")
-        self.assertEqual(stop["timeout"], 125)
-
-        interrupt = hooks["hooks"]["Interrupt"][0]["hooks"][0]
-        self.assertEqual(interrupt["type"], "mcp_tool")
-        self.assertEqual(interrupt["server"], "livingruntime_remote")
-        self.assertEqual(interrupt["tool"], "continue_openai_job")
-        self.assertEqual(interrupt["input"]["session_id"], "${session_id}")
-        self.assertTrue(interrupt["input"]["interrupted"])
-        self.assertEqual(interrupt["input"]["timeout_seconds"], 3)
-        self.assertEqual(interrupt["timeout"], 5)
+        self.assertNotIn("Stop", hooks["hooks"])
+        self.assertNotIn("Interrupt", hooks["hooks"])
 
     def test_submission_covers_public_tools_and_review_case_contract(self) -> None:
         submission = json.loads((self.root / "chatgpt-app-submission.json").read_text(encoding="utf-8"))
