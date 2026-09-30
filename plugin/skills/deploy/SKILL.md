@@ -1,4 +1,7 @@
-# Deploy workflow
+---
+name: deploy
+description: Ship validated LivingRuntime Remote repository changes to main and verify the real deployed service or release.
+---
 
 Deploy only after the relevant focused tests pass and the intended diff has been inspected. Do not run an unrelated full regression suite by default; expand testing only when the changed surface or failure evidence requires it.
 

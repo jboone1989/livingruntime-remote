@@ -20,7 +20,7 @@ class PackagingTests(unittest.TestCase):
         openai = plugin["extensions"]["com.openai"]
         self.assertEqual(plugin["name"], "livingruntime-remote")
         self.assertEqual(plugin["version"], PLUGIN_VERSION)
-        self.assertEqual(PLUGIN_VERSION, "0.4.50")
+        self.assertEqual(PLUGIN_VERSION, "0.4.51")
         self.assertEqual(REMOTE_IDENTITY, "livingruntime.remote")
         self.assertEqual(openai["apps"], "./.app.json")
         self.assertEqual(openai["hooks"], "./hooks/hooks.json")
@@ -46,7 +46,7 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(apps, {"apps": {}})
         example = json.loads((self.root / "app.example.json").read_text(encoding="utf-8"))
         app_id = example["apps"]["livingruntime_remote"]["id"]
-        self.assertTrue(app_id.startswith("plugin_asdk_app_"))
+        self.assertTrue(app_id.startswith("asdk_app_"))
         self.assertIn("REPLACE", app_id)
 
     def test_mcp_json_keeps_stdio_and_documents_http(self) -> None:
@@ -67,22 +67,33 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(overlay["hooks"], "./hooks/hooks.json")
         self.assertEqual(overlay["version"], PLUGIN_VERSION)
 
-    def test_remote_development_skill_has_focused_workflow_modules(self) -> None:
-        skill_dir = self.root / "skills" / "remote-development"
-        modules = {
-            "DEBUG_AND_REPAIR.md",
-            "DEPLOY.md",
-            "LONG_JOB_RECOVERY.md",
-            "FERRO_CORTEX.md",
+    def test_portable_package_discovers_specialized_skills(self) -> None:
+        expected = {
+            "remote-development",
+            "debug-and-repair",
+            "deploy",
+            "long-job-recovery",
         }
-        self.assertTrue((skill_dir / "SKILL.md").exists())
-        self.assertEqual(
-            {path.name for path in skill_dir.glob("*.md")} & modules,
-            modules,
-        )
-        skill = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
-        for module in modules:
-            self.assertIn(module, skill)
+        discovered = {
+            path.parent.name
+            for path in (self.root / "skills").glob("*/SKILL.md")
+        }
+        self.assertTrue(expected.issubset(discovered))
+        for name in expected:
+            skill = (self.root / "skills" / name / "SKILL.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertTrue(skill.startswith("---\n"))
+            self.assertIn(f"name: {name}", skill)
+            self.assertIn("description:", skill)
+
+        remote = (
+            self.root / "skills" / "remote-development" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("independent skills", remote)
+        self.assertNotIn("DEBUG_AND_REPAIR.md", remote)
+        self.assertNotIn("DEPLOY.md", remote)
+        self.assertNotIn("LONG_JOB_RECOVERY.md", remote)
 
     def test_openai_hooks_bind_watch_and_recover_without_blocking_stop(self) -> None:
         hooks = json.loads((self.root / "hooks" / "hooks.json").read_text(encoding="utf-8"))

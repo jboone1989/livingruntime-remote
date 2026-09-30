@@ -2,7 +2,7 @@
 
 Identity: `livingruntime.remote`
 
-Current version: `0.4.50`
+Current version: `0.4.51`
 
 This directory contains the ChatGPT/Codex-facing MCP runtime and the local Connector implementation.
 
@@ -145,10 +145,14 @@ LivingRuntime Remote is an execution substrate, not a second general-purpose age
 - LivingRuntime Remote owns remote/local execution, bounded workspaces, multi-host routing, process/service lifecycle, durable jobs, logs, Git/filesystem operations, and execution receipts.
 - Higher-level agents such as Ferro own identity, internal state, goals, context selection, experience/outcome learning, and self-improvement policy.
 
-The primary skill is `skills/remote-development/SKILL.md`. Its focused workflow modules are:
-- `DEBUG_AND_REPAIR.md`
-- `DEPLOY.md`
-- `LONG_JOB_RECOVERY.md`
-- `FERRO_CORTEX.md`
+The portable package exposes independently discoverable skills:
+- `remote-development` for shared execution, routing, permissions, and repository rules.
+- `debug-and-repair` for fault diagnosis and capability-preserving repair.
+- `deploy` for validated main/release/deployment workflows.
+- `long-job-recovery` for durable job liveness and completion recovery.
+
+The public relay already serves Control Plane and watcher UIs as MCP Apps resources (`text/html;profile=mcp-app`). `remote_overview` is intentionally data-only; only `open_remote_control_plane` attaches the Control Plane UI resource. This keeps refresh/data calls headless and prevents unnecessary iframe re-renders while still allowing the UI to call data tools through the MCP Apps bridge.
+
+The root `.app.json` is a registered-MCP-server mapping for local/workspace packaging, not the MCP Apps UI manifest. It remains empty until an eligible registered server ID is available; UI resources are declared by the MCP server itself.
 
 The plugin lifecycle intentionally does not contain a blocking `Stop` hook. Long-job/cognition completion is durable and is recovered from authoritative receipts on activation or session resume rather than keeping a completed model turn open.

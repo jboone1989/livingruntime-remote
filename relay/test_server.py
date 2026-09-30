@@ -45,7 +45,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.50")
+            self.assertEqual(health.json()["version"], "0.4.51")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -621,13 +621,13 @@ class RelayServerTests(unittest.TestCase):
             ["model", "app"],
         )
         self.assertTrue(tools["open_remote_control_plane"].annotations.read_only_hint)
-        self.assertEqual(
-            tools["remote_overview"].meta["ui"]["resourceUri"],
-            server.CONTROL_PLANE_WIDGET_URI,
+        self.assertNotIn(
+            "resourceUri",
+            tools["remote_overview"].meta["ui"],
         )
-        self.assertEqual(
-            tools["remote_overview"].meta["openai/outputTemplate"],
-            server.CONTROL_PLANE_WIDGET_URI,
+        self.assertNotIn(
+            "openai/outputTemplate",
+            tools["remote_overview"].meta,
         )
         self.assertEqual(
             tools["remote_overview"].meta["ui"]["visibility"],
