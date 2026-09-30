@@ -73,7 +73,8 @@ LONG_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
 COGNITION_WIDGET_LEGACY_URI = "ui://livingruntime-remote/agent-cognition-watch-v2.html"
 COGNITION_WIDGET_V3_URI = "ui://livingruntime-remote/agent-cognition-watch-v3.html"
 COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v4.html"
-CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v8.html"
+CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v9.html"
+CONTROL_PLANE_WIDGET_V8_URI = "ui://livingruntime-remote/control-plane-v8.html"
 CONTROL_PLANE_WIDGET_V7_URI = "ui://livingruntime-remote/control-plane-v7.html"
 CONTROL_PLANE_WIDGET_V6_URI = "ui://livingruntime-remote/control-plane-v6.html"
 CONTROL_PLANE_WIDGET_V5_URI = "ui://livingruntime-remote/control-plane-v5.html"
@@ -809,46 +810,75 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   :root { color-scheme: light dark; }
+  * { box-sizing:border-box; }
   body { margin:0; padding:12px; font:13px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--color-text-primary,inherit); background:transparent; }
-  .top,.section { border:1px solid var(--color-border-secondary,rgba(127,127,127,.35)); border-radius:12px; padding:12px 14px; margin-bottom:10px; }
+  .shell { max-width:1180px; margin:0 auto; }
+  .top { position:sticky; top:0; z-index:5; border:1px solid var(--color-border-secondary,rgba(127,127,127,.35)); border-radius:16px; padding:14px 16px; margin-bottom:10px; background:color-mix(in srgb, Canvas 94%, transparent); backdrop-filter:blur(12px); }
+  .section { border:1px solid var(--color-border-secondary,rgba(127,127,127,.28)); border-radius:14px; padding:12px 14px; margin-bottom:10px; background:rgba(127,127,127,.035); }
   .row { display:flex; gap:8px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
   .actions { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
-  .badge { display:inline-flex; gap:6px; align-items:center; padding:2px 8px; border-radius:999px; background:rgba(127,127,127,.12); }
+  .brand { display:flex; gap:10px; align-items:center; min-width:0; }
+  .brandmark { width:28px; height:28px; display:grid; place-items:center; border-radius:9px; background:rgba(79,124,255,.16); font-weight:800; }
+  .brandcopy { min-width:0; }
+  .brandcopy strong { display:block; font-size:14px; letter-spacing:.01em; }
+  .brandcopy span { display:block; color:var(--color-text-secondary,#777); font-size:11px; }
+  .badge { display:inline-flex; gap:6px; align-items:center; padding:3px 8px; border-radius:999px; background:rgba(127,127,127,.12); }
   .dot { width:8px; height:8px; border-radius:50%; background:#999; }
   .ok .dot { background:#32a852; } .bad .dot { background:#d64545; } .warn .dot { background:#d79a27; }
-  h3 { margin:0 0 8px; font-size:13px; }
+  h3 { margin:0 0 8px; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--color-text-secondary,#777); }
   .muted { color:var(--color-text-secondary,#777); }
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:8px; }
-  .item { padding:8px; border-radius:9px; background:rgba(127,127,127,.08); overflow-wrap:anywhere; }
+  .summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin:10px 0 0; }
+  .summary-card { padding:9px 10px; border-radius:11px; background:rgba(127,127,127,.07); min-width:0; }
+  .summary-card strong { display:block; font-size:18px; line-height:1.1; font-variant-numeric:tabular-nums; }
+  .summary-card span { display:block; margin-top:3px; color:var(--color-text-secondary,#777); font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:8px; }
+  .item { padding:10px; border-radius:10px; background:rgba(127,127,127,.07); border:1px solid rgba(127,127,127,.08); overflow-wrap:anywhere; }
   .item strong { display:inline-block; margin-bottom:2px; }
   .detail { margin-top:4px; }
-  .empty { padding:8px; border-radius:9px; background:rgba(127,127,127,.05); color:var(--color-text-secondary,#777); }
+  .empty { padding:10px; border-radius:10px; border:1px dashed rgba(127,127,127,.2); color:var(--color-text-secondary,#777); }
   .danger { color:#d64545; }
   .metric { font-variant-numeric:tabular-nums; }
   code { font-family:var(--font-mono,ui-monospace,monospace); font-size:11px; }
-  button { border:1px solid var(--color-border-secondary,rgba(127,127,127,.4)); border-radius:8px; padding:6px 10px; background:transparent; color:inherit; cursor:pointer; }
+  button { border:1px solid var(--color-border-secondary,rgba(127,127,127,.38)); border-radius:9px; padding:6px 10px; background:rgba(127,127,127,.05); color:inherit; cursor:pointer; }
   button:disabled { opacity:.55; cursor:default; }
   body[data-mode="pip"] { padding:8px; font-size:12px; }
-  body[data-mode="pip"] .top, body[data-mode="pip"] .section { padding:9px 10px; margin-bottom:7px; border-radius:10px; }
+  body[data-mode="pip"] .top, body[data-mode="pip"] .section { padding:9px 10px; margin-bottom:7px; border-radius:11px; }
   body[data-mode="pip"] .pip-secondary { display:none; }
   body[data-mode="pip"] .grid { grid-template-columns:1fr; }
+  body[data-mode="pip"] .summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  body[data-mode="pip"] .summary-card strong { font-size:15px; }
+  @media (max-width:560px) {
+    .summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .grid { grid-template-columns:1fr; }
+  }
 </style>
 </head>
 <body>
-  <div class="top">
-    <div class="row"><strong>LivingRuntime Remote Control Plane</strong><div class="actions"><button id="pin">Pin</button><button id="expand">Expand</button><button id="refresh">Refresh</button></div></div>
-    <div id="headline" class="muted">Loading snapshot…</div>
+  <div class="shell">
+    <div class="top">
+      <div class="row">
+        <div class="brand"><div class="brandmark">LR</div><div class="brandcopy"><strong>LivingRuntime Remote Control Plane</strong><span>live execution · hosts · handoff</span></div></div>
+        <div class="actions"><button id="pin">Pin</button><button id="expand">Expand</button><button id="refresh">Refresh</button></div>
+      </div>
+      <div id="headline" class="muted">Loading snapshot…</div>
+      <div class="summary">
+        <div class="summary-card"><strong id="sum-running">—</strong><span>Running</span></div>
+        <div class="summary-card"><strong id="sum-waiting">—</strong><span>Waiting</span></div>
+        <div class="summary-card"><strong id="sum-hosts">—</strong><span>Hosts online</span></div>
+        <div class="summary-card"><strong id="sum-approvals">—</strong><span>Approvals</span></div>
+      </div>
+    </div>
+    <div class="section"><h3>Execution truth</h3><div id="execution" class="grid"></div></div>
+    <div class="section"><h3>Running now</h3><div id="running" class="grid"></div></div>
+    <div class="section"><h3>Waiting / handoff</h3><div id="waiting" class="grid"></div></div>
+    <div class="section"><h3>Hosts</h3><div id="devices" class="grid"></div></div>
+    <div class="section pip-secondary"><h3>Recent terminal jobs</h3><div id="jobs" class="grid"></div></div>
+    <div class="section pip-secondary"><h3>Permissions & credentials</h3><div id="security" class="grid"></div></div>
+    <div class="section pip-secondary"><h3>Recent activity</h3><div id="activity" class="grid"></div></div>
   </div>
-  <div class="section"><h3>Execution truth</h3><div id="execution" class="grid"></div></div>
-  <div class="section"><h3>Running now</h3><div id="running" class="grid"></div></div>
-  <div class="section"><h3>Waiting / handoff</h3><div id="waiting" class="grid"></div></div>
-  <div class="section"><h3>Hosts</h3><div id="devices" class="grid"></div></div>
-  <div class="section pip-secondary"><h3>Recent terminal jobs</h3><div id="jobs" class="grid"></div></div>
-  <div class="section pip-secondary"><h3>Permissions & credentials</h3><div id="security" class="grid"></div></div>
-  <div class="section pip-secondary"><h3>Recent activity</h3><div id="activity" class="grid"></div></div>
 <script>
 (() => {
-  console.info("LivingRuntime control-plane-v8 script loaded");
+  console.info("LivingRuntime control-plane-v9 script loaded");
   const pending = new Map(); let nextId = 1; let connected = false; let latest = null;
   const q = id => document.getElementById(id);
   function request(method, params) {
@@ -939,6 +969,8 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     const runningJobs=jobs.filter(j=>!isTerminal(j)&&live(j));
     const waitingJobs=jobs.filter(j=>!isTerminal(j)&&!live(j));
     const terminalJobs=jobs.filter(isTerminal);
+    q("sum-running").textContent = String(runningJobs.length);
+    q("sum-waiting").textContent = String(waitingJobs.length + (execution.cognition ? 1 : 0) + (overview?.completion_events||[]).length);
     q("running").innerHTML = runningJobs.length
       ? runningJobs.slice(0,8).map(jobCard).join("")
       : '<div class="empty">No server-side worker or child process is currently alive.</div>';
@@ -957,6 +989,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
       : '<div class="empty">Nothing is waiting for ChatGPT, approval, or a resumed worker.</div>';
 
     const devices = overview?.devices?.devices || [];
+    q("sum-hosts").textContent = devices.length ? String(devices.filter(d=>d.online).length)+"/"+String(devices.length) : "0";
     q("devices").innerHTML = devices.length ? devices.map(d=>{
       const inv=d.inventory||{}; const mem=inv.memory||{};
       const disks=(inv.disks||[]).map(x=>{
@@ -978,6 +1011,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
       : '<div class="empty">No recent terminal durable jobs.</div>';
     const p=overview?.permissions||{}; const creds=overview?.credentials||[];
     const approvals=(p.pending||[]);
+    q("sum-approvals").textContent = String(approvals.length);
     q("security").innerHTML =
       '<div class="item"><strong>'+esc(approvals.length)+'</strong> pending command approvals<div class="muted">'+esc(p.active_count||0)+' active grants · '+esc(p.revoked_count||0)+' revoked</div>'+
       (approvals.length?'<div class="muted">'+approvals.slice(0,6).map(a=>esc(a.executable||"?")+' @ '+esc(a.host_id||"?")).join(" · ")+'</div>':'')+'</div>'+
@@ -1024,7 +1058,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     if(refreshTimer){clearTimeout(refreshTimer);refreshTimer=null;}
   },{once:true});
   (async()=>{try{
-    await request("ui/initialize",{appInfo:{name:"livingruntime-remote-control-plane",version:"1.2.0"},appCapabilities:{availableDisplayModes:["inline","pip","fullscreen"]},protocolVersion:"2026-01-26"});
+    await request("ui/initialize",{appInfo:{name:"livingruntime-remote-control-plane",version:"1.3.0"},appCapabilities:{availableDisplayModes:["inline","pip","fullscreen"]},protocolVersion:"2026-01-26"});
     notify("ui/notifications/initialized"); connected=true;
     syncDisplayMode();
     const initial=window.openai?.toolOutput||latest;
@@ -1641,6 +1675,13 @@ def create_mcp(
         name="remote-control-plane-v7",
         title="LivingRuntime Remote control plane",
         description="Backward-compatible dashboard for sessions using the v7 resource URI.",
+    )
+    add_widget_resource(
+        CONTROL_PLANE_WIDGET_V8_URI,
+        CONTROL_PLANE_WIDGET_HTML,
+        name="remote-control-plane-v8",
+        title="LivingRuntime Remote control plane",
+        description="Backward-compatible dashboard for sessions using the v8 resource URI.",
     )
     add_widget_resource(
         CONTROL_PLANE_WIDGET_URI,
