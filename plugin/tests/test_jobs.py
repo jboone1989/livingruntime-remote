@@ -326,6 +326,28 @@ class JobStoreTests(unittest.TestCase):
         path = self.root / f"{created['job_id']}.json"
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
+    def test_completion_event_forwarding_is_durable(self) -> None:
+        created = jobs.create(goal="Forward completion")
+        completed = jobs.checkpoint(
+            created["job_id"],
+            summary="done",
+            status="SUCCEEDED",
+        )
+        event_id = completed["completion_event"]["event_id"]
+        pending = jobs.pending_completion_events()
+        self.assertEqual([row["job_id"] for row in pending], [created["job_id"]])
+        forwarded = jobs.mark_completion_event_forwarded(
+            created["job_id"],
+            event_id,
+            forwarded_at=123.0,
+        )
+        self.assertEqual(
+            forwarded["completion_event"]["event_forwarded_at"],
+            123.0,
+        )
+        self.assertEqual(jobs.pending_completion_events(), [])
+
+
 
 if __name__ == "__main__":
     unittest.main()

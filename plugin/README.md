@@ -2,7 +2,7 @@
 
 Identity: `livingruntime.remote`
 
-Current version: `0.4.51`
+Current version: `0.4.52`
 
 This directory contains the ChatGPT/Codex-facing MCP runtime and the local Connector implementation.
 
@@ -156,3 +156,20 @@ The public relay already serves Control Plane and watcher UIs as MCP Apps resour
 The root `.app.json` is a registered-MCP-server mapping for local/workspace packaging, not the MCP Apps UI manifest. It remains empty until an eligible registered server ID is available; UI resources are declared by the MCP server itself.
 
 The plugin lifecycle intentionally does not contain a blocking `Stop` hook. Long-job/cognition completion is durable and is recovered from authoritative receipts on activation or session resume rather than keeping a completed model turn open.
+
+
+## MCP Events
+
+Version 0.4.52 adds the first native ChatGPT MCP Event: `job.completed`.
+The relay advertises `capabilities.events` on MCP 2.0 discovery and implements
+`events/list`, `events/subscribe`, and `events/unsubscribe` on the authenticated
+MCP endpoint. Subscriptions are durable in the relay store, callback URLs are HTTPS-only
+and resolved to public addresses before a pinned TLS connection is opened, callback
+ownership is verified with a signed challenge, and deliveries use Standard Webhooks
+headers with bounded retry behavior. The Connector forwards one durable completion
+event ID to the relay and records successful relay acceptance so ChatGPT-side polling
+is not required for terminal long-job notification.
+
+The older widget/continuation receipt path remains available as a compatibility path
+while MCP Events is verified in ChatGPT, but it is no longer the target architecture
+for new long-job completion activation.

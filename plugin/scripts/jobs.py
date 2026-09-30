@@ -36,6 +36,7 @@ def _normalize_completion_event(
     normalized.setdefault("claimed_by_session", None)
     normalized.setdefault("claim_expires_at", None)
     normalized.setdefault("delivered_at", None)
+    normalized.setdefault("event_forwarded_at", None)
     if (
         not acknowledged
         and normalized["delivery_state"] in {"CLAIMED", "DELIVERED"}
@@ -69,6 +70,7 @@ def _ensure_completion_event(value: dict[str, Any], now: float) -> None:
         "delivered_at": None,
         "acknowledged_at": None,
         "acknowledged_by": None,
+        "event_forwarded_at": None,
     }
 
 
@@ -295,6 +297,37 @@ def mark_completion_delivered(
     value["completion_event"] = event
     value["updated_at"] = now
     _save(value)
+    return dict(value)
+
+
+def pending_completion_events(limit: int = 50) -> list[dict[str, Any]]:
+    rows = []
+    for value in list_jobs(limit=max(1, min(200, int(limit)))):
+        event = value.get("completion_event")
+        if not isinstance(event, dict) or not event.get("event_id"):
+            continue
+        if event.get("event_forwarded_at") is None:
+            rows.append(value)
+    return rows
+
+
+def mark_completion_event_forwarded(
+    job_id: str,
+    event_id: str,
+    *,
+    forwarded_at: float | None = None,
+) -> dict[str, Any]:
+    value = _load(job_id)
+    event = value.get("completion_event")
+    if not isinstance(event, dict) or str(event.get("event_id") or "") != str(event_id):
+        raise ValueError("completion event identity mismatch")
+    event = _normalize_completion_event(event)
+    if event.get("event_forwarded_at") is None:
+        now = time.time() if forwarded_at is None else float(forwarded_at)
+        event["event_forwarded_at"] = now
+        value["completion_event"] = event
+        value["updated_at"] = now
+        _save(value)
     return dict(value)
 
 

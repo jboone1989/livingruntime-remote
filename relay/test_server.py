@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 os.environ.setdefault("LIVINGRUNTIME_RELAY_ISSUER", "https://auth.example.test")
@@ -45,7 +46,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.51")
+            self.assertEqual(health.json()["version"], "0.4.52")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -448,6 +449,70 @@ class RelayServerTests(unittest.TestCase):
         with self.store.db() as db:
             count = db.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"]
         self.assertEqual(count, 0)
+
+    def test_mcp_events_are_registered_and_advertised(self):
+        mcp = server.create_mcp(server.Relay(self.store))
+        low = mcp._lowlevel_server
+        self.assertIsNotNone(low.get_request_handler("events/list"))
+        self.assertIsNotNone(low.get_request_handler("events/subscribe"))
+        self.assertIsNotNone(low.get_request_handler("events/unsubscribe"))
+        middleware = mcp.middleware[-1]
+
+        class Ctx:
+            method = "server/discover"
+
+        async def call_next(_ctx):
+            return {
+                "resultType": "complete",
+                "supportedVersions": ["2026-07-28"],
+                "capabilities": {"tools": {}},
+            }
+
+        result = asyncio.run(middleware(Ctx(), call_next))
+        self.assertIn("events", result["capabilities"])
+        self.assertEqual(result["capabilities"]["events"], {})
+
+    def test_device_event_delivers_matching_subscription(self):
+        paired = self.store.pair_device(
+            self.store.create_pairing_code("user-a")["code"], "test"
+        )
+        self.store.upsert_event_subscription(
+            subscription_id="sub-test",
+            user_sub="user-a",
+            name="job.completed",
+            arguments={"project": "ferro"},
+            callback_url="https://callback.example/events",
+            secret="whsec_test",
+            expires_at=9999999999.0,
+        )
+        payload = {
+            "eventId": "lrcomp_1234567890",
+            "name": "job.completed",
+            "timestamp": "2026-09-30T06:00:00Z",
+            "data": {
+                "event_id": "lrcomp_1234567890",
+                "job_id": "lrjob_123",
+                "status": "SUCCEEDED",
+                "project": "ferro",
+                "device": "main",
+            },
+            "cursor": None,
+        }
+        headers = {"authorization": "Bearer " + paired["device_token"]}
+        with patch.object(server, "deliver_event", return_value=200) as deliver:
+            with TestClient(self.app) as client:
+                response = client.post(
+                    "/device/event",
+                    json=payload,
+                    headers=headers,
+                )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["delivered"], 1)
+        delivered_event = deliver.call_args.args[1]
+        self.assertEqual(
+            delivered_event["data"]["connector_id"],
+            paired["device_id"],
+        )
 
     def test_public_tools_do_not_forward_function_locals(self):
         source = inspect.getsource(server.create_mcp)

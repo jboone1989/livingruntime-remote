@@ -5,16 +5,20 @@ import concurrent.futures
 import json
 import os
 import socket
+import threading
 import time
+from datetime import datetime, timezone
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 import bridge
+import jobs
 from contract import PLUGIN_VERSION, REMOTE_TOOLS
 
 TOOLS = set(REMOTE_TOOLS)
+_EVENT_FORWARD_LOCK = threading.Lock()
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -90,6 +94,59 @@ def _dispatch(task: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:1000]}
 
 
+def _event_timestamp(value: float) -> str:
+    return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _forward_completion_events(cfg: dict[str, Any]) -> None:
+    if not _EVENT_FORWARD_LOCK.acquire(blocking=False):
+        return
+    try:
+        for job in jobs.pending_completion_events(limit=50):
+            event = job.get("completion_event")
+            if not isinstance(event, dict):
+                continue
+            event_id = str(event.get("event_id") or "")
+            if not event_id:
+                continue
+            payload = {
+                "eventId": event_id,
+                "name": "job.completed",
+                "timestamp": _event_timestamp(
+                    float(event.get("created_at") or job.get("updated_at") or time.time())
+                ),
+                "data": {
+                    "event_id": event_id,
+                    "job_id": str(job.get("job_id") or ""),
+                    "status": str(job.get("status") or ""),
+                    "project": job.get("project"),
+                    "device": job.get("device"),
+                },
+                "cursor": None,
+            }
+            try:
+                result = _request(
+                    cfg["url"],
+                    "/device/event",
+                    payload,
+                    cfg["device_token"],
+                    timeout=15,
+                )
+            except Exception as exc:
+                print(
+                    f"relay event delivery error: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+                continue
+            if result.get("ok") is True:
+                jobs.mark_completion_event_forwarded(
+                    str(job["job_id"]),
+                    event_id,
+                )
+    finally:
+        _EVENT_FORWARD_LOCK.release()
+
+
 def _handle_claimed_task(cfg: dict[str, Any], task: dict[str, Any]) -> None:
     result = _dispatch(task)
     _request(
@@ -99,6 +156,7 @@ def _handle_claimed_task(cfg: dict[str, Any], task: dict[str, Any]) -> None:
         cfg["device_token"],
         timeout=30,
     )
+    _forward_completion_events(cfg)
 
 
 def serve(config_path: Path, once: bool = False) -> None:
@@ -114,6 +172,7 @@ def serve(config_path: Path, once: bool = False) -> None:
     ) as pool:
         while True:
             try:
+                _forward_completion_events(cfg)
                 finished = {future for future in pending if future.done()}
                 for future in finished:
                     pending.remove(future)

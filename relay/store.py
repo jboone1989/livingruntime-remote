@@ -31,6 +31,13 @@ class RelayStore:
               pi_remote_dir TEXT NOT NULL,job_root TEXT,created_at REAL NOT NULL,updated_at REAL NOT NULL,
               PRIMARY KEY(user_sub,session_id));
             CREATE INDEX IF NOT EXISTS idx_continuations_updated ON continuations(updated_at);
+            CREATE TABLE IF NOT EXISTS event_subscriptions(
+              subscription_id TEXT PRIMARY KEY,user_sub TEXT NOT NULL,name TEXT NOT NULL,
+              arguments_json TEXT NOT NULL,callback_url TEXT NOT NULL,secret TEXT NOT NULL,
+              previous_secret TEXT,previous_secret_until REAL,expires_at REAL NOT NULL,
+              created_at REAL NOT NULL,updated_at REAL NOT NULL);
+            CREATE INDEX IF NOT EXISTS idx_event_subscriptions_user
+              ON event_subscriptions(user_sub,name,expires_at);
             """)
 
     def db(self) -> sqlite3.Connection:
@@ -52,6 +59,7 @@ class RelayStore:
                 (cutoff,),
             )
             db.execute("DELETE FROM continuations WHERE updated_at < ?", (cutoff,))
+            db.execute("DELETE FROM event_subscriptions WHERE expires_at <= ?", (now,))
 
     def bind_continuation(
         self,
@@ -102,6 +110,111 @@ class RelayStore:
                 (user_sub, job_id),
             )
         return int(cur.rowcount or 0)
+
+    def upsert_event_subscription(
+        self,
+        *,
+        subscription_id: str,
+        user_sub: str,
+        name: str,
+        arguments: dict[str, Any],
+        callback_url: str,
+        secret: str,
+        expires_at: float,
+        rotation_seconds: int = 300,
+    ) -> dict[str, Any]:
+        now = time.time()
+        arguments_json = json.dumps(
+            arguments,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self.db() as db:
+            current = db.execute(
+                "SELECT secret,created_at FROM event_subscriptions "
+                "WHERE subscription_id=? AND user_sub=?",
+                (subscription_id, user_sub),
+            ).fetchone()
+            previous_secret = None
+            previous_secret_until = None
+            created_at = now
+            if current is not None:
+                created_at = float(current["created_at"])
+                if str(current["secret"]) != secret:
+                    previous_secret = str(current["secret"])
+                    previous_secret_until = now + max(1, int(rotation_seconds))
+            db.execute(
+                "INSERT INTO event_subscriptions("
+                "subscription_id,user_sub,name,arguments_json,callback_url,secret,"
+                "previous_secret,previous_secret_until,expires_at,created_at,updated_at"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(subscription_id) DO UPDATE SET "
+                "name=excluded.name,arguments_json=excluded.arguments_json,"
+                "callback_url=excluded.callback_url,secret=excluded.secret,"
+                "previous_secret=excluded.previous_secret,"
+                "previous_secret_until=excluded.previous_secret_until,"
+                "expires_at=excluded.expires_at,updated_at=excluded.updated_at",
+                (
+                    subscription_id,
+                    user_sub,
+                    name,
+                    arguments_json,
+                    callback_url,
+                    secret,
+                    previous_secret,
+                    previous_secret_until,
+                    float(expires_at),
+                    created_at,
+                    now,
+                ),
+            )
+        return self.event_subscription(user_sub, subscription_id) or {}
+
+    def event_subscription(
+        self, user_sub: str, subscription_id: str
+    ) -> dict[str, Any] | None:
+        with self.db() as db:
+            row = db.execute(
+                "SELECT * FROM event_subscriptions "
+                "WHERE subscription_id=? AND user_sub=?",
+                (subscription_id, user_sub),
+            ).fetchone()
+        if row is None:
+            return None
+        value = dict(row)
+        value["arguments"] = json.loads(value.pop("arguments_json"))
+        return value
+
+    def active_event_subscriptions(
+        self, user_sub: str, name: str
+    ) -> list[dict[str, Any]]:
+        now = time.time()
+        with self.db() as db:
+            db.execute("DELETE FROM event_subscriptions WHERE expires_at <= ?", (now,))
+            rows = db.execute(
+                "SELECT * FROM event_subscriptions "
+                "WHERE user_sub=? AND name=? AND expires_at>? "
+                "ORDER BY created_at,subscription_id",
+                (user_sub, name, now),
+            ).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            value["arguments"] = json.loads(value.pop("arguments_json"))
+            result.append(value)
+        return result
+
+    def remove_event_subscription(
+        self, user_sub: str, subscription_id: str
+    ) -> bool:
+        with self.db() as db:
+            cur = db.execute(
+                "DELETE FROM event_subscriptions "
+                "WHERE subscription_id=? AND user_sub=?",
+                (subscription_id, user_sub),
+            )
+        return cur.rowcount == 1
 
     def create_pairing_code(self, user_sub: str, ttl: int = 600) -> dict[str, Any]:
         self.cleanup()

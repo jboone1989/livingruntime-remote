@@ -232,6 +232,37 @@ class ConnectorTests(unittest.TestCase):
         self.assertTrue(overlapped["value"])
         self.assertEqual(set(results), {"task-1", "task-2"})
 
+    def test_relay_agent_forwards_terminal_job_event_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "jobs"
+            with patch.dict("os.environ", {"LIVINGRUNTIME_REMOTE_JOBS": str(root)}):
+                created = relay_agent.jobs.create(goal="event", project="ferro", device="main")
+                completed = relay_agent.jobs.checkpoint(
+                    created["job_id"],
+                    summary="done",
+                    status="SUCCEEDED",
+                )
+                event_id = completed["completion_event"]["event_id"]
+                calls = []
+
+                def fake_request(base, path, body, token=None, timeout=35):
+                    calls.append((path, body))
+                    return {"ok": True}
+
+                cfg = {
+                    "url": "https://remote.example",
+                    "device_token": "token",
+                }
+                with patch.object(relay_agent, "_request", side_effect=fake_request):
+                    relay_agent._forward_completion_events(cfg)
+                    relay_agent._forward_completion_events(cfg)
+
+                self.assertEqual([path for path, _ in calls], ["/device/event"])
+                self.assertEqual(calls[0][1]["eventId"], event_id)
+                self.assertEqual(calls[0][1]["name"], "job.completed")
+                self.assertEqual(calls[0][1]["data"]["project"], "ferro")
+
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -157,6 +157,42 @@ class RelayStoreTests(unittest.TestCase):
         self.store.cleanup(retention_seconds=1)
         self.assertIsNone(self.store.continuation_for_user("user-a", "session-1"))
 
+    def test_event_subscription_is_persistent_scoped_and_rotates_secret(self):
+        first = self.store.upsert_event_subscription(
+            subscription_id="sub-1",
+            user_sub="user-a",
+            name="job.completed",
+            arguments={"project": "ferro"},
+            callback_url="https://callback.example/events",
+            secret="whsec_first",
+            expires_at=9999999999.0,
+        )
+        self.assertEqual(first["arguments"], {"project": "ferro"})
+        self.assertEqual(
+            [row["subscription_id"] for row in self.store.active_event_subscriptions(
+                "user-a", "job.completed"
+            )],
+            ["sub-1"],
+        )
+        self.assertEqual(
+            self.store.active_event_subscriptions("user-b", "job.completed"),
+            [],
+        )
+        refreshed = self.store.upsert_event_subscription(
+            subscription_id="sub-1",
+            user_sub="user-a",
+            name="job.completed",
+            arguments={"project": "ferro"},
+            callback_url="https://callback.example/events",
+            secret="whsec_second",
+            expires_at=9999999999.0,
+        )
+        self.assertEqual(refreshed["previous_secret"], "whsec_first")
+        self.assertGreater(refreshed["previous_secret_until"], refreshed["updated_at"])
+        self.assertTrue(self.store.remove_event_subscription("user-a", "sub-1"))
+        self.assertFalse(self.store.remove_event_subscription("user-a", "sub-1"))
+
+
 
 if __name__ == "__main__":
     unittest.main()
