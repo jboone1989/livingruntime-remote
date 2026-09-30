@@ -262,6 +262,48 @@ class ConnectorTests(unittest.TestCase):
                 self.assertEqual(calls[0][1]["name"], "job.completed")
                 self.assertEqual(calls[0][1]["data"]["project"], "ferro")
 
+    def test_relay_agent_forwards_cognition_event_without_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "cognition"
+            wake = Path(tmp) / "no-wake.json"
+            with patch.dict(
+                "os.environ",
+                {
+                    "LIVINGRUNTIME_COGNITION_ROOT": str(root),
+                    "LIVINGRUNTIME_COGNITION_GITHUB_WAKE_CONFIG": str(wake),
+                },
+            ):
+                created = relay_agent.cognition.submit(
+                    agent_id="ferro",
+                    purpose="self_repair",
+                    messages=[{"role": "user", "content": "private cognition prompt"}],
+                    metadata={"routing_task_class": "self_repair"},
+                    request_id="llmreq_event_test",
+                )
+                calls = []
+
+                def fake_request(base, path, body, token=None, timeout=35):
+                    calls.append((path, body))
+                    return {"ok": True}
+
+                cfg = {
+                    "url": "https://remote.example",
+                    "device_token": "token",
+                }
+                with patch.object(relay_agent, "_request", side_effect=fake_request):
+                    relay_agent._forward_cognition_events(cfg)
+                    relay_agent._forward_cognition_events(cfg)
+
+                self.assertEqual([path for path, _ in calls], ["/device/event"])
+                payload = calls[0][1]
+                self.assertEqual(payload["eventId"], created["activation_event"]["event_id"])
+                self.assertEqual(payload["name"], "cognition.requested")
+                self.assertEqual(payload["data"]["request_id"], "llmreq_event_test")
+                self.assertEqual(payload["data"]["agent_id"], "ferro")
+                self.assertEqual(payload["data"]["lane"], "repair")
+                self.assertNotIn("messages", payload)
+                self.assertNotIn("private cognition prompt", json.dumps(payload))
+
 
 
 if __name__ == "__main__":

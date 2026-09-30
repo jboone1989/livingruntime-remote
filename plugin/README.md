@@ -2,7 +2,7 @@
 
 Identity: `livingruntime.remote`
 
-Current version: `0.4.52`
+Current version: `0.4.53`
 
 This directory contains the ChatGPT/Codex-facing MCP runtime and the local Connector implementation.
 
@@ -160,7 +160,7 @@ The plugin lifecycle intentionally does not contain a blocking `Stop` hook. Long
 
 ## MCP Events
 
-Version 0.4.52 adds the first native ChatGPT MCP Event: `job.completed`.
+Version 0.4.53 exposes two native ChatGPT MCP Events: `job.completed` and `cognition.requested`. The cognition event is activation-only and contains only bounded request identity/routing metadata; the authoritative cognition messages remain in LivingRuntime and must be fetched after the event wakes the subscribed chat.
 The relay advertises `capabilities.events` on MCP 2.0 discovery and implements
 `events/list`, `events/subscribe`, and `events/unsubscribe` on the authenticated
 MCP endpoint. Subscriptions are durable in the relay store, callback URLs are HTTPS-only

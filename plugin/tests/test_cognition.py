@@ -59,6 +59,19 @@ class CognitionQueueTests(unittest.TestCase):
         path = self.root / "requests" / "llmreq_fixed.json"
         self.assertTrue(path.exists())
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        event = first["activation_event"]
+        self.assertTrue(event["event_id"].startswith("lrcog_"))
+        self.assertIsNone(event["event_forwarded_at"])
+        pending = cognition.pending_activation_events()
+        self.assertEqual([row["request_id"] for row in pending], ["llmreq_fixed"])
+        cognition.mark_activation_event_forwarded(
+            "llmreq_fixed",
+            event["event_id"],
+            forwarded_at=1234.0,
+        )
+        self.assertEqual(cognition.pending_activation_events(), [])
+        stored = cognition.get("llmreq_fixed")
+        self.assertEqual(stored["activation_event"]["event_forwarded_at"], 1234.0)
 
     def test_submit_only_emits_activation_for_pending_request(self) -> None:
         with patch.object(

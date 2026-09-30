@@ -46,7 +46,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.52")
+            self.assertEqual(health.json()["version"], "0.4.53")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -513,6 +513,42 @@ class RelayServerTests(unittest.TestCase):
             delivered_event["data"]["connector_id"],
             paired["device_id"],
         )
+
+    def test_device_event_delivers_cognition_subscription(self):
+        paired = self.store.pair_device(
+            self.store.create_pairing_code("user-a")["code"], "test"
+        )
+        self.store.upsert_event_subscription(
+            subscription_id="sub-cognition",
+            user_sub="user-a",
+            name="cognition.requested",
+            arguments={"agent_id": "ferro", "lane": "repair"},
+            callback_url="https://callback.example/events",
+            secret="whsec_test",
+            expires_at=9999999999.0,
+        )
+        payload = {
+            "eventId": "lrcog_1234567890",
+            "name": "cognition.requested",
+            "timestamp": "2026-09-30T06:00:00Z",
+            "data": {
+                "event_id": "lrcog_1234567890",
+                "request_id": "llmreq_123",
+                "agent_id": "ferro",
+                "lane": "repair",
+            },
+            "cursor": None,
+        }
+        headers = {"authorization": "Bearer " + paired["device_token"]}
+        with patch.object(server, "deliver_event", return_value=200) as deliver:
+            with TestClient(self.app) as client:
+                response = client.post("/device/event", json=payload, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["delivered"], 1)
+        delivered_event = deliver.call_args.args[1]
+        self.assertEqual(delivered_event["name"], "cognition.requested")
+        self.assertEqual(delivered_event["data"]["request_id"], "llmreq_123")
+        self.assertEqual(delivered_event["data"]["connector_id"], paired["device_id"])
 
     def test_public_tools_do_not_forward_function_locals(self):
         source = inspect.getsource(server.create_mcp)

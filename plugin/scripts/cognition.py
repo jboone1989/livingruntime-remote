@@ -31,6 +31,19 @@ DEFAULT_CLAIM_SECONDS = 120
 MAX_UNCLAIMED_DURABLE_AGE_SECONDS = 15 * 60
 
 
+def _ensure_activation_event(value: dict[str, Any], now: float) -> None:
+    existing = value.get("activation_event")
+    if isinstance(existing, dict) and existing.get("event_id"):
+        existing.setdefault("event_forwarded_at", None)
+        return
+    value["activation_event"] = {
+        "event_id": "lrcog_" + uuid.uuid4().hex[:20],
+        "request_id": value["request_id"],
+        "created_at": now,
+        "event_forwarded_at": None,
+    }
+
+
 def cognition_root() -> Path:
     raw = str(os.environ.get("LIVINGRUNTIME_COGNITION_ROOT") or "").strip()
     if raw:
@@ -412,7 +425,11 @@ def submit(
         if existing is not None:
             if existing.get("payload_sha256") != digest:
                 raise RuntimeError("request_id idempotency conflict")
-            result = dict(_refresh_timeout(existing, now))
+            existing = _refresh_timeout(existing, now)
+            if existing.get("status") == "PENDING":
+                _ensure_activation_event(existing, now)
+                _save(existing)
+            result = dict(existing)
         else:
             value = {
                 "version": STORE_VERSION,
@@ -439,6 +456,7 @@ def submit(
                 "timeout_phase": None,
                 "finished_at": None,
             }
+            _ensure_activation_event(value, now)
             _save(value)
             result = dict(value)
     if result.get("status") == "PENDING":
@@ -449,6 +467,59 @@ def submit(
             "request_status": result.get("status"),
         }
     return result
+
+
+def pending_activation_events(limit: int = 50) -> list[dict[str, Any]]:
+    bounded_limit = min(200, max(1, int(limit)))
+    root = _requests_root()
+    if not root.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for path in root.glob("llmreq_*.json"):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(value, dict) or value.get("status") != "PENDING":
+            continue
+        event = value.get("activation_event")
+        if not isinstance(event, dict) or not event.get("event_id"):
+            continue
+        if event.get("event_forwarded_at") is not None:
+            continue
+        rows.append(value)
+    rows.sort(
+        key=lambda item: (
+            float(
+                (item.get("activation_event") or {}).get("created_at")
+                or item.get("created_at")
+                or 0.0
+            ),
+            str(item.get("request_id") or ""),
+        )
+    )
+    return [dict(row) for row in rows[:bounded_limit]]
+
+
+def mark_activation_event_forwarded(
+    request_id: str,
+    event_id: str,
+    *,
+    forwarded_at: float | None = None,
+) -> dict[str, Any]:
+    rid = _validate_request_id(request_id)
+    with _queue_lock():
+        value = _load(rid)
+        event = value.get("activation_event")
+        if not isinstance(event, dict) or str(event.get("event_id") or "") != str(event_id):
+            raise ValueError("cognition activation event identity mismatch")
+        if event.get("event_forwarded_at") is None:
+            now = time.time() if forwarded_at is None else float(forwarded_at)
+            event["event_forwarded_at"] = now
+            value["activation_event"] = event
+            value["updated_at"] = now
+            _save(value)
+        return dict(value)
 
 
 def get(request_id: str) -> dict[str, Any]:

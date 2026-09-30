@@ -19,6 +19,7 @@ from pydantic import Field
 
 
 EVENT_NAME = "job.completed"
+COGNITION_EVENT_NAME = "cognition.requested"
 DEFAULT_TTL_MS = 24 * 60 * 60 * 1000
 MIN_TTL_MS = 5 * 60 * 1000
 MAX_TTL_MS = 24 * 60 * 60 * 1000
@@ -81,6 +82,40 @@ JOB_COMPLETED_DEFINITION = {
     },
 }
 
+COGNITION_REQUESTED_DEFINITION = {
+    "name": COGNITION_EVENT_NAME,
+    "description": (
+        "A durable LivingRuntime cognition request is pending. "
+        "The event is activation-only; authoritative prompt content remains in LivingRuntime."
+    ),
+    "delivery": ["webhook"],
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string", "maxLength": 128},
+            "lane": {"type": "string", "maxLength": 128},
+        },
+        "additionalProperties": False,
+    },
+    "payloadSchema": {
+        "type": "object",
+        "properties": {
+            "event_id": {"type": "string"},
+            "request_id": {"type": "string"},
+            "agent_id": {"type": "string"},
+            "lane": {"type": "string"},
+            "connector_id": {"type": "string"},
+        },
+        "required": ["event_id", "request_id", "agent_id", "lane", "connector_id"],
+        "additionalProperties": False,
+    },
+}
+
+EVENT_DEFINITIONS = {
+    EVENT_NAME: JOB_COMPLETED_DEFINITION,
+    COGNITION_EVENT_NAME: COGNITION_REQUESTED_DEFINITION,
+}
+
 
 class CallbackEndpointError(RuntimeError):
     def __init__(self, reason: str, detail: str | None = None) -> None:
@@ -88,13 +123,24 @@ class CallbackEndpointError(RuntimeError):
         self.reason = reason
 
 
-def canonical_arguments(arguments: dict[str, Any] | None) -> tuple[dict[str, str], str]:
+def canonical_arguments(
+    arguments: dict[str, Any] | None,
+    *,
+    name: str = EVENT_NAME,
+) -> tuple[dict[str, str], str]:
     raw = dict(arguments or {})
-    unknown = set(raw) - {"project", "device"}
+    allowed = (
+        {"project", "device"}
+        if name == EVENT_NAME
+        else {"agent_id", "lane"}
+        if name == COGNITION_EVENT_NAME
+        else set()
+    )
+    unknown = set(raw) - allowed
     if unknown:
         raise ValueError(f"unsupported event arguments: {', '.join(sorted(unknown))}")
     normalized: dict[str, str] = {}
-    for key in ("project", "device"):
+    for key in sorted(allowed):
         if key not in raw:
             continue
         value = str(raw[key]).strip()
@@ -295,8 +341,7 @@ def event_matches(subscription: dict[str, Any], data: dict[str, Any]) -> bool:
             arguments = json.loads(str(subscription.get("arguments_json") or "{}"))
         except Exception:
             return False
-    for key in ("project", "device"):
-        expected = arguments.get(key)
+    for key, expected in arguments.items():
         if expected is not None and str(data.get(key) or "") != str(expected):
             return False
     return True
@@ -363,3 +408,51 @@ def validate_job_completed_event(payload: dict[str, Any], connector_id: str) -> 
         },
         "cursor": None,
     }
+
+
+def validate_cognition_requested_event(
+    payload: dict[str, Any],
+    connector_id: str,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict) or payload.get("name") != COGNITION_EVENT_NAME:
+        raise ValueError("unsupported connector event")
+    event_id = str(payload.get("eventId") or "").strip()
+    if not event_id.startswith("lrcog_") or len(event_id) > 128:
+        raise ValueError("invalid cognition event id")
+    timestamp = str(payload.get("timestamp") or "").strip()
+    if not timestamp or len(timestamp) > 64:
+        raise ValueError("event timestamp is required")
+    data = dict(payload.get("data") or {})
+    if str(data.get("event_id") or "") != event_id:
+        raise ValueError("cognition event identity mismatch")
+    request_id = str(data.get("request_id") or "").strip()
+    agent_id = str(data.get("agent_id") or "").strip()
+    lane = str(data.get("lane") or "").strip()
+    if not request_id.startswith("llmreq_") or len(request_id) > 128:
+        raise ValueError("invalid cognition request id")
+    if not agent_id or len(agent_id) > 128:
+        raise ValueError("invalid cognition agent id")
+    if not lane or len(lane) > 128:
+        raise ValueError("invalid cognition lane")
+    return {
+        "eventId": event_id,
+        "name": COGNITION_EVENT_NAME,
+        "timestamp": timestamp,
+        "data": {
+            "event_id": event_id,
+            "request_id": request_id,
+            "agent_id": agent_id,
+            "lane": lane,
+            "connector_id": connector_id,
+        },
+        "cursor": None,
+    }
+
+
+def validate_connector_event(payload: dict[str, Any], connector_id: str) -> dict[str, Any]:
+    name = str(payload.get("name") or "") if isinstance(payload, dict) else ""
+    if name == EVENT_NAME:
+        return validate_job_completed_event(payload, connector_id)
+    if name == COGNITION_EVENT_NAME:
+        return validate_cognition_requested_event(payload, connector_id)
+    raise ValueError("unsupported connector event")

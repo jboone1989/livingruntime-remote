@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import bridge
+import cognition
 import jobs
 from contract import PLUGIN_VERSION, REMOTE_TOOLS
 
@@ -147,6 +148,59 @@ def _forward_completion_events(cfg: dict[str, Any]) -> None:
         _EVENT_FORWARD_LOCK.release()
 
 
+def _forward_cognition_events(cfg: dict[str, Any]) -> None:
+    if not _EVENT_FORWARD_LOCK.acquire(blocking=False):
+        return
+    try:
+        for request in cognition.pending_activation_events(limit=50):
+            event = request.get("activation_event")
+            if not isinstance(event, dict):
+                continue
+            event_id = str(event.get("event_id") or "")
+            if not event_id:
+                continue
+            payload = {
+                "eventId": event_id,
+                "name": "cognition.requested",
+                "timestamp": _event_timestamp(
+                    float(event.get("created_at") or request.get("created_at") or time.time())
+                ),
+                "data": {
+                    "event_id": event_id,
+                    "request_id": str(request.get("request_id") or ""),
+                    "agent_id": str(request.get("agent_id") or ""),
+                    "lane": cognition.dispatch_lane(request),
+                },
+                "cursor": None,
+            }
+            try:
+                result = _request(
+                    cfg["url"],
+                    "/device/event",
+                    payload,
+                    cfg["device_token"],
+                    timeout=15,
+                )
+            except Exception as exc:
+                print(
+                    f"relay cognition event delivery error: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+                continue
+            if result.get("ok") is True:
+                cognition.mark_activation_event_forwarded(
+                    str(request["request_id"]),
+                    event_id,
+                )
+    finally:
+        _EVENT_FORWARD_LOCK.release()
+
+
+def _forward_events(cfg: dict[str, Any]) -> None:
+    _forward_completion_events(cfg)
+    _forward_cognition_events(cfg)
+
+
 def _handle_claimed_task(cfg: dict[str, Any], task: dict[str, Any]) -> None:
     result = _dispatch(task)
     _request(
@@ -156,7 +210,7 @@ def _handle_claimed_task(cfg: dict[str, Any], task: dict[str, Any]) -> None:
         cfg["device_token"],
         timeout=30,
     )
-    _forward_completion_events(cfg)
+    _forward_events(cfg)
 
 
 def serve(config_path: Path, once: bool = False) -> None:
@@ -172,7 +226,7 @@ def serve(config_path: Path, once: bool = False) -> None:
     ) as pool:
         while True:
             try:
-                _forward_completion_events(cfg)
+                _forward_events(cfg)
                 finished = {future for future in pending if future.done()}
                 for future in finished:
                     pending.remove(future)
