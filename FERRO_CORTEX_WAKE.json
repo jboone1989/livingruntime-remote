@@ -3,5 +3,5 @@
   "event": "FERRO_CORTEX_WAKE",
   "request_id": "llmreq_b92ac3a0108540e03e929c8c69d0494c",
   "schema_version": "livingruntime-cortex-wake.v1",
-  "wake_sequence": 842
+  "wake_sequence": 843
 }
