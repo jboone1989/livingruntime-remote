@@ -150,9 +150,7 @@ class DiscoveryTests(unittest.TestCase):
             "watch_pi_job": (True, False, False),
             "wait_pi_job_completion": (True, False, False),
             "bind_openai_job_continuation": (False, False, False),
-            "continue_openai_job": (False, False, False),
             "bind_openai_pi_continuation": (False, False, False),
-            "continue_openai_pi_job": (False, False, False),
         }
         for name, (read_only, destructive, open_world) in expected.items():
             annotations = by_name[name].annotations
@@ -878,40 +876,6 @@ class SchemaAndToolTests(unittest.TestCase):
         self.assertTrue(result["execution"]["running_requires_live_process"])
         self.assertNotIn("never-return-this-value", json.dumps(result))
 
-    def test_generic_openai_continuation_resumes_terminal_durable_job(self) -> None:
-        jobs_root = Path(self.tmp.name) / "generic-jobs"
-        with patch.dict(
-            os.environ,
-            {"LIVINGRUNTIME_REMOTE_JOBS": str(jobs_root)},
-        ), patch.object(
-            bridge, "_config_path", return_value=str(self.config)
-        ), patch.object(bridge.Path, "home", return_value=Path(self.tmp.name)):
-            created = bridge.create_job("Generic durable continuation", project="ferro")
-            completed = bridge.checkpoint_job(
-                created["job_id"],
-                summary="terminal evidence ready",
-                status="SUCCEEDED",
-            )
-            event_id = completed["completion_event"]["event_id"]
-            bound = bridge.bind_openai_job_continuation(
-                "session-generic", created["job_id"]
-            )
-            self.assertEqual(bound["runtimeJobId"], created["job_id"])
-            self.assertTrue(bound["goalTerminal"])
-            self.assertEqual(bound["completionEventId"], event_id)
-
-            decision = bridge.continue_openai_job(
-                "session-generic",
-                timeout_seconds=1,
-            )
-            self.assertEqual(decision["decision"], "block")
-            self.assertIn(created["job_id"], decision["reason"])
-            self.assertIn(event_id, decision["reason"])
-            self.assertEqual(
-                bridge.continue_openai_job("session-generic", timeout_seconds=1),
-                {"continue": True},
-            )
-
     def test_openai_generic_continuation_recovers_after_resume_and_ack_clears_binding(self) -> None:
         jobs_root = Path(self.tmp.name) / "jobs-recovery"
         with patch.dict(
@@ -955,101 +919,6 @@ class SchemaAndToolTests(unittest.TestCase):
                 ),
                 {"continue": True},
             )
-
-    def test_recursive_generic_stop_preserves_durable_binding(self) -> None:
-        jobs_root = Path(self.tmp.name) / "jobs-recursive-generic"
-        with patch.dict(
-            os.environ,
-            {"LIVINGRUNTIME_REMOTE_JOBS": str(jobs_root)},
-        ), patch.object(
-            bridge, "_config_path", return_value=str(self.config)
-        ), patch.object(bridge.Path, "home", return_value=Path(self.tmp.name)):
-            created = bridge.create_job("Still running", project="ferro")
-            bridge.bind_openai_job_continuation(
-                "session-recursive-generic", created["job_id"]
-            )
-            result = bridge.continue_openai_job(
-                "session-recursive-generic",
-                timeout_seconds=1,
-                stop_hook_active=True,
-            )
-            self.assertTrue(result["continue"])
-            self.assertEqual(result["watch_mode"], "durable_outbox")
-            recovered = bridge.recover_openai_job_continuation(
-                "session-recursive-generic", "SessionStart"
-            )
-            self.assertEqual(recovered["runtimeJobId"], created["job_id"])
-
-    def test_openai_continuation_binding_and_terminal_resume(self) -> None:
-        with patch.object(bridge.Path, "home", return_value=Path(self.tmp.name)):
-            bound = bridge.bind_openai_pi_continuation(
-                "session-a", "job-a", "/home/ubuntu/src/pi-remote", None
-            )
-            self.assertEqual(
-                bound["hookSpecificOutput"]["hookEventName"], "PostToolUse"
-            )
-            runtime_job_id = bound["runtimeJobId"]
-            self.assertEqual(bridge.get_job(runtime_job_id)["status"], "PENDING")
-            with patch.object(
-                bridge,
-                "_pi_job_command",
-                return_value={"status": "SUCCEEDED"},
-            ):
-                decision = bridge.continue_openai_pi_job("session-a", timeout_seconds=5)
-            self.assertEqual(decision["decision"], "block")
-            self.assertIn("job-a", decision["reason"])
-            self.assertIn("SUCCEEDED", decision["reason"])
-            self.assertEqual(bridge.get_job(runtime_job_id)["status"], "SUCCEEDED")
-            self.assertEqual(
-                bridge.continue_openai_pi_job("session-a", timeout_seconds=1),
-                {"continue": True},
-            )
-
-    def test_openai_interrupt_cancels_pi_and_terminalizes_goal_by_user(self) -> None:
-        with patch.object(bridge.Path, "home", return_value=Path(self.tmp.name)):
-            bound = bridge.bind_openai_pi_continuation(
-                "session-stop", "job-stop", "/home/ubuntu/src/pi-remote", None
-            )
-            runtime_job_id = bound["runtimeJobId"]
-            calls = []
-            with patch.object(
-                bridge,
-                "_pi_job_command",
-                side_effect=lambda command, *args, **kwargs: (
-                    calls.append(command)
-                    or {"status": "CANCEL_REQUESTED", "cancelSignalSent": True}
-                ),
-            ):
-                decision = bridge.continue_openai_pi_job(
-                    "session-stop",
-                    timeout_seconds=3,
-                    interrupted=True,
-                )
-            self.assertEqual(calls, ["job-cancel"])
-            self.assertFalse(decision["continue"])
-            self.assertTrue(decision["cancelledByUser"])
-            self.assertEqual(
-                bridge.get_job(runtime_job_id)["status"],
-                "CANCELLED_BY_USER",
-            )
-            self.assertEqual(
-                bridge.continue_openai_pi_job("session-stop", timeout_seconds=1),
-                {"continue": True},
-            )
-
-    def test_recursive_stop_hook_never_reblocks(self) -> None:
-        with patch.object(bridge.Path, "home", return_value=Path(self.tmp.name)):
-            bridge.bind_openai_pi_continuation(
-                "session-recursive", "job-recursive", "/home/ubuntu/src/pi-remote", None
-            )
-            result = bridge.continue_openai_pi_job(
-                "session-recursive",
-                timeout_seconds=1,
-                stop_hook_active=True,
-            )
-            self.assertFalse(result["continue"])
-            self.assertIn("exhausted", result["stopReason"])
-
 
     def test_exec_refuses_long_synchronous_wait_and_points_to_supervisor(self) -> None:
         with patch.object(bridge, "_audit") as audit, patch.object(

@@ -247,7 +247,7 @@ class ConnectorTests(unittest.TestCase):
 
                 def fake_request(base, path, body, token=None, timeout=35):
                     calls.append((path, body))
-                    return {"ok": True}
+                    return {"ok": True, "matching_subscriptions": 1, "delivered": 1}
 
                 cfg = {
                     "url": "https://remote.example",
@@ -265,12 +265,10 @@ class ConnectorTests(unittest.TestCase):
     def test_relay_agent_forwards_cognition_event_without_prompt(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "cognition"
-            wake = Path(tmp) / "no-wake.json"
             with patch.dict(
                 "os.environ",
                 {
                     "LIVINGRUNTIME_COGNITION_ROOT": str(root),
-                    "LIVINGRUNTIME_COGNITION_GITHUB_WAKE_CONFIG": str(wake),
                 },
             ):
                 created = relay_agent.cognition.submit(
@@ -303,6 +301,36 @@ class ConnectorTests(unittest.TestCase):
                 self.assertEqual(payload["data"]["lane"], "repair")
                 self.assertNotIn("messages", payload)
                 self.assertNotIn("private cognition prompt", json.dumps(payload))
+
+    def test_relay_agent_does_not_consume_cognition_event_without_subscription(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "cognition"
+            with patch.dict(
+                "os.environ",
+                {"LIVINGRUNTIME_COGNITION_ROOT": str(root)},
+            ):
+                created = relay_agent.cognition.submit(
+                    agent_id="ferro",
+                    purpose="owner_dialogue",
+                    messages=[{"role": "user", "content": "wake me"}],
+                    request_id="llmreq_no_subscription",
+                )
+                cfg = {
+                    "url": "https://remote.example",
+                    "device_token": "token",
+                }
+                with patch.object(
+                    relay_agent,
+                    "_request",
+                    return_value={
+                        "ok": True,
+                        "matching_subscriptions": 0,
+                        "delivered": 0,
+                    },
+                ):
+                    relay_agent._forward_cognition_events(cfg)
+                stored = relay_agent.cognition.get(created["request_id"])
+                self.assertIsNone(stored["activation_event"]["event_forwarded_at"])
 
 
 

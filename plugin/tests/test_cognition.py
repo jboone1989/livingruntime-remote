@@ -21,12 +21,10 @@ class CognitionQueueTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name) / "cognition"
-        self.wake_config = Path(self.tmp.name) / "no-cognition-wake-config.json"
         self.env = patch.dict(
             os.environ,
             {
                 "LIVINGRUNTIME_COGNITION_ROOT": str(self.root),
-                "LIVINGRUNTIME_COGNITION_GITHUB_WAKE_CONFIG": str(self.wake_config),
             },
         )
         self.env.start()
@@ -74,40 +72,42 @@ class CognitionQueueTests(unittest.TestCase):
         self.assertEqual(stored["activation_event"]["event_forwarded_at"], 1234.0)
 
     def test_submit_only_emits_activation_for_pending_request(self) -> None:
-        with patch.object(
-            cognition,
-            "emit_cognition_wake",
-            return_value={"status": "EMITTED"},
-        ) as emit:
-            first = self.submit("llmreq_activation")
-            claimed = cognition.claim_request(
-                request_id="llmreq_activation",
-                watcher_id="watcher_activation",
-                claim_seconds=30,
-            )
-            cognition.complete(
-                request_id="llmreq_activation",
-                response_text="done",
-                claim_token=claimed["claim"]["token"],
-            )
-            repeated = self.submit("llmreq_activation")
+        first = self.submit("llmreq_activation")
+        claimed = cognition.claim_request(
+            request_id="llmreq_activation",
+            watcher_id="watcher_activation",
+            claim_seconds=30,
+        )
+        cognition.complete(
+            request_id="llmreq_activation",
+            response_text="done",
+            claim_token=claimed["claim"]["token"],
+        )
+        repeated = self.submit("llmreq_activation")
 
-        self.assertEqual(first["activation"]["status"], "EMITTED")
+        self.assertEqual(first["activation"]["status"], "QUEUED")
+        self.assertEqual(first["activation"]["transport"], "mcp-event")
+        self.assertTrue(first["activation"]["event_id"].startswith("lrcog_"))
         self.assertEqual(repeated["status"], "COMPLETED")
         self.assertEqual(repeated["activation"]["status"], "NOT_REQUIRED")
-        self.assertEqual(emit.call_count, 1)
 
     def test_rearm_pending_only_reemits_while_request_is_pending(self) -> None:
-        with patch.object(
-            cognition,
-            "rearm_cognition_wake",
-            return_value={"status": "REARMED"},
-        ) as rearm:
+        with patch.object(cognition.time, "time", return_value=1000.0):
             created = self.submit("llmreq_rearm_pending")
+        original_event = created["activation_event"]["event_id"]
+        with patch.object(cognition.time, "time", return_value=1030.0):
             pending = cognition.rearm_pending(
                 "llmreq_rearm_pending",
                 min_interval_seconds=60,
             )
+        with patch.object(cognition.time, "time", return_value=1061.0):
+            rearmed = cognition.rearm_pending(
+                "llmreq_rearm_pending",
+                min_interval_seconds=60,
+            )
+        self.assertNotEqual(rearmed["activation_event"]["event_id"], original_event)
+        self.assertIsNone(rearmed["activation_event"]["event_forwarded_at"])
+        with patch.object(cognition.time, "time", return_value=1062.0):
             claimed = cognition.claim_request(
                 request_id="llmreq_rearm_pending",
                 watcher_id="watcher_rearm",
@@ -128,22 +128,19 @@ class CognitionQueueTests(unittest.TestCase):
             )
 
         self.assertEqual(created["status"], "PENDING")
-        self.assertEqual(pending["activation"]["status"], "REARMED")
+        self.assertEqual(pending["activation"]["status"], "COOLDOWN")
+        self.assertEqual(rearmed["activation"]["status"], "QUEUED")
+        self.assertEqual(rearmed["activation"]["transport"], "mcp-event")
         self.assertEqual(dispatched["activation"]["status"], "NOT_REQUIRED")
         self.assertEqual(dispatched["activation"]["request_status"], "DISPATCHED")
         self.assertEqual(completed["activation"]["status"], "NOT_REQUIRED")
         self.assertEqual(completed["activation"]["request_status"], "COMPLETED")
-        rearm.assert_called_once()
-        self.assertEqual(
-            rearm.call_args.kwargs["min_interval_seconds"],
-            60,
-        )
 
     def test_cognitionctl_get_can_explicitly_rearm_pending_request(self) -> None:
         rearmed = {
             "request_id": "llmreq_cli_rearm",
             "status": "PENDING",
-            "activation": {"status": "REARMED"},
+            "activation": {"status": "QUEUED", "transport": "mcp-event"},
         }
         with patch.object(
             sys,

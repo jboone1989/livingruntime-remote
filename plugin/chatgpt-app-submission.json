@@ -248,18 +248,6 @@
         "destructive_justification": "Does not delete user data, stop processes, or modify repository contents."
       }
     },
-    "continue_openai_pi_job": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Waits for the bound Pi job and consumes its private continuation binding after terminal completion.",
-        "open_world_justification": "Uses only the user's paired bounded Remote workspace and OpenAI runtime continuation state.",
-        "destructive_justification": "Does not alter repository files, stop services, or cancel the Pi job."
-      }
-    },
     "list_exec_permissions": {
       "annotations": {
         "readOnlyHint": true,
@@ -654,18 +642,6 @@
         "read_only_justification": "Stores bounded private continuation metadata linking the current OpenAI session to an existing durable LivingRuntime job.",
         "open_world_justification": "Operates only on private LivingRuntime Remote continuation/completion state.",
         "destructive_justification": "Does not modify project files, services, external accounts, or completed job results."
-      }
-    },
-    "continue_openai_job": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Reads the bound durable job and returns a bounded OpenAI continuation decision; on explicit user interrupt it may cancel only that bound job.",
-        "open_world_justification": "Operates only on private LivingRuntime Remote continuation/completion state.",
-        "destructive_justification": "Normal checks are non-destructive; an explicit Interrupt hook may cancel only the already-bound durable job at the user's request."
       }
     },
     "recover_openai_job_continuation": {

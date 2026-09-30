@@ -46,7 +46,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.53")
+            self.assertEqual(health.json()["version"], "0.4.54")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -565,7 +565,6 @@ class RelayServerTests(unittest.TestCase):
             "watch_pi_job",
             "wait_pi_job_completion",
             "bind_openai_pi_continuation",
-            "continue_openai_pi_job",
             "claim_llm_request_for_watcher",
             "open_remote_control_plane",
         } | set(REMOTE_TOOLS)
@@ -754,9 +753,6 @@ class RelayServerTests(unittest.TestCase):
         self.assertFalse(
             tools["bind_openai_pi_continuation"].annotations.destructive_hint
         )
-        self.assertFalse(
-            tools["continue_openai_pi_job"].annotations.read_only_hint
-        )
         resources = asyncio.run(mcp.list_resources())
         resource_uris = {str(resource.uri) for resource in resources}
         self.assertTrue(server.PI_JOB_WIDGET_URI.endswith("pi-job-watch-v3.html"))
@@ -855,7 +851,7 @@ class RelayServerTests(unittest.TestCase):
         # MCP 2.x resources/list returns resource metadata, not the resource
         # body. The body is covered directly by the widget constant tests below.
         self.assertIn("wait_llm_request", server.COGNITION_WIDGET_HTML)
-        self.assertIn(
+        self.assertNotIn(
             "claim_llm_request_for_watcher",
             server.COGNITION_WIDGET_HTML,
         )
@@ -896,34 +892,25 @@ class RelayServerTests(unittest.TestCase):
             server.PI_JOB_WIDGET_DOMAIN,
         )
 
-    def test_pi_job_widget_uses_event_wait_and_same_conversation_followup(self):
+    def test_pi_job_widget_uses_event_wait_without_followup_prompt(self):
         html = server.PI_JOB_WIDGET_HTML
         self.assertIn('"tools/call"', html)
         self.assertIn('"wait_pi_job_completion"', html)
         self.assertIn("timeout_seconds: 30", html)
-        self.assertIn('"ui/message"', html)
         self.assertIn('"ui/update-model-context"', html)
         self.assertIn('"ui/initialize"', html)
-        self.assertIn("runtime_job_id=", html)
-        self.assertIn("Durable LivingRuntime goal", html)
-        self.assertIn("Remote connection lost", html)
         self.assertIn('"ARMED"', html)
         self.assertIn('"WAITING_FOR_CHATGPT_SESSION"', html)
         self.assertIn('"DISCONNECTED"', html)
         self.assertIn('"COMPLETED"', html)
         self.assertIn("setWidgetState", html)
-        self.assertIn("void sendFollowUp", html)
-        self.assertNotIn("await sendFollowUp", html)
-        self.assertLess(
-            html.index('setStatus("COMPLETED", detail)'),
-            html.index("void sendFollowUp"),
-        )
+        self.assertNotIn('"ui/message"', html)
+        self.assertNotIn("sendFollowUpMessage", html)
+        self.assertNotIn("sendFollowUp", html)
         self.assertIn('"pagehide"', html)
-        self.assertNotIn("Pi is working", html)
         self.assertNotIn("setInterval(", html)
-        self.assertNotIn("job-status", html)
 
-    def test_long_job_widget_uses_bounded_wait_and_reports_stall(self):
+    def test_long_job_widget_uses_mcp_event_handoff(self):
         html = server.LONG_JOB_WIDGET_HTML
         self.assertIn('"tools/call"', html)
         self.assertIn('"wait_long_job"', html)
@@ -934,26 +921,19 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn("progressAgeSeconds", html)
         self.assertIn('"ui/update-model-context"', html)
         self.assertIn('"ARMED"', html)
-        self.assertIn('"WAITING_FOR_CHATGPT_SESSION"', html)
         self.assertIn('"DISCONNECTED"', html)
         self.assertIn('"COMPLETED"', html)
         self.assertIn("setWidgetState", html)
         self.assertIn("publishCompletion", html)
-        self.assertIn("ack_long_job_completion", html)
-        self.assertIn("claim_long_job_completion", html)
-        self.assertIn("mark_long_job_completion_delivered", html)
-        self.assertIn("deliveryConsumerId", html)
-        self.assertIn('"ui/message"', html)
-        self.assertIn("sendFollowUpMessage", html)
-        self.assertIn("sendCompletionFollowUp", html)
-        self.assertIn("WAITING_FOR_CHATGPT_ACK", html)
-        terminal_block = html[
-            html.index("if (data?.terminal || job.terminal)") :
-            html.index('if (status === "STALLED")')
-        ]
-        self.assertIn("deliverCompletion", terminal_block)
+        self.assertIn("MCP Event handles ChatGPT activation", html)
+        self.assertNotIn("claim_long_job_completion", html)
+        self.assertNotIn("mark_long_job_completion_delivered", html)
+        self.assertNotIn("deliveryConsumerId", html)
+        self.assertNotIn('"ui/message"', html)
+        self.assertNotIn("sendFollowUpMessage", html)
+        self.assertNotIn("sendCompletionFollowUp", html)
+        self.assertNotIn("WAITING_FOR_CHATGPT_ACK", html)
         self.assertIn('"pagehide"', html)
-        self.assertNotIn("Long job is working", html)
         self.assertNotIn("setInterval(", html)
 
     def test_legacy_cognition_widgets_are_inert_compatibility_cards(self):
@@ -965,43 +945,68 @@ class RelayServerTests(unittest.TestCase):
         self.assertNotIn("sendFollowUpMessage", html)
         self.assertNotIn("<script>", html)
 
-    def test_cognition_widget_waits_claims_and_rearms_same_conversation(self):
+    def test_cognition_widget_observes_mcp_event_handoff_without_claiming(self):
         html = server.COGNITION_WIDGET_HTML
         self.assertIn('"tools/call"', html)
         self.assertIn("window.openai?.callTool", html)
         self.assertIn("RECONNECTING", html)
-        self.assertIn('text.includes("Load failed")', html)
-        self.assertIn('text.includes("Failed to fetch")', html)
-        self.assertIn("Resource not found", html)
-        self.assertIn("Internal Server Error", html)
-        self.assertIn("maxReconnectAttempts = 3", html)
         self.assertIn('"wait_llm_request"', html)
-        self.assertIn('"claim_llm_request_for_watcher"', html)
+        self.assertNotIn('"claim_llm_request_for_watcher"', html)
         self.assertIn("window.openai?.toolInput", html)
         self.assertIn("payload?.watcherId", html)
-        self.assertIn("...(watcherId ? {watcher_id:watcherId} : {})", html)
         self.assertIn('availableDisplayModes:["inline","pip"]', html)
         self.assertIn('requestDisplayMode("pip")', html)
-        self.assertIn("claim_seconds:300", html)
-        self.assertNotIn("claim_seconds:120", html)
-        self.assertIn('"ui/message"', html)
+        self.assertNotIn('"ui/message"', html)
+        self.assertNotIn("sendFollowUpMessage", html)
         self.assertIn('"ui/update-model-context"', html)
-        self.assertIn("claim_llm_request", html)
-        self.assertIn("get_llm_request_status", html)
-        self.assertIn("complete_llm_request", html)
-        self.assertIn("watch_agent_cognition", html)
+        self.assertIn("PENDING_MCP_EVENT", html)
+        self.assertIn("MCP Event will activate the subscribed ChatGPT conversation", html)
         self.assertIn("handedOffRequestId", html)
-        self.assertIn("reclaimable", html)
         self.assertIn('"ARMED"', html)
         self.assertIn('"WAITING_FOR_CHATGPT_SESSION"', html)
         self.assertIn('"DISCONNECTED"', html)
         self.assertIn('"pagehide"', html)
-        self.assertNotIn("Cognition channel armed", html)
-        self.assertIn("do not call watch_agent_cognition", html)
-        self.assertIn("again and do not ask the user to type continue", html)
-        self.assertNotIn("the next turn will re-arm this channel", html)
-        self.assertIn("do not ask the user to type continue", html)
         self.assertNotIn("setInterval(", html)
+
+    def test_control_plane_widget_is_read_only_snapshot_ui(self):
+        html = server.CONTROL_PLANE_WIDGET_HTML
+        self.assertIn("LivingRuntime Remote Control Plane", html)
+        self.assertIn('"remote_overview"', html)
+        self.assertIn("Execution truth", html)
+        self.assertIn("Running now", html)
+        self.assertIn("Waiting / handoff", html)
+        self.assertIn("Recent terminal jobs", html)
+        self.assertIn("Permissions & credentials", html)
+        self.assertIn("ui_warning", html)
+        self.assertIn("last_real_activity_at", html)
+        self.assertIn('requestDisplayMode("pip")', html)
+        self.assertIn('requestDisplayMode("fullscreen")', html)
+        self.assertIn('availableDisplayModes:["inline","pip","fullscreen"]', html)
+        self.assertIn("window.openai?.callTool", html)
+        self.assertIn('"openai:set_globals"', html)
+        self.assertIn('body[data-mode="pip"] .pip-secondary', html)
+        self.assertIn('id="pin"', html)
+        self.assertIn('id="expand"', html)
+        self.assertIn("completion_events", html)
+        self.assertNotIn("publishCompletionBacklog", html)
+        self.assertNotIn("claim_long_job_completion", html)
+        self.assertNotIn("mark_long_job_completion_delivered", html)
+        self.assertNotIn("sendCompletionBacklogFollowUp", html)
+        self.assertNotIn('"ui/message"', html)
+        self.assertNotIn("sendFollowUpMessage", html)
+        self.assertIn("worker_alive", html)
+        self.assertIn("heartbeat_age_seconds", html)
+        self.assertIn("progress_age_seconds", html)
+        self.assertIn("include_resources:true", html)
+        self.assertIn("DISCONNECTED", html)
+        self.assertIn("setTimeout(()=>void refresh(), 10000)", html)
+        self.assertNotIn("setInterval(", html)
+        self.assertIn("formatTs", html)
+        self.assertIn("toLocaleString", html)
+        self.assertIn('state==="RUNNING"', html)
+        self.assertNotIn("RUNNING_EXECUTION", html)
+        self.assertNotIn("approve_exec_permission", html)
+        self.assertNotIn("lease_credential", html)
 
     def test_bounded_wait_relay_timeout_is_not_promoted_to_tool_failure(self):
         source = inspect.getsource(server.Relay.call)
@@ -1035,62 +1040,14 @@ class RelayServerTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_control_plane_widget_is_read_only_snapshot_ui(self):
-        html = server.CONTROL_PLANE_WIDGET_HTML
-        self.assertIn("LivingRuntime Remote Control Plane", html)
-        self.assertIn('"remote_overview"', html)
-        self.assertIn("Execution truth", html)
-        self.assertIn("Running now", html)
-        self.assertIn("Waiting / handoff", html)
-        self.assertIn("Recent terminal jobs", html)
-        self.assertIn("Permissions & credentials", html)
-        self.assertIn("ui_warning", html)
-        self.assertIn("last_real_activity_at", html)
-        self.assertIn('requestDisplayMode("pip")', html)
-        self.assertIn('requestDisplayMode("fullscreen")', html)
-        self.assertIn('availableDisplayModes:["inline","pip","fullscreen"]', html)
-        self.assertIn("window.openai?.callTool", html)
-        self.assertIn('"openai:set_globals"', html)
-        self.assertIn('body[data-mode="pip"] .pip-secondary', html)
-        self.assertIn('id="pin"', html)
-        self.assertIn('id="expand"', html)
-        self.assertIn("completion_events", html)
-        self.assertIn("publishCompletionBacklog", html)
-        self.assertIn("ack_long_job_completion", html)
-        self.assertIn("claim_long_job_completion", html)
-        self.assertIn("mark_long_job_completion_delivered", html)
-        self.assertIn("controlPlaneConsumerId", html)
-        self.assertIn("sendCompletionBacklogFollowUp", html)
-        self.assertIn('"ui/message"', html)
-        self.assertIn("sendFollowUpMessage", html)
-        self.assertNotIn("publishedCompletionEventIds", html)
-        self.assertIn("worker_alive", html)
-        self.assertIn("heartbeat_age_seconds", html)
-        self.assertIn("progress_age_seconds", html)
-        self.assertIn("include_resources:true", html)
-        self.assertIn("DISCONNECTED", html)
-        self.assertIn("setTimeout(()=>void refresh(), 10000)", html)
-        self.assertNotIn("setInterval(", html)
-        self.assertIn("formatTs", html)
-        self.assertIn("toLocaleString", html)
-        self.assertIn('state==="RUNNING"', html)
-        self.assertNotIn("RUNNING_EXECUTION", html)
-        self.assertNotIn("approve_exec_permission", html)
-        self.assertNotIn("lease_credential", html)
-
-    def test_public_openai_continuation_does_not_duplicate_widget_wait(self):
+    def test_public_openai_lifecycle_recovery_has_no_stop_continuation_tools(self):
         source = inspect.getsource(server.create_mcp)
         self.assertIn("bind_openai_job_continuation", source)
-        self.assertIn("continue_openai_job", source)
         self.assertIn("recover_openai_job_continuation", source)
         self.assertIn("bind_openai_pi_continuation", source)
-        self.assertIn("continue_openai_pi_job", source)
-        self.assertIn('"interrupted": bool(interrupted)', source)
-        self.assertIn('"stop_hook_active": bool(stop_hook_active)', source)
-        self.assertIn('if interrupted:', source)
-        self.assertIn('"continue_openai_job"', source)
-        self.assertIn("relay.call(", source)
-        self.assertIn("clear_continuation", source)
+        self.assertNotIn("continue_openai_job", source)
+        self.assertNotIn("continue_openai_pi_job", source)
+        self.assertNotIn("stop_hook_active", source)
 
 
 if __name__ == "__main__":

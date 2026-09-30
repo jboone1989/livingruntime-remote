@@ -139,7 +139,11 @@ def _forward_completion_events(cfg: dict[str, Any]) -> None:
                     flush=True,
                 )
                 continue
-            if result.get("ok") is True:
+            if (
+                result.get("ok") is True
+                and int(result.get("matching_subscriptions") or 0) > 0
+                and int(result.get("delivered") or 0) > 0
+            ):
                 jobs.mark_completion_event_forwarded(
                     str(job["job_id"]),
                     event_id,
@@ -187,7 +191,11 @@ def _forward_cognition_events(cfg: dict[str, Any]) -> None:
                     flush=True,
                 )
                 continue
-            if result.get("ok") is True:
+            if (
+                result.get("ok") is True
+                and int(result.get("matching_subscriptions") or 0) > 0
+                and int(result.get("delivered") or 0) > 0
+            ):
                 cognition.mark_activation_event_forwarded(
                     str(request["request_id"]),
                     event_id,

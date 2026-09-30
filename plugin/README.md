@@ -2,7 +2,7 @@
 
 Identity: `livingruntime.remote`
 
-Current version: `0.4.53`
+Current version: `0.4.54`
 
 This directory contains the ChatGPT/Codex-facing MCP runtime and the local Connector implementation.
 
@@ -42,7 +42,6 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 - watch_pi_job
 - wait_pi_job_completion
 - bind_openai_pi_continuation
-- continue_openai_pi_job
 
 The canonical connector-forwarded registry is `scripts/contract.py`. Relay-only
 ChatGPT Apps entrypoints such as `open_remote_control_plane` are registered in `relay/server.py`.
@@ -160,7 +159,7 @@ The plugin lifecycle intentionally does not contain a blocking `Stop` hook. Long
 
 ## MCP Events
 
-Version 0.4.53 exposes two native ChatGPT MCP Events: `job.completed` and `cognition.requested`. The cognition event is activation-only and contains only bounded request identity/routing metadata; the authoritative cognition messages remain in LivingRuntime and must be fetched after the event wakes the subscribed chat.
+Version 0.4.54 makes native MCP Events the sole proactive activation path. It exposes `job.completed` and `cognition.requested`; cognition events contain only bounded request identity/routing metadata, while authoritative messages remain in LivingRuntime and are fetched after the subscribed chat wakes.
 The relay advertises `capabilities.events` on MCP 2.0 discovery and implements
 `events/list`, `events/subscribe`, and `events/unsubscribe` on the authenticated
 MCP endpoint. Subscriptions are durable in the relay store, callback URLs are HTTPS-only
@@ -170,6 +169,4 @@ headers with bounded retry behavior. The Connector forwards one durable completi
 event ID to the relay and records successful relay acceptance so ChatGPT-side polling
 is not required for terminal long-job notification.
 
-The older widget/continuation receipt path remains available as a compatibility path
-while MCP Events is verified in ChatGPT, but it is no longer the target architecture
-for new long-job completion activation.
+Widgets are status surfaces only: they never inject `ui/message` or `sendFollowUpMessage` prompts. GitHub wake bridging has been removed. Durable MCP Events handle proactive activation, while lifecycle hooks recover already-bound durable state when a session starts, resumes, compacts, or receives a user prompt.

@@ -15,9 +15,6 @@ else:
 from pathlib import Path
 from typing import Any, Iterator
 
-from cortex_wake import emit as emit_cognition_wake
-from cortex_wake import rearm as rearm_cognition_wake
-
 STORE_VERSION = 1
 REQUEST_ID_RE = re.compile(r"^llmreq_[A-Za-z0-9._-]{1,120}$")
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
@@ -460,7 +457,13 @@ def submit(
             _save(value)
             result = dict(value)
     if result.get("status") == "PENDING":
-        result["activation"] = emit_cognition_wake(result)
+        event = result.get("activation_event") if isinstance(result.get("activation_event"), dict) else {}
+        result["activation"] = {
+            "status": "QUEUED",
+            "transport": "mcp-event",
+            "event_id": event.get("event_id"),
+            "request_id": result.get("request_id"),
+        }
     else:
         result["activation"] = {
             "status": "NOT_REQUIRED",
@@ -532,26 +535,50 @@ def rearm_pending(
     *,
     min_interval_seconds: int = 60,
 ) -> dict[str, Any]:
-    """Re-emit activation for a durable request only while it is still pending."""
+    """Queue a fresh MCP activation event while the request is still pending."""
     interval = int(min_interval_seconds)
     if not 15 <= interval <= 600:
         raise ValueError("min_interval_seconds must be within 15..600")
+    now = time.time()
     with _queue_lock():
-        value = dict(_refresh_timeout(_load(request_id)))
-    if value.get("status") != "PENDING":
-        return {
-            **value,
-            "activation": {
-                "status": "NOT_REQUIRED",
-                "request_status": value.get("status"),
-            },
+        value = dict(_refresh_timeout(_load(request_id), now))
+        if value.get("status") != "PENDING":
+            return {
+                **value,
+                "activation": {
+                    "status": "NOT_REQUIRED",
+                    "request_status": value.get("status"),
+                },
+            }
+        event = value.get("activation_event") if isinstance(value.get("activation_event"), dict) else {}
+        created_at = float(event.get("created_at") or 0.0)
+        elapsed = max(0.0, now - created_at) if created_at else float(interval)
+        if elapsed < interval:
+            return {
+                **value,
+                "activation": {
+                    "status": "COOLDOWN",
+                    "transport": "mcp-event",
+                    "retry_after_seconds": round(interval - elapsed, 3),
+                },
+            }
+        value["activation_event"] = {
+            "event_id": "lrcog_" + uuid.uuid4().hex[:20],
+            "request_id": value["request_id"],
+            "created_at": now,
+            "event_forwarded_at": None,
         }
+        value["updated_at"] = now
+        _save(value)
+        event = dict(value["activation_event"])
     return {
         **value,
-        "activation": rearm_cognition_wake(
-            value,
-            min_interval_seconds=interval,
-        ),
+        "activation": {
+            "status": "QUEUED",
+            "transport": "mcp-event",
+            "event_id": event["event_id"],
+            "request_id": value["request_id"],
+        },
     }
 
 
