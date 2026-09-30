@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -66,6 +67,42 @@ class LocalExecutorTests(unittest.TestCase):
                     "offset": 0,
                     "max_bytes": 1024,
                 })
+
+    def test_local_systemd_and_logs_use_bounded_native_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            completed = localexec.subprocess.CompletedProcess(
+                ["systemctl"], 0, stdout=b"active\n", stderr=b""
+            )
+            with patch.object(localexec.subprocess, "run", return_value=completed) as run:
+                status = localexec.handle({
+                    "roots": [str(root)],
+                    "op": "systemd",
+                    "action": "is-active",
+                    "unit": "demo.service",
+                })
+                self.assertEqual(status["returncode"], 0)
+                self.assertEqual(status["stdout"], "active\n")
+                self.assertEqual(
+                    run.call_args.args[0],
+                    ["systemctl", "is-active", "demo.service"],
+                )
+
+                logs = localexec.handle({
+                    "roots": [str(root)],
+                    "op": "logs",
+                    "unit": "demo.service",
+                    "lines": 25,
+                    "since_minutes": 30,
+                })
+                self.assertEqual(logs["returncode"], 0)
+                self.assertEqual(
+                    run.call_args.args[0],
+                    [
+                        "journalctl", "--no-pager", "-u", "demo.service",
+                        "-n", "25", "--since", "30 minutes ago",
+                    ],
+                )
 
 
 if __name__ == "__main__":

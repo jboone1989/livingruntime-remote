@@ -29,7 +29,7 @@ class NativeLocalBridgeTests(unittest.TestCase):
                                 "ssh_host": "local",
                                 "path_style": "posix",
                                 "roots": [str(root)],
-                                "units": [],
+                                "units": ["demo.service"],
                             }
                         },
                         "projects": {
@@ -69,6 +69,24 @@ class NativeLocalBridgeTests(unittest.TestCase):
 
                 with self.assertRaisesRegex(RuntimeError, "process inspection"):
                     bridge.process("list")
+
+                native_result = {
+                    "returncode": 0,
+                    "stdout": "active\n",
+                    "stderr": "",
+                }
+                with patch.object(
+                    bridge.localexec, "handle", return_value=native_result
+                ) as handle:
+                    status = bridge.systemd("is-active", "demo.service")
+                    self.assertEqual(status["returncode"], 0)
+                    self.assertEqual(
+                        handle.call_args.args[0]["op"],
+                        "systemd",
+                    )
+                    logs = bridge.logs("demo.service", lines=10, since_minutes=5)
+                    self.assertEqual(logs["returncode"], 0)
+                    self.assertEqual(handle.call_args.args[0]["op"], "logs")
 
 
 if __name__ == "__main__":

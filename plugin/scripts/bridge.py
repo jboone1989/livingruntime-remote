@@ -4037,11 +4037,24 @@ def systemd(
     """Inspect or control an explicitly allowlisted remote systemd service."""
     cfg = _config()
     selected_host = host_for(cfg, project=project, host_id=device)
-    if selected_host.get("transport") == "local":
-        raise RuntimeError("systemd is unavailable on native Windows local devices")
     selected = resolve_unit(cfg, unit, project=project, host_id=device)
     if action not in {"status", "is-active", "start", "stop", "restart"}:
         raise ValueError("unsupported systemd action")
+    if selected_host.get("transport") == "local":
+        result = _remote(
+            "systemd",
+            {"action": action, "unit": selected},
+            project=project,
+            device=device,
+        )
+        _audit("systemd", result["returncode"] == 0, {
+            "action": action,
+            "unit": selected,
+            "project": project,
+            "device": device,
+            "transport": "local",
+        })
+        return result
     if action == "restart" and selected in DEFERRED_SELF_RESTART_UNITS:
         result = _schedule_deferred_systemd_restart(
             selected,
@@ -4086,9 +4099,26 @@ def logs(
     """Read bounded journal logs. Prefer project=ferro instead of guessing a unit name."""
     cfg = _config()
     selected_host = host_for(cfg, project=project, host_id=device)
-    if selected_host.get("transport") == "local":
-        raise RuntimeError("journal logs are unavailable on native Windows local devices")
     selected = resolve_unit(cfg, unit, project=project, host_id=device)
+    if selected_host.get("transport") == "local":
+        result = _remote(
+            "logs",
+            {
+                "unit": selected,
+                "lines": min(1000, max(1, int(lines))),
+                "since_minutes": min(10080, max(1, int(since_minutes))),
+            },
+            project=project,
+            device=device,
+        )
+        _audit("logs", result["returncode"] == 0, {
+            "unit": selected,
+            "project": project,
+            "device": device,
+            "lines": lines,
+            "transport": "local",
+        })
+        return result
     result = _ssh([
         "journalctl", "--no-pager", "-u", selected,
         "-n", str(min(1000, max(1, int(lines)))),

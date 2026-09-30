@@ -395,6 +395,54 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
             "filesystem, git, exec, and durable jobs are available"
         )
 
+    if op == "systemd":
+        if os.name == "nt":
+            raise RuntimeError("systemd is unavailable on native Windows local devices")
+        action = str(request.get("action") or "")
+        if action not in {"status", "is-active", "start", "stop", "restart"}:
+            raise ValueError("unsupported systemd action")
+        unit = str(request.get("unit") or "")
+        if not unit:
+            raise ValueError("systemd unit is required")
+        completed = subprocess.run(
+            ["systemctl", action, unit],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        return {
+            "returncode": completed.returncode,
+            "stdout": _bounded(completed.stdout, MAX_OUTPUT_BYTES),
+            "stderr": _bounded(completed.stderr, MAX_OUTPUT_BYTES),
+        }
+
+    if op == "logs":
+        if os.name == "nt":
+            raise RuntimeError("journal logs are unavailable on native Windows local devices")
+        unit = str(request.get("unit") or "")
+        if not unit:
+            raise ValueError("journal unit is required")
+        lines = min(1000, max(1, int(request.get("lines") or 200)))
+        since_minutes = min(10080, max(1, int(request.get("since_minutes") or 60)))
+        completed = subprocess.run(
+            [
+                "journalctl", "--no-pager", "-u", unit,
+                "-n", str(lines), "--since", f"{since_minutes} minutes ago",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        return {
+            "returncode": completed.returncode,
+            "stdout": _bounded(completed.stdout, MAX_OUTPUT_BYTES),
+            "stderr": _bounded(completed.stderr, MAX_OUTPUT_BYTES),
+        }
+
     raise ValueError("unknown local operation: " + op)
 
 
