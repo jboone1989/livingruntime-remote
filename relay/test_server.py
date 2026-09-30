@@ -45,7 +45,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.48")
+            self.assertEqual(health.json()["version"], "0.4.49")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -286,6 +286,81 @@ class RelayServerTests(unittest.TestCase):
         self.assertEqual(default_result["device"], owner["device_id"])
         self.assertEqual(windows_result["device"], windows["device_id"])
         self.assertEqual(nested_result["device"], windows["device_id"])
+
+    def test_default_connector_fails_over_to_oldest_online_connector(self):
+        owner = self.store.pair_device(
+            self.store.create_pairing_code("user-a")["code"], "owner-main"
+        )
+        backup = self.store.pair_device(
+            self.store.create_pairing_code("user-a")["code"], "owner-vultr"
+        )
+        with self.store.db() as db:
+            db.execute(
+                "UPDATE devices SET last_seen=? WHERE device_id=?",
+                (time.time() - 120, owner["device_id"]),
+            )
+            db.execute(
+                "UPDATE devices SET last_seen=? WHERE device_id=?",
+                (time.time(), backup["device_id"]),
+            )
+        relay = server.Relay(
+            self.store, timeout=1.0, reconnect_grace=0, device_stale_after=30
+        )
+
+        async def exercise():
+            call = asyncio.create_task(
+                relay.call(
+                    "user-a",
+                    "connection_status",
+                    {"device": "main"},
+                )
+            )
+            await asyncio.sleep(0.05)
+            self.assertIsNone(self.store.claim(owner["device_id"]))
+            task = self.store.claim(backup["device_id"])
+            self.assertIsNotNone(task)
+            self.assertEqual(task["args"].get("device"), "main")
+            self.store.complete(
+                backup["device_id"],
+                task["task_id"],
+                {"ok": True, "result": {"device": backup["device_id"]}},
+            )
+            relay.notify_result(task["task_id"])
+            return await call
+
+        result = asyncio.run(exercise())
+        self.assertEqual(result["device"], backup["device_id"])
+
+    def test_explicit_offline_connector_does_not_fail_over(self):
+        owner = self.store.pair_device(
+            self.store.create_pairing_code("user-a")["code"], "owner-main"
+        )
+        backup = self.store.pair_device(
+            self.store.create_pairing_code("user-a")["code"], "owner-vultr"
+        )
+        with self.store.db() as db:
+            db.execute(
+                "UPDATE devices SET last_seen=? WHERE device_id=?",
+                (time.time() - 120, owner["device_id"]),
+            )
+            db.execute(
+                "UPDATE devices SET last_seen=? WHERE device_id=?",
+                (time.time(), backup["device_id"]),
+            )
+        relay = server.Relay(
+            self.store, timeout=0.01, reconnect_grace=0, device_stale_after=30
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "offline"):
+            asyncio.run(
+                relay.call(
+                    "user-a",
+                    "connection_status",
+                    {},
+                    connector=owner["device_id"],
+                )
+            )
+        self.assertIsNone(self.store.claim(backup["device_id"]))
 
     def test_pair_endpoint_rate_limits_repeated_failures(self):
         with TestClient(self.app) as client:

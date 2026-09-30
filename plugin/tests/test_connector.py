@@ -56,6 +56,56 @@ class ConnectorTests(unittest.TestCase):
         self.assertIn("'/opt/Living Runtime/connector'", value)
         self.assertTrue(value.endswith("run --daemon-log"))
 
+    def test_linux_linger_accepts_existing_persistence(self):
+        completed = connector.subprocess.CompletedProcess(
+            ["loginctl"], 0, stdout="yes\n", stderr=""
+        )
+        with patch.object(connector.getpass, "getuser", return_value="ubuntu"), patch.object(
+            connector, "_run", return_value=completed
+        ) as run:
+            connector.ensure_linux_linger()
+        run.assert_called_once_with(
+            ["loginctl", "show-user", "ubuntu", "-p", "Linger", "--value"],
+            check=False,
+        )
+
+    def test_linux_linger_enables_persistence_when_possible(self):
+        responses = [
+            connector.subprocess.CompletedProcess(
+                ["loginctl"], 0, stdout="no\n", stderr=""
+            ),
+            connector.subprocess.CompletedProcess(
+                ["loginctl"], 0, stdout="", stderr=""
+            ),
+            connector.subprocess.CompletedProcess(
+                ["loginctl"], 0, stdout="yes\n", stderr=""
+            ),
+        ]
+        with patch.object(connector.getpass, "getuser", return_value="root"), patch.object(
+            connector, "_run", side_effect=responses
+        ) as run:
+            connector.ensure_linux_linger()
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["loginctl", "enable-linger", "root"],
+        )
+
+    def test_linux_linger_fails_loudly_when_persistence_cannot_be_enabled(self):
+        responses = [
+            connector.subprocess.CompletedProcess(
+                ["loginctl"], 0, stdout="no\n", stderr=""
+            ),
+            connector.subprocess.CompletedProcess(
+                ["loginctl"], 1, stdout="", stderr="permission denied"
+            ),
+        ]
+        with patch.object(connector.getpass, "getuser", return_value="ubuntu"), patch.object(
+            connector, "_run", side_effect=responses
+        ):
+            with self.assertRaisesRegex(RuntimeError, "enable-linger ubuntu"):
+                connector.ensure_linux_linger()
+
     def test_launchagent_contains_run_and_log(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(connector.Path, "home", return_value=Path(tmp)):

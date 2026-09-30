@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import platform
@@ -155,7 +156,36 @@ def _systemd_exec(command: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in [*command, "run", "--daemon-log"])
 
 
+def ensure_linux_linger() -> None:
+    user = getpass.getuser()
+    check = _run(
+        ["loginctl", "show-user", user, "-p", "Linger", "--value"],
+        check=False,
+    )
+    if check.returncode == 0 and check.stdout.strip().lower() == "yes":
+        return
+    enabled = _run(["loginctl", "enable-linger", user], check=False)
+    if enabled.returncode == 0:
+        verify = _run(
+            ["loginctl", "show-user", user, "-p", "Linger", "--value"],
+            check=False,
+        )
+        if verify.returncode == 0 and verify.stdout.strip().lower() == "yes":
+            return
+    detail = (
+        enabled.stderr.strip()
+        or enabled.stdout.strip()
+        or check.stderr.strip()
+        or "loginctl did not enable linger"
+    )
+    raise RuntimeError(
+        "persistent Linux Connector requires systemd linger for "
+        f"{user}; run 'sudo loginctl enable-linger {user}' and rerun install: {detail}"
+    )
+
+
 def install_linux_user_service(command: list[str]) -> None:
+    ensure_linux_linger()
     directory = Path.home() / ".config" / "systemd" / "user"
     directory.mkdir(parents=True, exist_ok=True)
     unit = directory / LINUX_SERVICE
