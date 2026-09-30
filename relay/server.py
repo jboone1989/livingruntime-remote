@@ -2086,18 +2086,6 @@ def create_mcp(
             "autoClaimed": True,
         }
 
-    @apps.tool(
-        visibility=["model", "app"],
-        name="remote_overview",
-        title=TOOL_TEXT["remote_overview"][0],
-        description=TOOL_TEXT["remote_overview"][1],
-        annotations=ToolAnnotations(
-            readOnlyHint=True,
-            destructiveHint=False,
-            openWorldHint=False,
-        ),
-        meta=READ,
-    )
     async def remote_overview(include_resources: bool = False) -> dict[str, Any]:
         user_sub = _principal("remote:read")
         device = relay.device_status(user_sub)
@@ -2152,6 +2140,22 @@ def create_mcp(
         extensions=[apps],
         instructions=MCP_INSTRUCTIONS,
         **kwargs,
+    )
+
+    server.add_tool(
+        remote_overview,
+        name="remote_overview",
+        title=TOOL_TEXT["remote_overview"][0],
+        description=TOOL_TEXT["remote_overview"][1],
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+        meta={
+            **READ,
+            "ui": {"visibility": ["model", "app"]},
+        },
     )
 
     if embedded_provider is not None:
