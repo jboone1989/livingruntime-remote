@@ -59,6 +59,7 @@ jobs:
           --name livingruntime-remote-connector
           --paths plugin/scripts
           plugin/scripts/connector.py'
+          && sudo chown -R "$(id -u):$(id -g)" dist build
       - name: Smoke-test packaged connector
         run: >
           python -c "from pathlib import Path; import os,subprocess;
