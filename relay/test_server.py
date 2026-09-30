@@ -692,9 +692,13 @@ class RelayServerTests(unittest.TestCase):
             v3_cognition_widget.model_dump(by_alias=True)["_meta"]["openai/widgetDomain"],
             server.PI_JOB_WIDGET_DOMAIN,
         )
-        self.assertEqual(v3_cognition_widget.text, server.COGNITION_WIDGET_HTML)
-        self.assertIn("wait_llm_request", v3_cognition_widget.text)
-        self.assertIn("claim_llm_request_for_watcher", v3_cognition_widget.text)
+        # MCP 2.x resources/list returns resource metadata, not the resource
+        # body. The body is covered directly by the widget constant tests below.
+        self.assertIn("wait_llm_request", server.COGNITION_WIDGET_HTML)
+        self.assertIn(
+            "claim_llm_request_for_watcher",
+            server.COGNITION_WIDGET_HTML,
+        )
         self.assertNotIn("tools/call", server.COGNITION_WIDGET_LEGACY_HTML)
         self.assertNotIn("ui/message", server.COGNITION_WIDGET_LEGACY_HTML)
         self.assertIn("superseded", server.COGNITION_WIDGET_LEGACY_HTML)
