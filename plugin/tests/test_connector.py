@@ -282,7 +282,7 @@ class ConnectorTests(unittest.TestCase):
 
                 def fake_request(base, path, body, token=None, timeout=35):
                     calls.append((path, body))
-                    return {"ok": True}
+                    return {"ok": True, "matching_subscriptions": 1, "delivered": 1}
 
                 cfg = {
                     "url": "https://remote.example",
