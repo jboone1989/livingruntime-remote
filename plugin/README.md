@@ -2,7 +2,7 @@
 
 Identity: `livingruntime.remote`
 
-Current version: `0.4.55`
+Current version: `0.4.56`
 
 This directory contains the ChatGPT/Codex-facing MCP runtime and the local Connector implementation.
 
@@ -159,7 +159,7 @@ The plugin lifecycle intentionally does not contain a blocking `Stop` hook. Long
 
 ## MCP Events
 
-Version 0.4.55 makes native MCP Events the sole proactive activation path and treats an existing Work/event auto-claim as authoritative: reuse its valid claim token instead of attempting a second claim. Only PENDING unclaimed requests are explicitly claimed. It exposes `job.completed` and `cognition.requested`; cognition events contain only bounded request identity/routing metadata, while authoritative messages remain in LivingRuntime and are fetched after the subscribed chat wakes.
+Version 0.4.56 makes native MCP Events the sole proactive activation path. `watch_agent_cognition` verifies the authenticated user's unexpired `cognition.requested` subscription for the exact agent; it neither subscribes nor polls nor claims. The Work host must register `events/subscribe` with its callback and secret. `SUBSCRIPTION_REQUIRED` is an explicit missing registration, not an armed watcher. Events provide only request identity/routing metadata; fetch authoritative messages with `get_llm_request`, stop for `COMPLETED` or `TIMED_OUT`, and claim Ferro requests with `chatgpt-work-ferro-cortex` for 300 seconds. Completion immediately claims an available request only in the completed request's lane. A returned auto-claim can be reused; a live claim belonging to another watcher is a conflict.
 The relay advertises `capabilities.events` on MCP 2.0 discovery and implements
 `events/list`, `events/subscribe`, and `events/unsubscribe` on the authenticated
 MCP endpoint. Subscriptions are durable in the relay store, callback URLs are HTTPS-only

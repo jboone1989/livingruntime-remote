@@ -65,6 +65,7 @@ from jobs import (
 )
 from cognition import (
     claim_request as claim_cognition_request,
+    claim_next as claim_next_cognition_request,
     complete as complete_cognition_request,
     dispatch_lane as cognition_dispatch_lane,
     get as get_cognition_request,
@@ -2105,14 +2106,20 @@ def submit_llm_request(
     ),
 )
 def watch_agent_cognition(agent_id: str) -> dict[str, Any]:
-    """Create or resume the watcher lease for this agent's durable cognition."""
-    watcher_id = cognition_watcher_id(agent_id)
+    """Describe the native event contract; only the public relay can verify subscriptions."""
+    agent_id = str(agent_id).strip()
+    watcher_id = "chatgpt-work-ferro-cortex" if agent_id == "ferro" else cognition_watcher_id(agent_id)
     result = {
         "agentId": str(agent_id).strip(),
         "watcherId": watcher_id,
         "watchRecommended": True,
-        "status": "ARMED",
-        "watcherState": "ARMED",
+        "status": "SUBSCRIPTION_REQUIRED",
+        "watcherState": "SUBSCRIPTION_REQUIRED",
+        "eventName": "cognition.requested",
+        "eventArguments": {"agent_id": agent_id},
+        "subscriptionVerified": False,
+        "polling": False,
+        "autoClaimed": False,
     }
     _audit("watch_agent_cognition", True, {
         "agent_id": result["agentId"],
@@ -2260,7 +2267,7 @@ def complete_llm_request(
     model: str | None = None,
     session_id: str | None = None,
 ) -> dict[str, Any]:
-    """Complete one request and atomically attach the next durable cognition turn."""
+    """Complete one request and immediately claim the next turn in its lane."""
     current = get_cognition_request(request_id)
     prior_claim = current.get("claim") if isinstance(current.get("claim"), dict) else {}
     prior_watcher_id = str(prior_claim.get("watcher_id") or "").strip()
@@ -2282,36 +2289,31 @@ def complete_llm_request(
     if not agent_id:
         return result
     watcher_id = prior_watcher_id or cognition_watcher_id(agent_id)
-    waited = wait_pending_cognition_request(
+    next_request = claim_next_cognition_request(
         agent_id=agent_id,
         watcher_id=watcher_id,
-        timeout_seconds=20,
+        claim_seconds=300,
         lane=cognition_dispatch_lane(current),
     )
-    next_request = waited.get("request") if isinstance(waited, dict) else None
     if not isinstance(next_request, dict) or not next_request.get("request_id"):
         return {
             **result,
             "agentId": agent_id,
             "watcherId": watcher_id,
             "watchRecommended": True,
-            "watcherState": "ARMED",
-            "watcherAutoRearmed": True,
+            "watcherState": "SUBSCRIPTION_UNVERIFIED",
+            "watcherAutoRearmed": False,
             "nextRequestAutoClaimed": False,
             "completedRequestId": request_id,
         }
-    claimed = claim_cognition_request(
-        request_id=str(next_request["request_id"]),
-        watcher_id=watcher_id,
-        claim_seconds=300,
-    )
+    claimed = next_request
     return {
         **claimed,
         "agentId": agent_id,
         "watcherId": watcher_id,
         "watchRecommended": True,
         "watcherState": "WAITING_FOR_CHATGPT_SESSION",
-        "watcherAutoRearmed": True,
+        "watcherAutoRearmed": False,
         "nextRequestAutoClaimed": True,
         "completedRequestId": request_id,
     }

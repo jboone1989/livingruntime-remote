@@ -876,6 +876,7 @@ def claim_next(
     agent_id: str,
     watcher_id: str,
     claim_seconds: int = DEFAULT_CLAIM_SECONDS,
+    lane: str | None = None,
 ) -> dict[str, Any] | None:
     agent = _validate_agent_id(agent_id)
     watcher = _validate_watcher_id(watcher_id)
@@ -903,6 +904,8 @@ def claim_next(
         for row in _pending_rows_by_priority(rows):
             row = _refresh_timeout(row, now)
             if row.get("status") != "PENDING":
+                continue
+            if lane is not None and dispatch_lane(row) != lane:
                 continue
             if dispatch_lane(row) in active_lanes:
                 continue
@@ -998,6 +1001,20 @@ def complete(
     session_id: str | None = None,
 ) -> dict[str, Any]:
     text = _bounded_text(response_text or "", field="response_text", maximum=MAX_RESPONSE_BYTES) or ""
+    if text.lstrip().startswith("{"):
+        try:
+            envelope = json.loads(text)
+        except json.JSONDecodeError:
+            envelope = None
+        if isinstance(envelope, dict) and envelope.get("schema") == "livingruntime.cognition-response.v1":
+            if set(envelope) != {"schema", "text", "tool_calls"}:
+                raise ValueError("cognition response envelope requires exactly schema, text, tool_calls")
+            if tool_calls is not None:
+                raise ValueError("supply either the response envelope or tool_calls, not both")
+            if not isinstance(envelope["text"], str):
+                raise ValueError("cognition response envelope text must be a string")
+            text = envelope["text"]
+            tool_calls = envelope["tool_calls"]
     normalized_tool_calls = _normalize_tool_calls(tool_calls)
     if not text.strip() and not normalized_tool_calls:
         raise ValueError("response must contain response_text or tool_calls")
@@ -1021,6 +1038,10 @@ def complete(
         claim = value.get("claim") if isinstance(value.get("claim"), dict) else {}
         if claim.get("token") != token:
             raise RuntimeError("claim token mismatch")
+        available_tools = {tool["name"] for tool in value.get("tools", [])}
+        for call in normalized_tool_calls:
+            if call["name"] not in available_tools:
+                raise ValueError("response selected a tool not supplied by this cognition request")
         value["response"] = {
             "text": text,
             "tool_calls": normalized_tool_calls,

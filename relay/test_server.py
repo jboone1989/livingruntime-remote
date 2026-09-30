@@ -46,7 +46,7 @@ class RelayServerTests(unittest.TestCase):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
             self.assertEqual(health.status_code, 200)
-            self.assertEqual(health.json()["version"], "0.4.55")
+            self.assertEqual(health.json()["version"], "0.4.56")
             challenge = client.get("/.well-known/openai-apps-challenge")
             self.assertEqual(challenge.text, "challenge-token")
             meta = client.get("/.well-known/oauth-protected-resource/mcp")
@@ -550,6 +550,79 @@ class RelayServerTests(unittest.TestCase):
         self.assertEqual(delivered_event["data"]["request_id"], "llmreq_123")
         self.assertEqual(delivered_event["data"]["connector_id"], paired["device_id"])
 
+    def cognition_watch_function(self):
+        mcp = server.create_mcp(server.Relay(self.store))
+        return next(binding.fn for extension in mcp._extensions for binding in extension.tools()
+                    if binding.kwargs["name"] == "watch_agent_cognition")
+
+    def test_cognition_watch_does_not_claim_and_requires_actual_subscription(self):
+        fn = self.cognition_watch_function()
+        with patch.object(server, "_principal", return_value="owner"):
+            result = asyncio.run(fn("ferro"))
+        self.assertEqual(result["watcherState"], "SUBSCRIPTION_REQUIRED")
+        self.assertEqual(result["watcherId"], "chatgpt-work-ferro-cortex")
+        self.assertFalse(result["autoClaimed"])
+        self.assertFalse(result["polling"])
+
+    def test_cognition_subscription_is_scoped_expiring_and_secret_free(self):
+        for sid, user, args, expiry in [
+            ("other-owner", "other", {"agent_id":"ferro"}, time.time()+300),
+            ("other-agent", "owner", {"agent_id":"pi"}, time.time()+300),
+            ("partial-lane", "owner", {"agent_id":"ferro", "lane":"public"}, time.time()+300),
+            ("expired", "owner", {"agent_id":"ferro"}, time.time()-1),
+        ]:
+            self.store.upsert_event_subscription(subscription_id=sid, user_sub=user,
+                name="cognition.requested", arguments=args, callback_url="https://callback.example/event",
+                secret="private-signing-secret", expires_at=expiry)
+        fn = self.cognition_watch_function()
+        with patch.object(server, "_principal", return_value="owner"):
+            self.assertFalse(asyncio.run(fn("ferro"))["subscriptionVerified"])
+            self.store.upsert_event_subscription(subscription_id="ferro-valid", user_sub="owner",
+                name="cognition.requested", arguments={"agent_id":"ferro"},
+                callback_url="https://callback.example/event", secret="private-signing-secret",
+                expires_at=time.time()+300)
+            result = asyncio.run(fn("ferro"))
+        self.assertEqual(result["watcherState"], "SUBSCRIBED")
+        self.assertEqual([sub["id"] for sub in result["subscriptions"]], ["ferro-valid"])
+        self.assertNotIn("private-signing-secret", str(result))
+        self.assertNotIn("callback.example", str(result))
+
+    def test_remote_tool_errors_preserve_cause_as_structured_receipt(self):
+        paired = self.store.pair_device(self.store.create_pairing_code("owner")["code"], "main")
+        relay = server.Relay(self.store, timeout=1)
+        async def exercise():
+            task = asyncio.create_task(relay.call("owner", "claim_llm_request", {}))
+            await asyncio.sleep(0.01)
+            queued = self.store.claim(paired["device_id"])
+            self.store.complete(paired["device_id"], queued["task_id"],
+                {"ok":False,"error":"RuntimeError: cognition request is already claimed"})
+            relay.notify_result(queued["task_id"])
+            return await task
+        result = asyncio.run(exercise())
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "REMOTE_TOOL_FAILED")
+        self.assertIn("already claimed", result["detail"])
+
+    def test_relay_timeout_distinguishes_cancelled_from_unknown_execution(self):
+        paired = self.store.pair_device(self.store.create_pairing_code("owner")["code"], "main")
+        relay = server.Relay(self.store, timeout=1)
+        for claimed in (False, True):
+            with self.subTest(claimed=claimed):
+                async def expire(wait, timeout):
+                    wait.close()
+                    if claimed:
+                        self.assertIsNotNone(self.store.claim(paired["device_id"]))
+                    raise TimeoutError
+                with patch.object(server.asyncio, "wait_for", side_effect=expire):
+                    result = asyncio.run(relay.call("owner", "write_file", {"path":"sample"}))
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["execution_state"], "UNKNOWN" if claimed else "CANCELLED")
+                self.assertEqual(result["error_code"], "RELAY_RESULT_TIMEOUT" if claimed else "RELAY_TASK_NOT_CLAIMED")
+                if claimed:
+                    self.assertIn("do not repeat a write", result["detail"])
+                else:
+                    self.assertIsNone(self.store.claim(paired["device_id"]))
+
     def test_public_tools_do_not_forward_function_locals(self):
         source = inspect.getsource(server.create_mcp)
         self.assertNotIn("locals()", source)
@@ -628,7 +701,7 @@ class RelayServerTests(unittest.TestCase):
             tools["watch_agent_cognition"].meta["ui"]["visibility"],
             ["model", "app"],
         )
-        self.assertFalse(
+        self.assertTrue(
             tools["watch_agent_cognition"].annotations.read_only_hint
         )
         self.assertTrue(
@@ -671,8 +744,8 @@ class RelayServerTests(unittest.TestCase):
         )
         response_annotation = str(complete_params["response_text"].annotation)
         self.assertIn("str", response_annotation)
-        self.assertIn("dict", response_annotation)
-        self.assertIn("list", response_annotation)
+        self.assertNotIn("dict", response_annotation)
+        self.assertNotIn("list", response_annotation)
         self.assertNotIn("resourceUri", tools["wait_llm_request"].meta["ui"])
         self.assertNotIn("resourceUri", tools["wait_long_job"].meta["ui"])
         self.assertEqual(
@@ -721,14 +794,8 @@ class RelayServerTests(unittest.TestCase):
             ["model", "app"],
         )
         self.assertTrue(tools["open_remote_control_plane"].annotations.read_only_hint)
-        self.assertNotIn(
-            "resourceUri",
-            tools["remote_overview"].meta["ui"],
-        )
-        self.assertNotIn(
-            "openai/outputTemplate",
-            tools["remote_overview"].meta,
-        )
+        self.assertEqual(tools["remote_overview"].meta["ui"]["resourceUri"], server.CONTROL_PLANE_WIDGET_URI)
+        self.assertEqual(tools["remote_overview"].meta["openai/outputTemplate"], server.CONTROL_PLANE_WIDGET_URI)
         self.assertEqual(
             tools["remote_overview"].meta["ui"]["visibility"],
             ["model", "app"],
@@ -757,14 +824,14 @@ class RelayServerTests(unittest.TestCase):
         resource_uris = {str(resource.uri) for resource in resources}
         self.assertTrue(server.PI_JOB_WIDGET_URI.endswith("pi-job-watch-v3.html"))
         self.assertTrue(server.LONG_JOB_WIDGET_URI.endswith("long-job-watch-v5.html"))
-        self.assertTrue(server.COGNITION_WIDGET_URI.endswith("agent-cognition-watch-v4.html"))
+        self.assertTrue(server.COGNITION_WIDGET_URI.endswith("agent-cognition-watch-v5.html"))
         self.assertIn(server.COGNITION_WIDGET_LEGACY_URI, resource_uris)
         self.assertIn(server.COGNITION_WIDGET_V3_URI, resource_uris)
         self.assertIn(server.PI_JOB_WIDGET_LEGACY_URI, resource_uris)
         self.assertIn(server.LONG_JOB_WIDGET_LEGACY_URI, resource_uris)
         self.assertIn(server.LONG_JOB_WIDGET_V3_URI, resource_uris)
         self.assertIn(server.LONG_JOB_WIDGET_V4_URI, resource_uris)
-        self.assertTrue(server.CONTROL_PLANE_WIDGET_URI.endswith("control-plane-v9.html"))
+        self.assertTrue(server.CONTROL_PLANE_WIDGET_URI.endswith("control-plane-v10.html"))
         self.assertIn(server.CONTROL_PLANE_WIDGET_V8_URI, resource_uris)
         self.assertIn(server.CONTROL_PLANE_WIDGET_V7_URI, resource_uris)
         self.assertIn(server.CONTROL_PLANE_WIDGET_V6_URI, resource_uris)
@@ -851,7 +918,8 @@ class RelayServerTests(unittest.TestCase):
         )
         # MCP 2.x resources/list returns resource metadata, not the resource
         # body. The body is covered directly by the widget constant tests below.
-        self.assertIn("wait_llm_request", server.COGNITION_WIDGET_HTML)
+        self.assertNotIn("wait_llm_request", server.COGNITION_WIDGET_HTML)
+        self.assertIn("subscriptionVerified", server.COGNITION_WIDGET_HTML)
         self.assertNotIn(
             "claim_llm_request_for_watcher",
             server.COGNITION_WIDGET_HTML,
@@ -946,28 +1014,17 @@ class RelayServerTests(unittest.TestCase):
         self.assertNotIn("sendFollowUpMessage", html)
         self.assertNotIn("<script>", html)
 
-    def test_cognition_widget_observes_mcp_event_handoff_without_claiming(self):
+    def test_cognition_widget_observes_native_subscription_without_polling(self):
         html = server.COGNITION_WIDGET_HTML
-        self.assertIn('"tools/call"', html)
-        self.assertIn("window.openai?.callTool", html)
-        self.assertIn("RECONNECTING", html)
-        self.assertIn('"wait_llm_request"', html)
+        self.assertNotIn('"wait_llm_request"', html)
         self.assertNotIn('"claim_llm_request_for_watcher"', html)
-        self.assertIn("window.openai?.toolInput", html)
-        self.assertIn("payload?.watcherId", html)
-        self.assertIn('availableDisplayModes:["inline","pip"]', html)
-        self.assertIn('requestDisplayMode("pip")', html)
-        self.assertNotIn('"ui/message"', html)
+        self.assertNotIn("while (!stopped)", html)
         self.assertNotIn("sendFollowUpMessage", html)
+        self.assertNotIn('"ui/message"', html)
+        self.assertIn("SUBSCRIPTION_REQUIRED", html)
+        self.assertIn("subscriptionVerified", html)
         self.assertIn('"ui/update-model-context"', html)
-        self.assertIn("PENDING_MCP_EVENT", html)
-        self.assertIn("MCP Event will activate the subscribed ChatGPT conversation", html)
-        self.assertIn("handedOffRequestId", html)
-        self.assertIn('"ARMED"', html)
-        self.assertIn('"WAITING_FOR_CHATGPT_SESSION"', html)
-        self.assertIn('"DISCONNECTED"', html)
-        self.assertIn('"pagehide"', html)
-        self.assertNotIn("setInterval(", html)
+        self.assertIn('requestDisplayMode("pip")', html)
 
     def test_control_plane_widget_is_read_only_snapshot_ui(self):
         html = server.CONTROL_PLANE_WIDGET_HTML
@@ -992,7 +1049,7 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn('id="sum-waiting"', html)
         self.assertIn('id="sum-hosts"', html)
         self.assertIn('id="sum-approvals"', html)
-        self.assertIn("control-plane-v9", html)
+        self.assertIn("control-plane-v10", html)
         self.assertIn("completion_events", html)
         self.assertNotIn("publishCompletionBacklog", html)
         self.assertNotIn("claim_long_job_completion", html)
