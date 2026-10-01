@@ -103,6 +103,7 @@ CONTROL_PLANE_WIDGET_V6_URI = "ui://livingruntime-remote/control-plane-v6.html"
 CONTROL_PLANE_WIDGET_V5_URI = "ui://livingruntime-remote/control-plane-v5.html"
 CONTROL_PLANE_WIDGET_V4_URI = "ui://livingruntime-remote/control-plane-v4.html"
 CONTROL_PLANE_WIDGET_LEGACY_URI = "ui://livingruntime-remote/control-plane-v3.html"
+BROWSER_TAKEOVER_WIDGET_URI = "ui://livingruntime-remote/browser-takeover-v1.html"
 PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
@@ -1022,6 +1023,67 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
 </body>
 </html>"""
 
+BROWSER_TAKEOVER_WIDGET_HTML = r"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { margin:0; padding:12px; font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  .card { border:1px solid rgba(127,127,127,.35); border-radius:12px; padding:14px; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .dot { width:8px; height:8px; border-radius:999px; background:#36a269; flex:0 0 auto; }
+  .muted { margin-top:7px; opacity:.7; }
+  a { display:inline-block; margin-top:12px; padding:9px 12px; border-radius:9px;
+      background:#2f6fed; color:#fff; text-decoration:none; font-weight:650; }
+  a[hidden] { display:none; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="row"><span class="dot"></span><strong id="status">Preparing browser takeover…</strong></div>
+  <div id="detail" class="muted"></div>
+  <a id="open" href="#" target="_blank" rel="noopener noreferrer" hidden>Open remote browser</a>
+</div>
+<script>
+(() => {
+  const status = document.getElementById("status");
+  const detail = document.getElementById("detail");
+  const link = document.getElementById("open");
+  function data(value) {
+    return value?.structuredContent || value?.structured_content || value || {};
+  }
+  function render(value) {
+    const out = data(value);
+    if (!out?.url) {
+      status.textContent = "Browser takeover unavailable";
+      detail.textContent = out?.error || "No active takeover URL.";
+      link.hidden = true;
+      return;
+    }
+    status.textContent = "Browser takeover ready";
+    const expires = Number(out.expires_at || 0);
+    detail.textContent = (out.connector || "connector") + " · " +
+      (out.profile_id || "browser") +
+      (expires ? " · expires " + new Date(expires * 1000).toLocaleTimeString() : "");
+    link.href = out.url;
+    link.hidden = false;
+  }
+  render(window.openai?.toolOutput);
+  window.addEventListener("openai:set_globals", () => render(window.openai?.toolOutput), {passive:true});
+  window.addEventListener("message", event => {
+    if (event.source !== window.parent) return;
+    const message = event.data;
+    if (message?.method === "ui/notifications/tool-result") {
+      render(message.params?.structuredContent || message.params);
+    }
+  }, {passive:true});
+})();
+</script>
+</body>
+</html>"""
+
 
 class PairRateLimiter:
     def __init__(self, limit: int = 10, window_seconds: float = 60.0) -> None:
@@ -1755,6 +1817,13 @@ def create_mcp(
         description="Read-only execution-truth snapshot of connector health, real server activity, durable jobs, approvals, credential handles, and recent activity.",
         display_modes=["inline", "pip", "fullscreen"],
     )
+    add_widget_resource(
+        BROWSER_TAKEOVER_WIDGET_URI,
+        BROWSER_TAKEOVER_WIDGET_HTML,
+        name="browser-takeover",
+        title="Browser takeover",
+        description="Open a short-lived human takeover session for an Agent Runtime browser profile.",
+    )
 
     @apps.tool(
         resource_uri=PI_JOB_WIDGET_URI,
@@ -2004,6 +2073,7 @@ def create_mcp(
         return await remote_overview(include_resources=True)
 
     @apps.tool(
+        resource_uri=BROWSER_TAKEOVER_WIDGET_URI,
         visibility=["model", "app"],
         name="open_browser_takeover",
         title=TOOL_TEXT["open_browser_takeover"][0],
@@ -2013,7 +2083,7 @@ def create_mcp(
             destructiveHint=False,
             openWorldHint=True,
         ),
-        meta=WRITE,
+        meta={**WRITE, "openai/outputTemplate": BROWSER_TAKEOVER_WIDGET_URI},
     )
     async def open_browser_takeover(
         connector: str = "owner-main",
