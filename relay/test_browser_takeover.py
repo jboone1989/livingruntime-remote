@@ -7,10 +7,14 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-os.environ.setdefault("LIVINGRUNTIME_RELAY_ISSUER", "https://remote.example.test")
+os.environ.setdefault("LIVINGRUNTIME_RELAY_ISSUER", "https://auth.example.test")
 os.environ.setdefault("LIVINGRUNTIME_RELAY_AUDIENCE", "https://remote.example.test")
 os.environ.setdefault("LIVINGRUNTIME_RELAY_JWKS_URL", "https://auth.example.test/jwks.json")
 os.environ.setdefault("LIVINGRUNTIME_RELAY_RESOURCE_URL", "https://remote.example.test/mcp")
+os.environ.setdefault(
+    "LIVINGRUNTIME_BROWSER_TAKEOVER_PUBLIC_ORIGIN",
+    "https://remote.example.test",
+)
 os.environ.setdefault("OPENAI_APPS_CHALLENGE", "challenge-token")
 
 ROOT = Path(__file__).resolve().parent
