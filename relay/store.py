@@ -38,6 +38,11 @@ class RelayStore:
               created_at REAL NOT NULL,updated_at REAL NOT NULL);
             CREATE INDEX IF NOT EXISTS idx_event_subscriptions_user
               ON event_subscriptions(user_sub,name,expires_at);
+            CREATE TABLE IF NOT EXISTS browser_takeover_tokens(
+              token_hash TEXT PRIMARY KEY,user_sub TEXT NOT NULL,target_key TEXT NOT NULL,
+              profile_id TEXT NOT NULL,created_at REAL NOT NULL,expires_at REAL NOT NULL);
+            CREATE INDEX IF NOT EXISTS idx_browser_takeover_tokens_expiry
+              ON browser_takeover_tokens(expires_at);
             """)
 
     def db(self) -> sqlite3.Connection:
@@ -60,6 +65,53 @@ class RelayStore:
             )
             db.execute("DELETE FROM continuations WHERE updated_at < ?", (cutoff,))
             db.execute("DELETE FROM event_subscriptions WHERE expires_at <= ?", (now,))
+            db.execute("DELETE FROM browser_takeover_tokens WHERE expires_at <= ?", (now,))
+
+    def create_browser_takeover_token(
+        self,
+        user_sub: str,
+        target_key: str,
+        profile_id: str,
+        ttl_seconds: int = 600,
+    ) -> dict[str, Any]:
+        self.cleanup()
+        ttl = min(1800, max(60, int(ttl_seconds)))
+        now = time.time()
+        token = secrets.token_urlsafe(32)
+        expires_at = now + ttl
+        with self.db() as db:
+            db.execute(
+                "INSERT INTO browser_takeover_tokens("
+                "token_hash,user_sub,target_key,profile_id,created_at,expires_at"
+                ") VALUES(?,?,?,?,?,?)",
+                (
+                    digest(token),
+                    user_sub,
+                    str(target_key),
+                    str(profile_id),
+                    now,
+                    expires_at,
+                ),
+            )
+        return {
+            "token": token,
+            "target_key": str(target_key),
+            "profile_id": str(profile_id),
+            "expires_at": expires_at,
+        }
+
+    def browser_takeover_token(self, token: str) -> dict[str, Any] | None:
+        if not isinstance(token, str) or not token:
+            return None
+        now = time.time()
+        with self.db() as db:
+            db.execute("DELETE FROM browser_takeover_tokens WHERE expires_at <= ?", (now,))
+            row = db.execute(
+                "SELECT user_sub,target_key,profile_id,created_at,expires_at "
+                "FROM browser_takeover_tokens WHERE token_hash=? AND expires_at>?",
+                (digest(token), now),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def bind_continuation(
         self,

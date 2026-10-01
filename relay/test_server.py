@@ -640,6 +640,7 @@ class RelayServerTests(unittest.TestCase):
             "bind_openai_pi_continuation",
             "claim_llm_request_for_watcher",
             "open_remote_control_plane",
+            "open_browser_takeover",
         } | set(REMOTE_TOOLS)
         self.assertEqual(set(tools), expected)
         app_bindings = {
@@ -672,6 +673,24 @@ class RelayServerTests(unittest.TestCase):
         self.assertEqual(
             tools["git"].meta["securitySchemes"][0]["scopes"],
             ["remote:read", "remote:write", "openid", "email"],
+        )
+        self.assertEqual(
+            tools["open_browser_takeover"].meta["securitySchemes"][0]["scopes"],
+            ["remote:read", "remote:write", "openid", "email"],
+        )
+        self.assertEqual(
+            tools["open_browser_takeover"].meta["ui"]["resourceUri"],
+            server.BROWSER_TAKEOVER_WIDGET_URI,
+        )
+        self.assertEqual(
+            tools["open_browser_takeover"].meta["ui"]["visibility"],
+            ["model", "app"],
+        )
+        self.assertFalse(
+            tools["open_browser_takeover"].annotations.read_only_hint
+        )
+        self.assertTrue(
+            tools["open_browser_takeover"].annotations.open_world_hint
         )
         self.assertEqual(
             tools["start_long_job"].meta["ui"]["resourceUri"],
