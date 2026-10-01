@@ -99,9 +99,10 @@ def _event_timestamp(value: float) -> str:
     return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _forward_completion_events(cfg: dict[str, Any]) -> None:
+def _forward_completion_events(cfg: dict[str, Any]) -> bool:
     if not _EVENT_FORWARD_LOCK.acquire(blocking=False):
-        return
+        return False
+    delivered_any = False
     try:
         for job in jobs.pending_completion_events(limit=50):
             event = job.get("completion_event")
@@ -139,22 +140,29 @@ def _forward_completion_events(cfg: dict[str, Any]) -> None:
                     flush=True,
                 )
                 continue
-            if (
-                result.get("ok") is True
-                and int(result.get("matching_subscriptions") or 0) > 0
-                and int(result.get("delivered") or 0) > 0
-            ):
+            matching = int(result.get("matching_subscriptions") or 0)
+            delivered = int(result.get("delivered") or 0)
+            if result.get("ok") is True and matching > 0 and delivered > 0:
                 jobs.mark_completion_event_forwarded(
                     str(job["job_id"]),
                     event_id,
                 )
+                delivered_any = True
+                continue
+            # No matching subscriber means this event cannot make progress
+            # right now. Stop this batch instead of hammering the relay with
+            # the same durable event dozens of times.
+            if matching == 0 or delivered == 0:
+                break
     finally:
         _EVENT_FORWARD_LOCK.release()
+    return delivered_any
 
 
-def _forward_cognition_events(cfg: dict[str, Any]) -> None:
+def _forward_cognition_events(cfg: dict[str, Any]) -> bool:
     if not _EVENT_FORWARD_LOCK.acquire(blocking=False):
-        return
+        return False
+    delivered_any = False
     try:
         for request in cognition.pending_activation_events(limit=50):
             event = request.get("activation_event")
@@ -191,22 +199,26 @@ def _forward_cognition_events(cfg: dict[str, Any]) -> None:
                     flush=True,
                 )
                 continue
-            if (
-                result.get("ok") is True
-                and int(result.get("matching_subscriptions") or 0) > 0
-                and int(result.get("delivered") or 0) > 0
-            ):
+            matching = int(result.get("matching_subscriptions") or 0)
+            delivered = int(result.get("delivered") or 0)
+            if result.get("ok") is True and matching > 0 and delivered > 0:
                 cognition.mark_activation_event_forwarded(
                     str(request["request_id"]),
                     event_id,
                 )
+                delivered_any = True
+                continue
+            if matching == 0 or delivered == 0:
+                break
     finally:
         _EVENT_FORWARD_LOCK.release()
+    return delivered_any
 
 
-def _forward_events(cfg: dict[str, Any]) -> None:
-    _forward_completion_events(cfg)
-    _forward_cognition_events(cfg)
+def _forward_events(cfg: dict[str, Any]) -> bool:
+    completion_delivered = _forward_completion_events(cfg)
+    cognition_delivered = _forward_cognition_events(cfg)
+    return completion_delivered or cognition_delivered
 
 
 def _handle_claimed_task(cfg: dict[str, Any], task: dict[str, Any]) -> None:
@@ -218,7 +230,6 @@ def _handle_claimed_task(cfg: dict[str, Any], task: dict[str, Any]) -> None:
         cfg["device_token"],
         timeout=30,
     )
-    _forward_events(cfg)
 
 
 def serve(config_path: Path, once: bool = False) -> None:
@@ -228,7 +239,12 @@ def serve(config_path: Path, once: bool = False) -> None:
         max(2, int(os.environ.get("LIVINGRUNTIME_CONNECTOR_WORKERS", "4"))),
     )
     pending: set[concurrent.futures.Future[None]] = set()
-    event_future: concurrent.futures.Future[None] | None = None
+    event_future: concurrent.futures.Future[bool] | None = None
+    next_event_forward_at = 0.0
+    event_retry_seconds = max(
+        5.0,
+        float(os.environ.get("LIVINGRUNTIME_EVENT_RETRY_SECONDS", "30")),
+    )
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=max_workers,
         thread_name_prefix="livingruntime-remote",
@@ -241,8 +257,11 @@ def serve(config_path: Path, once: bool = False) -> None:
                     future.result()
 
                 if event_future is not None and event_future.done():
-                    event_future.result()
+                    delivered = bool(event_future.result())
                     event_future = None
+                    next_event_forward_at = time.monotonic() + (
+                        1.0 if delivered else event_retry_seconds
+                    )
 
                 # Tool execution is the primary connector lane. Pending MCP
                 # events must never block polling, especially when the Work
@@ -265,7 +284,10 @@ def serve(config_path: Path, once: bool = False) -> None:
                 # Event delivery is best-effort and independent from task
                 # polling. Only one forwarder runs at a time so a backlog
                 # cannot consume the connector worker pool.
-                if event_future is None:
+                if (
+                    event_future is None
+                    and time.monotonic() >= next_event_forward_at
+                ):
                     event_future = pool.submit(_forward_events, cfg)
             except KeyboardInterrupt:
                 return
