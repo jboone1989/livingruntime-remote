@@ -3257,6 +3257,23 @@ nav a{{margin-right:18px}}
                     },
                     status_code=503,
                 )
+            if not subscriptions:
+                # Back-pressure protects older connectors that retry durable
+                # events immediately when no Work subscription exists yet.
+                # New connectors also apply their own longer retry interval.
+                delay = max(
+                    0.1,
+                    min(
+                        5.0,
+                        float(
+                            os.environ.get(
+                                "LIVINGRUNTIME_UNSUBSCRIBED_EVENT_DELAY_SECONDS",
+                                "1.0",
+                            )
+                        ),
+                    ),
+                )
+                await asyncio.sleep(delay)
             return JSONResponse(
                 {
                     "ok": True,
