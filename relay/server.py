@@ -2121,7 +2121,7 @@ def create_mcp(
                 "autoconnect": "1",
                 "resize": "remote",
                 "reconnect": "1",
-                "path": f"browser-takeover/{encoded}/websockify",
+                "path": "websockify",
             }
         )
         return {

@@ -133,3 +133,17 @@ def test_browser_takeover_http_proxy_requires_valid_token() -> None:
             "autoconnect=1",
         )
         assert missing.status_code == 404
+
+
+def test_takeover_url_uses_websockify_relative_to_token_directory() -> None:
+    token = "test-token"
+    base = f"https://remote.example.test/browser-takeover/{token}/vnc.html"
+    path = "websockify"
+    from urllib.parse import urljoin
+
+    resolved = urljoin(base, path)
+
+    assert resolved == (
+        "https://remote.example.test/browser-takeover/"
+        f"{token}/websockify"
+    )
