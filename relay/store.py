@@ -241,14 +241,18 @@ class RelayStore:
             db.execute("UPDATE pairing_codes SET used_at=? WHERE code_hash=?", (now, key))
         return {"device_id": device_id, "device_token": token}
 
-    def authenticate_device(self, token: str) -> dict[str, Any]:
+    def authenticate_device(self, token: str, *, touch_last_seen: bool = True) -> dict[str, Any]:
         with self.db() as db:
             row = db.execute(
                 "SELECT * FROM devices WHERE token_hash=? AND enabled=1", (digest(token),)
             ).fetchone()
             if not row:
                 raise PermissionError("invalid device token")
-            db.execute("UPDATE devices SET last_seen=? WHERE device_id=?", (time.time(), row["device_id"]))
+            if touch_last_seen:
+                db.execute(
+                    "UPDATE devices SET last_seen=? WHERE device_id=?",
+                    (time.time(), row["device_id"]),
+                )
         return dict(row)
 
     def devices_for_user(self, user_sub: str) -> list[dict[str, Any]]:
