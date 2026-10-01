@@ -6,9 +6,13 @@ import json
 import os
 import time
 from pathlib import Path
+import re
 from typing import Any
-from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlsplit, urlunsplit
+import urllib.error
+import urllib.request
 
+from websockets.asyncio.client import connect as websocket_connect
 from mcp.server.apps import APP_MIME_TYPE, Apps, ResourceCsp
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -19,8 +23,9 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
-from starlette.routing import Mount, Route
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from starlette.routing import Mount, Route, WebSocketRoute
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from auth import verifier_from_env
 from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
@@ -112,6 +117,7 @@ TOOL_TEXT = {
     "capabilities": ("List Remote capabilities", "List the bounded Remote tools currently available and report whether the toolset is healthy and complete."),
     "list_devices": ("List managed devices", "List configured remote hosts, their stable device IDs, reachability, hostnames, projects, and bounded capabilities."),
     "open_remote_control_plane": ("Open Remote Control Plane", "Open the read-only LivingRuntime Remote Control Plane dashboard with truthful execution state, host health, durable jobs, approvals, and recent activity."),
+    "open_browser_takeover": ("Open browser takeover", "Create a short-lived Remote URL for an allowlisted Agent Runtime noVNC browser takeover session."),
     "remote_overview": ("Read Remote control-plane snapshot", "Return one secret-free snapshot of Connector health, managed hosts, durable jobs, pending approvals, credential handles, and recent activity."),
     "list_projects": ("List configured projects", "List the named projects and bounded workspaces configured for this LivingRuntime Remote Connector."),
     "read_file": ("Read remote file", "Read bytes from a file inside an allowed project or configured root. Use this before editing or inspecting source files."),
@@ -1291,6 +1297,103 @@ def _append_query(url: str, values: dict[str, str | None]) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
+def _browser_takeover_targets() -> dict[str, str]:
+    raw = os.environ.get("LIVINGRUNTIME_BROWSER_TAKEOVER_TARGETS", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("LIVINGRUNTIME_BROWSER_TAKEOVER_TARGETS must be JSON") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("LIVINGRUNTIME_BROWSER_TAKEOVER_TARGETS must be an object")
+    result: dict[str, str] = {}
+    for raw_key, raw_origin in parsed.items():
+        key = str(raw_key).strip()
+        origin = str(raw_origin).strip().rstrip("/")
+        parts = urlsplit(origin)
+        if (
+            not key
+            or parts.scheme != "http"
+            or parts.hostname not in {"127.0.0.1", "localhost"}
+            or parts.port is None
+            or parts.username is not None
+            or parts.password is not None
+            or parts.path not in {"", "/"}
+            or parts.query
+            or parts.fragment
+        ):
+            raise RuntimeError(
+                "browser takeover targets must map non-empty keys to loopback HTTP origins"
+            )
+        result[key] = f"http://127.0.0.1:{parts.port}"
+    return result
+
+
+def _browser_takeover_target(target_key: str) -> str:
+    target = _browser_takeover_targets().get(str(target_key))
+    if not target:
+        raise RuntimeError(f"browser takeover target is not configured: {target_key}")
+    return target
+
+
+def _browser_takeover_profile(value: str) -> str:
+    profile_id = str(value).strip()
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", profile_id):
+        raise ValueError("profile_id must match [A-Za-z0-9._-]{1,64}")
+    return profile_id
+
+
+def _browser_takeover_public_origin() -> str:
+    raw = (
+        os.environ.get("LIVINGRUNTIME_BROWSER_TAKEOVER_PUBLIC_ORIGIN")
+        or os.environ.get("LIVINGRUNTIME_RELAY_ISSUER")
+        or ""
+    ).strip().rstrip("/")
+    parts = urlsplit(raw)
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        raise RuntimeError("browser takeover public origin is not configured")
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def _browser_takeover_http_get(
+    target_origin: str,
+    path: str,
+    query: str,
+) -> tuple[int, dict[str, str], bytes]:
+    safe_path = str(path).lstrip("/")
+    if not safe_path or ".." in safe_path.split("/"):
+        raise ValueError("invalid browser takeover path")
+    upstream = target_origin.rstrip("/") + "/" + quote(
+        safe_path,
+        safe="/-._~",
+    )
+    if query:
+        upstream += "?" + query
+    request = urllib.request.Request(
+        upstream,
+        headers={
+            "User-Agent": "LivingRuntime-Remote/0.4.56",
+            "Accept": "*/*",
+        },
+        method="GET",
+    )
+    try:
+        response = urllib.request.urlopen(request, timeout=10)
+    except urllib.error.HTTPError as exc:
+        response = exc
+    with response:
+        body = response.read(8 * 1024 * 1024 + 1)
+        if len(body) > 8 * 1024 * 1024:
+            raise RuntimeError("browser takeover response exceeds 8 MiB")
+        headers: dict[str, str] = {}
+        for key in ("content-type", "content-encoding", "etag", "last-modified"):
+            value = response.headers.get(key)
+            if value:
+                headers[key] = value
+        return int(response.status), headers, body
+
+
 def _login_page(request_id: str, *, error: str | None = None, email: str = "") -> HTMLResponse:
     error_html = (
         f'<p class="error">{html.escape(error)}</p>' if error else ""
@@ -1899,6 +2002,67 @@ def create_mcp(
     )
     async def open_remote_control_plane() -> dict[str, Any]:
         return await remote_overview(include_resources=True)
+
+    @apps.tool(
+        visibility=["model", "app"],
+        name="open_browser_takeover",
+        title=TOOL_TEXT["open_browser_takeover"][0],
+        description=TOOL_TEXT["open_browser_takeover"][1],
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            openWorldHint=True,
+        ),
+        meta=WRITE,
+    )
+    async def open_browser_takeover(
+        connector: str = "owner-main",
+        profile_id: str = "chatgpt",
+        ttl_seconds: int = 600,
+    ) -> dict[str, Any]:
+        user_sub = _principal("remote:write")
+        profile = _browser_takeover_profile(profile_id)
+        device = relay.device_status(user_sub, connector)
+        if device is None or not device.get("online"):
+            raise RuntimeError("browser takeover connector is offline or unavailable")
+        target_key = f"{device['name']}:{profile}"
+        target_origin = _browser_takeover_target(target_key)
+        status, _headers, _body = await asyncio.to_thread(
+            _browser_takeover_http_get,
+            target_origin,
+            "vnc.html",
+            "",
+        )
+        if status != 200:
+            raise RuntimeError(
+                f"browser takeover target is unhealthy: HTTP {status}"
+            )
+        grant = relay.store.create_browser_takeover_token(
+            user_sub,
+            target_key,
+            profile,
+            ttl_seconds=ttl_seconds,
+        )
+        token = str(grant["token"])
+        encoded = quote(token, safe="")
+        path = f"/browser-takeover/{encoded}/vnc.html"
+        query = urlencode(
+            {
+                "autoconnect": "1",
+                "resize": "remote",
+                "reconnect": "1",
+                "path": f"browser-takeover/{encoded}/websockify",
+            }
+        )
+        return {
+            "status": "READY",
+            "transport": "NOVNC",
+            "connector": device["name"],
+            "profile_id": profile,
+            "url": _browser_takeover_public_origin() + path + "?" + query,
+            "expires_at": grant["expires_at"],
+            "ttl_seconds": min(1800, max(60, int(ttl_seconds))),
+        }
 
     server = MCPServer(
         NAME,
@@ -3284,6 +3448,106 @@ nav a{{margin-right:18px}}
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
 
+    async def browser_takeover_http(request: Request):
+        token = str(request.path_params.get("token") or "")
+        grant = store.browser_takeover_token(token)
+        if grant is None:
+            return PlainTextResponse(
+                "browser takeover token is invalid or expired",
+                status_code=404,
+                headers={"cache-control": "no-store"},
+            )
+        try:
+            target_origin = _browser_takeover_target(str(grant["target_key"]))
+            status, headers, body = await asyncio.to_thread(
+                _browser_takeover_http_get,
+                target_origin,
+                str(request.path_params.get("path") or ""),
+                request.url.query,
+            )
+        except Exception as exc:
+            return PlainTextResponse(
+                f"browser takeover proxy unavailable: {exc}",
+                status_code=502,
+                headers={"cache-control": "no-store"},
+            )
+        response_headers = {
+            **headers,
+            "cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+            "referrer-policy": "no-referrer",
+        }
+        return Response(
+            content=body,
+            status_code=status,
+            headers=response_headers,
+        )
+
+    async def browser_takeover_ws(websocket: WebSocket):
+        token = str(websocket.path_params.get("token") or "")
+        grant = store.browser_takeover_token(token)
+        if grant is None:
+            await websocket.close(code=4404)
+            return
+        accepted = False
+        upstream = None
+        try:
+            target_origin = _browser_takeover_target(str(grant["target_key"]))
+            parts = urlsplit(target_origin)
+            upstream_url = f"ws://127.0.0.1:{parts.port}/websockify"
+            protocols = list(websocket.scope.get("subprotocols") or ())
+            upstream = await websocket_connect(
+                upstream_url,
+                subprotocols=protocols or None,
+                open_timeout=5,
+                ping_interval=None,
+                max_size=None,
+            )
+            await websocket.accept(subprotocol=upstream.subprotocol)
+            accepted = True
+
+            async def client_to_upstream() -> None:
+                while True:
+                    message = await websocket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        return
+                    if message.get("bytes") is not None:
+                        await upstream.send(message["bytes"])
+                    elif message.get("text") is not None:
+                        await upstream.send(message["text"])
+
+            async def upstream_to_client() -> None:
+                async for message in upstream:
+                    if isinstance(message, bytes):
+                        await websocket.send_bytes(message)
+                    else:
+                        await websocket.send_text(message)
+
+            tasks = {
+                asyncio.create_task(client_to_upstream()),
+                asyncio.create_task(upstream_to_client()),
+            }
+            _done, pending = await asyncio.wait(
+                tasks,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            try:
+                await websocket.close(code=1011 if accepted else 4402)
+            except Exception:
+                pass
+        finally:
+            if upstream is not None:
+                try:
+                    await upstream.close()
+                except Exception:
+                    pass
+
     async def embedded_oauth_metadata(_: Request):
         issuer = os.environ["LIVINGRUNTIME_RELAY_ISSUER"].rstrip("/")
         payload = {
@@ -3375,6 +3639,15 @@ nav a{{margin-right:18px}}
             Route("/userinfo", embedded_userinfo),
         ])
     routes.extend([
+        WebSocketRoute(
+            "/browser-takeover/{token:str}/websockify",
+            browser_takeover_ws,
+        ),
+        Route(
+            "/browser-takeover/{token:str}/{path:path}",
+            browser_takeover_http,
+            methods=["GET"],
+        ),
         Route("/device/pair", pair, methods=["POST"]),
         Route("/device/poll", poll, methods=["POST"]),
         Route("/device/result", complete, methods=["POST"]),
