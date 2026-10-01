@@ -3200,7 +3200,13 @@ nav a{{margin-right:18px}}
 
     async def device_event(request: Request):
         try:
-            device = store.authenticate_device(_device_token(request))
+            # Event forwarding proves only that the connector process can emit
+            # HTTP requests. It does not prove the tool-poll execution lane is
+            # healthy, so it must not refresh execution liveness.
+            device = store.authenticate_device(
+                _device_token(request),
+                touch_last_seen=False,
+            )
             payload = validate_connector_event(
                 dict(await request.json()),
                 str(device["device_id"]),
