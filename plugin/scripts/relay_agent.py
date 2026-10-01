@@ -228,18 +228,25 @@ def serve(config_path: Path, once: bool = False) -> None:
         max(2, int(os.environ.get("LIVINGRUNTIME_CONNECTOR_WORKERS", "4"))),
     )
     pending: set[concurrent.futures.Future[None]] = set()
+    event_future: concurrent.futures.Future[None] | None = None
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=max_workers,
         thread_name_prefix="livingruntime-remote",
     ) as pool:
         while True:
             try:
-                _forward_events(cfg)
                 finished = {future for future in pending if future.done()}
                 for future in finished:
                     pending.remove(future)
                     future.result()
 
+                if event_future is not None and event_future.done():
+                    event_future.result()
+                    event_future = None
+
+                # Tool execution is the primary connector lane. Pending MCP
+                # events must never block polling, especially when the Work
+                # host has not installed a matching events/subscribe callback.
                 response = _request(
                     cfg["url"],
                     "/device/poll?wait=20",
@@ -254,6 +261,12 @@ def serve(config_path: Path, once: bool = False) -> None:
                     if once:
                         future.result()
                         return
+
+                # Event delivery is best-effort and independent from task
+                # polling. Only one forwarder runs at a time so a backlog
+                # cannot consume the connector worker pool.
+                if event_future is None:
+                    event_future = pool.submit(_forward_events, cfg)
             except KeyboardInterrupt:
                 return
             except Exception as exc:
