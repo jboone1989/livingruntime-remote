@@ -13,6 +13,8 @@ import threading
 import time
 from typing import Any
 
+import filesystem_delete
+
 MAX_OUTPUT_BYTES = 262144
 
 
@@ -335,6 +337,14 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
         )
         _save_receipt(target, payload)
         return payload
+
+    if op == "delete_path":
+        return filesystem_delete.delete_path(
+            request["path"], request["roots"],
+            recursive=bool(request.get("recursive")), dry_run=bool(request.get("dry_run")),
+            expected_sha256=request.get("expected_sha256"),
+            protected_paths=request.get("protected_paths", ()),
+        )
 
     if op == "read_file":
         path = _inside(roots, request["path"])

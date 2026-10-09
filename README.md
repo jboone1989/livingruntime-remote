@@ -238,3 +238,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+`delete_path` is the dedicated POSIX filesystem deletion tool. It supports literal files/symlinks and explicit recursive directories under configured roots, optional dry-run/SHA-256 checks, root/state protection, bounded traversal and truthful partial-failure receipts. See `plugin/README.md` for limits. It does not enable shell or destructive commands through dynamic exec authorization.

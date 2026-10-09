@@ -2,7 +2,7 @@
 
 Identity: `livingruntime.remote`
 
-Current version: `0.4.56`
+Current version: `0.4.57`
 
 This directory contains the ChatGPT/Codex-facing MCP runtime and the local Connector implementation.
 
@@ -170,3 +170,9 @@ event ID to the relay and records successful relay acceptance so ChatGPT-side po
 is not required for terminal long-job notification.
 
 Widgets are status surfaces only: they never inject `ui/message` or `sendFollowUpMessage` prompts. GitHub wake bridging has been removed. Durable MCP Events handle proactive activation, while lifecycle hooks recover already-bound durable state when a session starts, resumes, compacts, or receives a user prompt.
+
+### Bounded file deletion
+
+`delete_path` removes a single literal POSIX path inside configured roots. Directories require `recursive=true`; a leaf symlink is unlinked without following its target. `dry_run=true` reports the planned entry/byte count without deleting. `expected_sha256` protects regular files against stale content. Missing unguarded paths return `NOT_FOUND`.
+
+Configured roots, configured project roots and their ancestors cannot be removed. Home credential and Connector state directories are protected recursively. Parent symlinks, traversal segments, special files, other filesystems and trees above 10,000 entries, 512 MiB or 64 levels are refused. Partial failures report actual deletion counts and keep an audit record; directory deletion is not transactional. Native Windows deletion is currently unsupported and fails closed. Generic shell and deletion commands remain hard-denied through exec.

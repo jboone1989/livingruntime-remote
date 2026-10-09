@@ -655,6 +655,18 @@
         "open_world_justification": "Operates only on private LivingRuntime Remote continuation/completion state.",
         "destructive_justification": "Does not modify project files, services, external accounts, job state, or completion acknowledgements."
       }
+    },
+    "delete_path": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Deletes files, symlinks or explicit recursive directories and records the operation.",
+        "open_world_justification": "All targets stay within the selected Connector's configured private roots.",
+        "destructive_justification": "Deletion removes filesystem entries and can irreversibly lose content; recursive deletion is explicit."
+      }
     }
   },
   "test_cases": [

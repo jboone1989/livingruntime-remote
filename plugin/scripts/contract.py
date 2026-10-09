@@ -13,6 +13,7 @@ REMOTE_TOOLS = (
     "list_projects",
     "read_file",
     "write_file",
+    "delete_path",
     "list_dir",
     "git",
     "exec",
@@ -77,7 +78,7 @@ DISCOVERY_TOOLS = REMOTE_TOOLS
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 DEFAULT_HTTP_PORT = 8766
 PLUGIN_NAME = "LivingRuntime Remote"
-PLUGIN_VERSION = "0.4.56"
+PLUGIN_VERSION = "0.4.57"
 SECRET_KEYS = (
     "token",
     "password",
