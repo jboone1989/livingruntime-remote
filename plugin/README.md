@@ -2,7 +2,7 @@
 
 Identity: `livingruntime.remote`
 
-Current version: `0.4.56`
+Current version: `0.4.64`
 
 This directory contains the ChatGPT/Codex-facing MCP runtime and the local Connector implementation.
 
@@ -157,9 +157,13 @@ The root `.app.json` is a registered-MCP-server mapping for local/workspace pack
 The plugin lifecycle intentionally does not contain a blocking `Stop` hook. Long-job/cognition completion is durable and is recovered from authoritative receipts on activation or session resume rather than keeping a completed model turn open.
 
 
+## Completion receipts
+
+Version 0.4.61 does not automatically acknowledge terminal long-job receipts during get/watch/wait. A separate explicit ACK is required after the consumer processes the completion event. Ordinary unclaimed completions expire after the configured retention interval (24 hours by default), but delegated `agent-adapter` completion events remain unacknowledged until an explicit ACK. Durable job history is retained. The Control Plane reports completion receipts separately from tasks that are actually waiting to run or resume.
+
 ## MCP Events
 
-Version 0.4.56 makes native MCP Events the sole proactive activation path. `watch_agent_cognition` verifies the authenticated user's unexpired `cognition.requested` subscription for the exact agent; it neither subscribes nor polls nor claims. The Work host must register `events/subscribe` with its callback and secret. `SUBSCRIPTION_REQUIRED` is an explicit missing registration, not an armed watcher. Events provide only request identity/routing metadata; fetch authoritative messages with `get_llm_request`, stop for `COMPLETED` or `TIMED_OUT`, and claim Ferro requests with `chatgpt-work-ferro-cortex` for 300 seconds. Completion immediately claims an available request only in the completed request's lane. A returned auto-claim can be reused; a live claim belonging to another watcher is a conflict.
+Version 0.4.57 makes native MCP Events the sole proactive activation path. `watch_agent_cognition` verifies the authenticated user's unexpired `cognition.requested` subscription for the exact agent; it neither subscribes nor polls nor claims. The Work host must register `events/subscribe` with its callback and secret. `SUBSCRIPTION_REQUIRED` is an explicit missing registration, not an armed watcher. Events provide only request identity/routing metadata; fetch authoritative messages with `get_llm_request`, stop for `COMPLETED` or `TIMED_OUT`, and claim Ferro requests with `chatgpt-work-ferro-cortex` for 300 seconds. Completion immediately claims an available request only in the completed request's lane. A returned auto-claim can be reused; a live claim belonging to another watcher is a conflict.
 The relay advertises `capabilities.events` on MCP 2.0 discovery and implements
 `events/list`, `events/subscribe`, and `events/unsubscribe` on the authenticated
 MCP endpoint. Subscriptions are durable in the relay store, callback URLs are HTTPS-only
@@ -170,3 +174,29 @@ event ID to the relay and records successful relay acceptance so ChatGPT-side po
 is not required for terminal long-job notification.
 
 Widgets are status surfaces only: they never inject `ui/message` or `sendFollowUpMessage` prompts. GitHub wake bridging has been removed. Durable MCP Events handle proactive activation, while lifecycle hooks recover already-bound durable state when a session starts, resumes, compacts, or receives a user prompt.
+
+## Optional Agent Adapters (0.4.64)
+
+Remote functions with zero installed agents. Adapter packages are optional and independently installed; agent-specific runtime code must not enter Remote Core. `list_agents` reports adapters; `start_agent`, `get_agent_session`, `send_agent_message`, `resume_agent`, `watch_agent_events`, and `cancel_agent` operate on scoped sessions.
+
+Use `python3 plugin/scripts/adapterctl.py install livingruntime_adapter_http make` (or `uninstall`) to manage the explicit adapter manifest. The optional HTTP adapter connects only to a loopback agent service configured by `LIVINGRUNTIME_HTTP_AGENT_URL` and `LIVINGRUNTIME_HTTP_AGENT_TOKEN`. Actual agent software must run independently and implement its session protocol; no LLM or agent is bundled with Remote.
+
+Agent launches are disabled unless the connector environment explicitly specifies a matching `LIVINGRUNTIME_AGENT_LAUNCH_ALLOWLIST` entry of `device:project:adapter_id`. Restart after installation or environment changes. Direct file/Git/exec operation remains available if no agent is installed or an adapter fails to load. Durable Job receipts require explicit ACK, and ChatGPT autonomous wake-up still requires an authenticated host-side event subscription.
+
+### Claude Code adapter (optional, 0.4.64)
+
+VM09 has Claude Code installed. The optional `livingruntime_adapter_claude` starts read-only planning tasks in a detached worker with owner-only persisted state and result receipts. It supports fresh sessions, follow-up prompts, explicit cancellation and status retrieval even after a connector restart. Its initial mode is strictly `--permission-mode plan --max-turns 1`, not autonomous edits or bypassPermissions. No native event push or host automatic wake-up is available; consumers should query `get_agent_session` or use the durable Job receipt path.
+
+Install by registering `livingruntime_adapter_claude` with `adapterctl.py install livingruntime_adapter_claude make`. Agent launch is **denied by default**. An operator-owned, mode-0600 file `~/.livingruntime/agent-policy.json` may specify `launch_allowlist` entries of `device:project:adapter_id` and `claude_workspaces` entries of `device:project` to an existing directory. Environment allowlists remain supported. The adapter is optional: no Agent is needed for regular Remote use. If the Agent fails, direct Remote tools remain available, without silently inheriting Agent privileges.
+
+### Periodic agent reconciliation (0.4.64)
+
+The one-shot `agent_reconciler.py` inspects persisted Agent Sessions and updates nonterminal Durable Jobs from actual adapter status. Run under a separate user-level timer if autonomous Job recording is required. It does not ACK completion events, claim external host subscriptions, or grant Agent execution permissions. No-Agent mode exits without error. Host-side ChatGPT wake-up still requires an authenticated host event subscriber.
+
+### Reconciliation fix (0.4.64)
+
+The standalone systemd reconciler loads explicit adapter registrations before inspecting persisted sessions. Without this, the connector could list Claude Code while the background reconciler failed to map its durable jobs. Verified using a real delegated Claude Code job: the background one-shot reconcile completed with updated=1, and the durable completion event remained PENDING until ACK.
+
+### Control Plane presentation
+
+The embedded MCP App now separates delegated Agent jobs from directly executed Remote jobs. The UI shows active delegated work without claiming that an agent process is live unless a backend liveness receipt supports it. Completion receipts remain distinct from pending work and do not indicate automatic ChatGPT host wake-up. The UI is a status and review surface, not a browser shell or a new Agent implementation. A standalone multi-tenant Web/SaaS console is considered separately in `docs/WEB_CONTROL_PLANE.md`.

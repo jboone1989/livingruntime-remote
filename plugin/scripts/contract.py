@@ -11,6 +11,13 @@ REMOTE_TOOLS = (
     "list_devices",
     "remote_overview",
     "list_projects",
+    "list_agents",
+    "start_agent",
+    "get_agent_session",
+    "send_agent_message",
+    "cancel_agent",
+    "resume_agent",
+    "watch_agent_events",
     "read_file",
     "write_file",
     "list_dir",
@@ -49,13 +56,8 @@ REMOTE_TOOLS = (
     "logs",
     "apply_patch",
     "diagnostics",
-    "start_pi_agent",
-    "start_pi_step",
-    "watch_pi_job",
-    "wait_pi_job_completion",
     "bind_openai_job_continuation",
     "recover_openai_job_continuation",
-    "bind_openai_pi_continuation",
 )
 
 # Handshake core surface advertised in capabilities.tools. MCP still registers
@@ -77,7 +79,7 @@ DISCOVERY_TOOLS = REMOTE_TOOLS
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 DEFAULT_HTTP_PORT = 8766
 PLUGIN_NAME = "LivingRuntime Remote"
-PLUGIN_VERSION = "0.4.56"
+PLUGIN_VERSION = "0.4.64"
 SECRET_KEYS = (
     "token",
     "password",

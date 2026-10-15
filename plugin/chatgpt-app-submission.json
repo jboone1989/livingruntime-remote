@@ -212,42 +212,6 @@
         "destructive_justification": "Revokes device access and removes its pending relay tasks, so that connection must be paired again."
       }
     },
-    "watch_pi_job": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Reads the current state of an existing Pi Remote detached job before attaching continuation behavior.",
-        "open_world_justification": "Uses only the user's paired bounded Remote workspace and does not access arbitrary public services.",
-        "destructive_justification": "Does not modify repository files, services, or the Pi job."
-      }
-    },
-    "wait_pi_job_completion": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Waits for an existing Pi Remote job and returns its durable terminal state.",
-        "open_world_justification": "Waits only through the user's paired bounded Remote workspace.",
-        "destructive_justification": "Does not modify the Pi job or development workspace."
-      }
-    },
-    "bind_openai_pi_continuation": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Stores bounded continuation metadata linking an OpenAI runtime session to an existing Pi job.",
-        "open_world_justification": "Changes only private LivingRuntime continuation state and does not contact open-ended external services.",
-        "destructive_justification": "Does not delete user data, stop processes, or modify repository contents."
-      }
-    },
     "list_exec_permissions": {
       "annotations": {
         "readOnlyHint": true,
@@ -426,30 +390,6 @@
         "read_only_justification": "Consumes an already-issued scoped lease internally to verify the GitHub account identity; the credential itself is never returned.",
         "open_world_justification": "Makes one fixed HTTPS request to https://api.github.com/user with redirects disabled. The destination is not user-selectable.",
         "destructive_justification": "Does not create, modify, or delete GitHub resources or local credential material."
-      }
-    },
-    "start_pi_agent": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": true
-      },
-      "justifications": {
-        "read_only_justification": "Starts a normal Pi API-mode AgentSession and durable prompt job for the supplied development goal.",
-        "open_world_justification": "The control-plane call stays inside the user's paired Remote host. Pi tool execution remains subject to Pi and host-local project boundaries rather than being executed by the ChatGPT provider transport.",
-        "destructive_justification": "Pi's native coding loop may edit or write files in the selected configured project, so the tool is explicitly marked destructive."
-      }
-    },
-    "start_pi_step": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": true
-      },
-      "justifications": {
-        "read_only_justification": "Creates or reuses a Pi external-controller session, starts a detached structured action batch, and persists a durable job.",
-        "open_world_justification": "The detached batch is restricted to local Pi file/search/edit tools; Pi bash is rejected and commands remain behind LivingRuntime Remote exec permissions.",
-        "destructive_justification": "Coder actions may edit or write files in the selected configured project, so the tool is explicitly marked destructive."
       }
     },
     "start_long_job": {
@@ -654,6 +594,90 @@
         "read_only_justification": "Reads private durable continuation metadata and returns bounded lifecycle-hook context so a resumed OpenAI session can reattach to the exact existing job.",
         "open_world_justification": "Operates only on private LivingRuntime Remote continuation/completion state.",
         "destructive_justification": "Does not modify project files, services, external accounts, job state, or completion acknowledgements."
+      }
+    },
+    "list_agents": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Lists registered agent adapters without starting them.",
+        "open_world_justification": "Only reads the local adapter registry.",
+        "destructive_justification": "Does not launch agents or mutate host state."
+      }
+    },
+    "start_agent": {
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Invokes an explicitly installed adapter.",
+        "destructive_justification": "May launch or cancel an installed agent.",
+        "open_world_justification": "Uses only configured adapters and project-scoped hosts."
+      }
+    },
+    "get_agent_session": {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Reads a persisted agent session and its adapter status.",
+        "destructive_justification": "Does not perform destructive device commands directly.",
+        "open_world_justification": "Uses only configured adapters and project-scoped hosts."
+      }
+    },
+    "send_agent_message": {
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Invokes an explicitly installed adapter.",
+        "destructive_justification": "Does not perform destructive device commands directly.",
+        "open_world_justification": "Uses only configured adapters and project-scoped hosts."
+      }
+    },
+    "cancel_agent": {
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Invokes an explicitly installed adapter.",
+        "destructive_justification": "May launch or cancel an installed agent.",
+        "open_world_justification": "Uses only configured adapters and project-scoped hosts."
+      }
+    },
+    "resume_agent": {
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "justifications": {
+        "read_only_justification": "May invoke an adapter's session resume handler.",
+        "destructive_justification": "Does not directly mutate host files or services.",
+        "open_world_justification": "Only accesses explicitly registered adapters."
+      }
+    },
+    "watch_agent_events": {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only retrieves adapter event receipts.",
+        "destructive_justification": "Does not directly mutate host files or services.",
+        "open_world_justification": "Only accesses explicitly registered adapters."
       }
     }
   },

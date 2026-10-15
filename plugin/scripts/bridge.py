@@ -18,6 +18,9 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 import localexec
+from agent_adapters import registry as agent_registry, load_installed
+import agent_sessions
+import agent_policy
 from contract import (
     DEFAULT_HTTP_PORT,
     HANDSHAKE_TOOLS,
@@ -96,6 +99,12 @@ DEFERRED_SELF_RESTART_UNITS = frozenset({
 })
 
 server = FastMCP(NAME)
+_AGENT_ADAPTER_LOAD_ERROR: str | None = None
+try:
+    load_installed()
+except (OSError, ValueError, ImportError, AttributeError, TypeError, RuntimeError) as exc:
+    # An optional adapter must never disable direct Remote mode.
+    _AGENT_ADAPTER_LOAD_ERROR = type(exc).__name__
 _LAST_SUCCESS_UNIX = 0.0
 _DEVICE_LAST_SUCCESS_UNIX: dict[str, float] = {}
 _PROCESS_STARTED = time.time()
@@ -2568,13 +2577,14 @@ def _reconcile_runtime_job(job: dict[str, Any]) -> dict[str, Any]:
     name="get_long_job",
     annotations=ToolAnnotations(
         title="Get supervised long-running job",
-        readOnlyHint=True,
+        readOnlyHint=False,
         destructiveHint=False,
+        idempotentHint=True,
         openWorldHint=False,
     ),
 )
 def get_long_job(job_id: str) -> dict[str, Any]:
-    """Refresh one supervised long job from its remote durable receipt."""
+    """Refresh a job receipt without consuming its completion notification."""
     job = get_runtime_job(job_id)
     receipt = _long_job_receipt(job)
     job = _sync_long_job(job, receipt)
@@ -2922,641 +2932,6 @@ def recover_openai_job_continuation(
         "status": latest.get("status"),
         "terminal": bool(latest.get("terminal")),
         "completionEventId": completion.get("event_id"),
-    }
-
-
-def _pi_runtime_settings() -> tuple[str, str, str, str]:
-    cfg = _config()
-    device_id = os.environ.get("LIVINGRUNTIME_PI_RUNTIME_DEVICE", cfg["default_host"]).strip()
-    host = host_for(cfg, host_id=device_id)
-    runtime_dir = os.environ.get(
-        "LIVINGRUNTIME_PI_RUNTIME_DIR",
-        "/home/ubuntu/src/pi-remote-runtime",
-    ).strip()
-    session_root = os.environ.get(
-        "LIVINGRUNTIME_PI_SESSION_ROOT",
-        "/home/ubuntu/.livingruntime/pi-sessions",
-    ).strip()
-    job_root = os.environ.get(
-        "LIVINGRUNTIME_PI_JOB_ROOT",
-        "/home/ubuntu/.livingruntime/pi-jobs",
-    ).strip()
-    for name, value in (
-        ("runtime_dir", runtime_dir),
-        ("session_root", session_root),
-        ("job_root", job_root),
-    ):
-        if not value or len(value) > 4096:
-            raise RuntimeError(f"invalid Pi runtime {name}")
-        normalized = os.path.normpath(value)
-        if not any(
-            os.path.commonpath([normalized, os.path.normpath(root)]) == os.path.normpath(root)
-            for root in host["roots"]
-        ):
-            raise RuntimeError(f"Pi runtime {name} is outside configured roots")
-    return device_id, runtime_dir, session_root, job_root
-
-
-def _pi_control_command(
-    command: str,
-    payload: dict[str, Any],
-    *,
-    timeout_seconds: int = 30,
-) -> dict[str, Any]:
-    if command not in {"create", "state", "job-start"}:
-        raise ValueError("unsupported Pi control command")
-    device_id, runtime_dir, _session_root, _job_root = _pi_runtime_settings()
-    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    if len(encoded.encode("utf-8")) > MAX_OUTPUT_BYTES:
-        raise ValueError("Pi control payload exceeds maximum size")
-    result = _ssh(
-        ["node", runtime_dir.rstrip("/") + "/cli.js", command, encoded],
-        timeout=min(120, max(1, int(timeout_seconds))),
-        device=device_id,
-    )
-    if int(result.get("returncode", 1)) != 0:
-        raise RuntimeError(str(result.get("stderr") or "Pi Remote control command failed"))
-    stdout = result.get("stdout")
-    if not isinstance(stdout, str) or not stdout.strip():
-        raise RuntimeError("Pi Remote control command returned no JSON")
-    try:
-        parsed = json.loads(stdout)
-    except json.JSONDecodeError:
-        raise RuntimeError("Pi Remote control command returned invalid JSON") from None
-    if not isinstance(parsed, dict):
-        raise RuntimeError("Pi Remote control command returned non-object JSON")
-    return parsed
-
-
-def _pi_job_command(
-    command: str,
-    job_id: str,
-    pi_remote_dir: str,
-    job_root: str | None = None,
-    timeout_seconds: int = 30,
-) -> dict[str, Any]:
-    if command not in {"job-status", "job-wait", "job-cancel"}:
-        raise ValueError("unsupported Pi job command")
-    job_id = str(job_id).strip()
-    pi_remote_dir = str(pi_remote_dir).strip()
-    if not job_id or len(job_id) > 128:
-        raise ValueError("job_id must be a bounded non-empty string")
-    if not pi_remote_dir or len(pi_remote_dir) > 4096:
-        raise ValueError("pi_remote_dir must be a bounded non-empty path")
-    payload: dict[str, Any] = {"jobId": job_id}
-    if job_root:
-        if len(job_root) > 4096:
-            raise ValueError("job_root path is too long")
-        payload["jobRoot"] = job_root
-    bounded_timeout = min(90, max(1, int(timeout_seconds)))
-    if command == "job-wait":
-        payload["timeoutMs"] = bounded_timeout * 1000
-    result = exec(
-        argv=[
-            "node",
-            pi_remote_dir.rstrip("/") + "/cli.js",
-            command,
-            json.dumps(payload, separators=(",", ":")),
-        ],
-        cwd=pi_remote_dir,
-        timeout_seconds=min(120, bounded_timeout + 10),
-    )
-    if int(result.get("returncode", 1)) != 0:
-        raise RuntimeError(str(result.get("stderr") or "Pi Remote job command failed"))
-    stdout = result.get("stdout")
-    if not isinstance(stdout, str) or not stdout.strip():
-        raise RuntimeError("Pi Remote job command returned no JSON")
-    parsed = json.loads(stdout)
-    if not isinstance(parsed, dict):
-        raise RuntimeError("Pi Remote job command returned non-object JSON")
-    return parsed
-
-
-def _sync_pi_runtime_job(job: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
-    """Map Pi process liveness into durable state; RUNNING requires processAlive=true."""
-    backend = job.get("backend") if isinstance(job.get("backend"), dict) else {}
-    backend_type = str(backend.get("type") or "")
-    raw = str(state.get("status") or "").upper()
-    live = state.get("processAlive") is True
-
-    if backend_type == "pi-step":
-        if raw == "SUCCEEDED":
-            mapped = "WAITING"
-            step = "Pi step completed; waiting for ChatGPT"
-            next_action = (
-                "Inspect Pi session evidence and choose the next bounded step, or mark "
-                "the durable goal SUCCEEDED only when acceptance evidence is satisfied."
-            )
-        elif raw in {"FAILED", "CANCELLED", "CANCELED", "ERROR"}:
-            mapped = "BLOCKED"
-            step = f"Pi step {raw.lower()}"
-            next_action = "Inspect Pi evidence, then retry, change the plan, or terminate the durable goal."
-        elif raw in {"STALLED", "HEARTBEAT_STALE", "LOST", "ORPHANED"}:
-            mapped = "STALLED"
-            step = "Pi step stalled"
-            next_action = "Inspect Pi liveness/evidence before retrying or cancelling."
-        elif live:
-            mapped = "RUNNING"
-            step = "Pi step process running"
-            next_action = "Await the live Pi process completion."
-        else:
-            mapped = "PENDING"
-            step = "Pi step queued"
-            next_action = "Keep the watcher armed until the Pi process actually starts."
-    else:
-        terminal_map = {
-            "SUCCEEDED": "SUCCEEDED",
-            "SUCCESS": "SUCCEEDED",
-            "COMPLETED": "SUCCEEDED",
-            "FAILED": "FAILED",
-            "ERROR": "FAILED",
-            "CANCELLED": "CANCELLED",
-            "CANCELED": "CANCELLED",
-        }
-        if raw in terminal_map:
-            mapped = terminal_map[raw]
-        elif raw in {"STALLED", "HEARTBEAT_STALE", "LOST", "ORPHANED"}:
-            mapped = "STALLED"
-        elif live:
-            mapped = "RUNNING"
-        elif raw == "BLOCKED":
-            mapped = "BLOCKED"
-        elif raw == "WAITING":
-            mapped = "WAITING"
-        else:
-            mapped = "PENDING"
-        step = (
-            "Pi agent process running"
-            if mapped == "RUNNING"
-            else f"Pi backend {raw.lower() or 'unknown'}"
-        )
-        next_action = None
-
-    runtime = {
-        "backend_status": raw or "UNKNOWN",
-        "observed_status": raw or "UNKNOWN",
-        "progress_state": (
-            "ACTIVE" if live else (
-                "TERMINAL"
-                if raw in {"SUCCEEDED", "SUCCESS", "COMPLETED", "FAILED", "ERROR", "CANCELLED", "CANCELED"}
-                else "WAITING"
-            )
-        ),
-        "worker_alive": live,
-        "child_alive": False,
-    }
-    previous = str(job.get("status") or "PENDING")
-    job = update_runtime_job(
-        job["job_id"],
-        runtime=runtime,
-        status=mapped,
-        current_step=step,
-        next_action=next_action,
-    )
-    if previous != mapped and previous not in {"SUCCEEDED", "FAILED", "CANCELLED", "CANCELLED_BY_USER"}:
-        job = checkpoint_runtime_job(
-            job["job_id"],
-            summary=f"Pi backend status is {raw or 'UNKNOWN'}; durable state is {mapped}.",
-            current_step=step,
-            next_action=next_action,
-            status=mapped,
-            source="backend",
-        )
-    return job
-
-
-@server.tool(
-    name="start_pi_agent",
-    annotations=ToolAnnotations(
-        title="Start native Pi agent",
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=False,
-        openWorldHint=False,
-    ),
-)
-def start_pi_agent(
-    goal: str,
-    project: str,
-    session_file: str | None = None,
-) -> dict[str, Any]:
-    """Start Pi's native agent loop with ChatGPT exposed as its model provider."""
-    goal = str(goal).strip()
-    project = str(project).strip()
-    if not goal or len(goal.encode("utf-8")) > 64 * 1024:
-        raise ValueError("goal must be a bounded non-empty string")
-    if not project or len(project) > 256:
-        raise ValueError("project must be a bounded non-empty project alias")
-
-    cfg = _config()
-    selected = host_for(cfg, project=project)
-    runtime_device, runtime_dir, session_root, job_root = _pi_runtime_settings()
-    if selected["id"] != runtime_device:
-        raise RuntimeError(
-            f"Pi runtime is configured on device {runtime_device}, but project {project} is on {selected['id']}"
-        )
-    repo_path = resolve_path(cfg, None, project=project)
-
-    if session_file is None:
-        session = _pi_control_command(
-            "create",
-            {
-                "repoPath": repo_path,
-                "sessionDir": session_root,
-                "controllerMode": "api",
-            },
-            timeout_seconds=30,
-        )
-        session_file = str(session.get("sessionFile") or "")
-    else:
-        raw_session = Path(str(session_file)).expanduser()
-        resolved_session = raw_session.resolve(strict=True)
-        resolved_root = Path(session_root).expanduser().resolve(strict=False)
-        try:
-            resolved_session.relative_to(resolved_root)
-        except ValueError:
-            raise PermissionError("session_file is outside the configured Pi session root") from None
-        session_file = str(resolved_session)
-        session = _pi_control_command(
-            "state",
-            {"sessionFile": session_file},
-            timeout_seconds=15,
-        )
-
-    if not session_file:
-        raise RuntimeError("Pi session creation returned no session file")
-    if session.get("controllerMode") != "api":
-        raise RuntimeError("native Pi agent requires an API-controller session")
-    if os.path.realpath(str(session.get("cwd") or "")) != os.path.realpath(repo_path):
-        raise RuntimeError("Pi session workspace does not match the requested project")
-
-    launched = _pi_control_command(
-        "job-start",
-        {
-            "kind": "prompt-api",
-            "sessionFile": session_file,
-            "provider": "livingruntime-chatgpt",
-            "modelId": "chatgpt-web",
-            "text": goal,
-            "credentialBindings": {},
-            "jobRoot": job_root,
-        },
-        timeout_seconds=30,
-    )
-    state = launched.get("job")
-    if not isinstance(state, dict):
-        raise RuntimeError("Pi job-start returned no job state")
-    pi_job_id = str(state.get("id") or "")
-    if not pi_job_id:
-        raise RuntimeError("Pi job-start returned no job id")
-
-    backend = {
-        "type": "pi-agent",
-        "job_id": pi_job_id,
-        "pi_remote_dir": runtime_dir,
-        "job_root": job_root,
-        "session_file": session_file,
-        "session_id": session.get("sessionId"),
-        "controller_mode": "api",
-        "provider": "livingruntime-chatgpt",
-        "model": "chatgpt-web",
-    }
-    initial_status = "PENDING"
-    runtime_job = create_runtime_job(
-        goal=goal,
-        project=project,
-        device=runtime_device,
-        backend=backend,
-        status=initial_status,
-    )
-    runtime_job = checkpoint_runtime_job(
-        runtime_job["job_id"],
-        summary="Pi native agent job accepted with ChatGPT as its cognition provider.",
-        current_step=(
-            "Pi native agent queued"
-        ),
-        next_action="Keep the Pi watcher attached; Pi owns planning, tool execution, and loop continuation.",
-        status=initial_status,
-        source="runtime",
-    )
-    runtime_job = _sync_pi_runtime_job(runtime_job, state)
-    _audit("start_pi_agent", True, {
-        "runtime_job_id": runtime_job["job_id"],
-        "pi_job_id": pi_job_id,
-        "project": project,
-        "device": runtime_device,
-        "session_id": session.get("sessionId"),
-    })
-    return {
-        "runtimeJobId": runtime_job["job_id"],
-        "jobId": pi_job_id,
-        "piRemoteDir": runtime_dir,
-        "jobRoot": job_root,
-        "sessionFile": session_file,
-        "sessionId": session.get("sessionId"),
-        "state": state,
-        "terminal": state.get("status") in {"SUCCEEDED", "FAILED", "CANCELLED"},
-        "controllerMode": "api",
-        "provider": "livingruntime-chatgpt",
-        "model": "chatgpt-web",
-    }
-
-
-@server.tool(
-    name="start_pi_step",
-    annotations=ToolAnnotations(
-        title="Start detached Pi external-controller step",
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=False,
-        openWorldHint=False,
-    ),
-)
-def start_pi_step(
-    goal: str,
-    project: str,
-    actions: list[dict[str, Any]],
-    session_file: str | None = None,
-    runtime_job_id: str | None = None,
-) -> dict[str, Any]:
-    """Start a detached Pi action batch without allowing Pi to call an LLM.
-
-    The batch is limited to structured Pi file/search/edit tools. Shell commands
-    are intentionally excluded and must continue through Remote exec permissions.
-    """
-    goal = str(goal).strip()
-    project = str(project).strip()
-    if not goal or len(goal.encode("utf-8")) > 8000:
-        raise ValueError("goal must be a bounded non-empty string")
-    if not project or len(project) > 256:
-        raise ValueError("project must be a bounded non-empty project alias")
-    if not isinstance(actions, list) or not actions or len(actions) > 64:
-        raise ValueError("actions must contain between 1 and 64 items")
-    if _contains_secret(actions):
-        raise PermissionError("Pi step actions contain secret-like fields")
-    encoded_actions = json.dumps(actions, ensure_ascii=False, separators=(",", ":"))
-    if len(encoded_actions.encode("utf-8")) > 256 * 1024:
-        raise ValueError("Pi step actions exceed maximum size")
-
-    cfg = _config()
-    selected = host_for(cfg, project=project)
-    runtime_device, runtime_dir, session_root, job_root = _pi_runtime_settings()
-    if selected["id"] != runtime_device:
-        raise RuntimeError(
-            f"Pi runtime is configured on device {runtime_device}, but project {project} is on {selected['id']}"
-        )
-    repo_path = resolve_path(cfg, None, project=project)
-
-    runtime_job: dict[str, Any] | None = None
-    if runtime_job_id is not None:
-        runtime_job = get_runtime_job(runtime_job_id)
-        if runtime_job.get("terminal"):
-            raise RuntimeError("terminal durable goal cannot start another Pi step")
-        if runtime_job.get("goal") != goal:
-            raise ValueError("goal does not match the durable job")
-        if runtime_job.get("project") != project:
-            raise ValueError("project does not match the durable job")
-        if runtime_job.get("device") not in {None, runtime_device}:
-            raise ValueError("device does not match the durable job")
-        previous_backend = runtime_job.get("backend")
-        if session_file is None and isinstance(previous_backend, dict):
-            session_file = previous_backend.get("session_file")
-
-    if session_file is None:
-        session = _pi_control_command(
-            "create",
-            {
-                "repoPath": repo_path,
-                "sessionDir": session_root,
-                "controllerMode": "external",
-            },
-            timeout_seconds=30,
-        )
-        session_file = str(session.get("sessionFile") or "")
-    else:
-        raw_session = Path(str(session_file)).expanduser()
-        resolved_session = raw_session.resolve(strict=True)
-        resolved_root = Path(session_root).expanduser().resolve(strict=False)
-        try:
-            resolved_session.relative_to(resolved_root)
-        except ValueError:
-            raise PermissionError("session_file is outside the configured Pi session root") from None
-        session_file = str(resolved_session)
-        session = _pi_control_command(
-            "state",
-            {"sessionFile": session_file},
-            timeout_seconds=15,
-        )
-
-    if not session_file:
-        raise RuntimeError("Pi session creation returned no session file")
-    if session.get("controllerMode") != "external":
-        raise RuntimeError("Pi step requires an external-controller session")
-    if os.path.realpath(str(session.get("cwd") or "")) != os.path.realpath(repo_path):
-        raise RuntimeError("Pi session workspace does not match the requested project")
-
-    launched = _pi_control_command(
-        "job-start",
-        {
-            "kind": "external-actions",
-            "sessionFile": session_file,
-            "actions": actions,
-            "jobRoot": job_root,
-        },
-        timeout_seconds=30,
-    )
-    state = launched.get("job")
-    if not isinstance(state, dict):
-        raise RuntimeError("Pi job-start returned no job state")
-    pi_job_id = str(state.get("id") or "")
-    if not pi_job_id:
-        raise RuntimeError("Pi job-start returned no job id")
-
-    backend = {
-        "type": "pi-step",
-        "job_id": pi_job_id,
-        "pi_remote_dir": runtime_dir,
-        "job_root": job_root,
-        "session_file": session_file,
-        "session_id": session.get("sessionId"),
-        "controller_mode": "external",
-    }
-    initial_status = "PENDING"
-    if runtime_job is None:
-        runtime_job = create_runtime_job(
-            goal=goal,
-            project=project,
-            device=runtime_device,
-            backend=backend,
-            status=initial_status,
-        )
-    else:
-        runtime_job = attach_runtime_backend(
-            runtime_job["job_id"],
-            backend,
-            status=initial_status,
-        )
-    runtime_job = checkpoint_runtime_job(
-        runtime_job["job_id"],
-        summary=f"Detached external-controller Pi step accepted with {len(actions)} actions.",
-        current_step=(
-            f"Pi external-actions batch queued ({len(actions)} actions)"
-        ),
-        next_action="Await detached Pi completion, then inspect evidence and choose the next step.",
-        status=initial_status,
-        source="runtime",
-    )
-    runtime_job = _sync_pi_runtime_job(runtime_job, state)
-    _audit("start_pi_step", True, {
-        "runtime_job_id": runtime_job["job_id"],
-        "pi_job_id": pi_job_id,
-        "project": project,
-        "device": runtime_device,
-        "action_count": len(actions),
-        "session_id": session.get("sessionId"),
-        "continued_goal": runtime_job_id is not None,
-    })
-    return {
-        "runtimeJobId": runtime_job["job_id"],
-        "jobId": pi_job_id,
-        "piRemoteDir": runtime_dir,
-        "jobRoot": job_root,
-        "sessionFile": session_file,
-        "sessionId": session.get("sessionId"),
-        "state": state,
-        "terminal": state.get("status") in {"SUCCEEDED", "FAILED", "CANCELLED"},
-        "controllerMode": "external",
-        "piLlmCallsExpectedDelta": 0,
-    }
-
-
-@server.tool(
-    name="watch_pi_job",
-    annotations=ToolAnnotations(
-        title="Watch Pi Remote job",
-        readOnlyHint=True,
-        destructiveHint=False,
-        openWorldHint=False,
-    ),
-)
-def watch_pi_job(
-    job_id: str,
-    pi_remote_dir: str = "/home/ubuntu/src/pi-remote",
-    job_root: str | None = None,
-) -> dict[str, Any]:
-    """Inspect an existing Pi Remote detached job before arming OpenAI continuation."""
-    state = _pi_job_command("job-status", job_id, pi_remote_dir, job_root, timeout_seconds=15)
-    runtime_job = find_by_backend("pi-agent", job_id) or find_by_backend("pi-step", job_id) or find_by_backend("pi", job_id)
-    if runtime_job is not None and not runtime_job.get("terminal"):
-        runtime_job = _sync_pi_runtime_job(runtime_job, state)
-    return {
-        "jobId": job_id,
-        "runtimeJobId": None if runtime_job is None else runtime_job["job_id"],
-        "runtimeGoalStatus": None if runtime_job is None else runtime_job.get("status"),
-        "piRemoteDir": pi_remote_dir,
-        "jobRoot": job_root,
-        "state": state,
-        "terminal": state.get("status") in {"SUCCEEDED", "FAILED", "CANCELLED"},
-    }
-
-
-@server.tool(
-    name="wait_pi_job_completion",
-    annotations=ToolAnnotations(
-        title="Wait for Pi Remote job completion",
-        readOnlyHint=True,
-        destructiveHint=False,
-        openWorldHint=False,
-    ),
-)
-def wait_pi_job_completion(
-    job_id: str,
-    pi_remote_dir: str = "/home/ubuntu/src/pi-remote",
-    job_root: str | None = None,
-    timeout_seconds: int = 90,
-) -> dict[str, Any]:
-    """Event-driven bounded wait for an existing Pi Remote detached job."""
-    result = _pi_job_command(
-        "job-wait", job_id, pi_remote_dir, job_root, timeout_seconds=timeout_seconds
-    )
-    state = result.get("state") if isinstance(result.get("state"), dict) else {}
-    runtime_job = find_by_backend("pi-agent", job_id) or find_by_backend("pi-step", job_id) or find_by_backend("pi", job_id)
-    if runtime_job is not None and not runtime_job.get("terminal"):
-        runtime_job = _sync_pi_runtime_job(runtime_job, state)
-    return {
-        **result,
-        "runtimeJobId": None if runtime_job is None else runtime_job["job_id"],
-        "runtimeGoalStatus": None if runtime_job is None else runtime_job.get("status"),
-        "runtimeGoalTerminal": None if runtime_job is None else bool(runtime_job.get("terminal")),
-    }
-
-
-@server.tool(
-    name="bind_openai_pi_continuation",
-    annotations=ToolAnnotations(
-        title="Bind Pi job to OpenAI session",
-        readOnlyHint=False,
-        destructiveHint=False,
-        openWorldHint=False,
-    ),
-)
-def bind_openai_pi_continuation(
-    session_id: str,
-    job_id: str,
-    pi_remote_dir: str = "/home/ubuntu/src/pi-remote",
-    job_root: str | None = None,
-    goal: str | None = None,
-    project: str | None = None,
-    device: str | None = None,
-) -> dict[str, Any]:
-    """Bind a watched Pi job to a Codex/Work session for lifecycle recovery."""
-    session_id = str(session_id).strip()
-    job_id = str(job_id).strip()
-    pi_remote_dir = str(pi_remote_dir).strip()
-    if not job_id or len(job_id) > 128:
-        raise ValueError("job_id must be a bounded non-empty string")
-    if not pi_remote_dir or len(pi_remote_dir) > 4096:
-        raise ValueError("pi_remote_dir must be a bounded non-empty path")
-    if job_root is not None and len(job_root) > 4096:
-        raise ValueError("job_root path is too long")
-    if project is not None or device is not None:
-        host_for(_config(), project=project, host_id=device)
-    runtime_job = (
-        find_by_backend("pi-agent", job_id)
-        or find_by_backend("pi-step", job_id)
-        or find_by_backend("pi", job_id)
-    )
-    if runtime_job is None:
-        runtime_job = ensure_backend_job(
-            backend_type="pi",
-            backend_job_id=job_id,
-            goal=goal,
-            project=project,
-            device=device,
-            backend_details={"pi_remote_dir": pi_remote_dir, "job_root": job_root},
-        )
-    if runtime_job.get("terminal"):
-        _clear_openai_continuation(session_id)
-        return {"runtimeJobId": runtime_job["job_id"], "armed": False, "goalTerminal": True}
-    _save_openai_continuation(session_id, {
-        "kind": "runtime-job",
-        "session_id": session_id,
-        "job_id": job_id,
-        "runtime_job_id": runtime_job["job_id"],
-        "pi_remote_dir": pi_remote_dir,
-        "job_root": job_root,
-        "remaining_continuations": 1,
-        "updated_at": time.time(),
-    })
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "PostToolUse",
-            "additionalContext": (
-                "Pi Remote continuation is armed for this OpenAI session. "
-                f"Durable LivingRuntime job: {runtime_job['job_id']}."
-            ),
-        },
-        "runtimeJobId": runtime_job["job_id"],
     }
 
 
@@ -3924,6 +3299,59 @@ def logs(
     ], timeout=30, project=project, device=device)
     _audit("logs", result["returncode"] == 0, {"unit": selected, "project": project, "device": device, "lines": lines})
     return result
+
+
+@server.tool(
+    name="list_agents",
+    annotations=ToolAnnotations(
+        title="List installed agent adapters",
+        readOnlyHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    ),
+)
+def list_agents() -> dict[str, Any]:
+    """List explicitly installed adapters; an empty list means direct mode remains available."""
+    return {"agents": agent_registry.list_agents(), "direct_mode": True, "adapter_load_error": _AGENT_ADAPTER_LOAD_ERROR}
+
+
+@server.tool(name="start_agent", annotations=ToolAnnotations(title="Start installed agent",readOnlyHint=False,destructiveHint=True,openWorldHint=False))
+def start_agent(adapter_id: str, goal: str, project: str, device: str | None = None) -> dict[str, Any]:
+    """Start a registered adapter only on the requested authorized project host."""
+    selected = host_for(_config(), project=project, host_id=device)
+    if not agent_policy.may_launch(selected["id"],project,adapter_id):
+        raise PermissionError("agent launch not approved for this device, project and adapter")
+    return agent_sessions.start(adapter_id,goal,project=project,device=selected["id"],authorized=True)
+
+
+@server.tool(name="get_agent_session", annotations=ToolAnnotations(title="Get agent session",readOnlyHint=True,destructiveHint=False,openWorldHint=False))
+def get_agent_session(session_id: str) -> dict[str, Any]:
+    """Read a persisted session through its registered adapter."""
+    return agent_sessions.status(session_id)
+
+
+@server.tool(name="send_agent_message", annotations=ToolAnnotations(title="Send agent message",readOnlyHint=False,destructiveHint=False,openWorldHint=False))
+def send_agent_message(session_id: str, message: str) -> dict[str, Any]:
+    """Send a bounded message if the adapter supports messaging."""
+    return agent_sessions.send(session_id,message)
+
+
+@server.tool(name="cancel_agent", annotations=ToolAnnotations(title="Cancel agent session",readOnlyHint=False,destructiveHint=True,openWorldHint=False))
+def cancel_agent(session_id: str) -> dict[str, Any]:
+    """Request cancellation when supported by the adapter."""
+    return agent_sessions.cancel(session_id)
+
+
+@server.tool(name="resume_agent", annotations=ToolAnnotations(title="Resume agent session",readOnlyHint=False,destructiveHint=False,openWorldHint=False))
+def resume_agent(session_id: str) -> dict[str, Any]:
+    """Resume a session only if the installed adapter supports it."""
+    return agent_sessions.resume(session_id)
+
+
+@server.tool(name="watch_agent_events", annotations=ToolAnnotations(title="Read agent session events",readOnlyHint=True,destructiveHint=False,openWorldHint=False))
+def watch_agent_events(session_id: str, after: int = 0) -> dict[str, Any]:
+    """Read a bounded event batch from an installed adapter."""
+    return agent_sessions.events(session_id,after)
 
 
 @server.tool(

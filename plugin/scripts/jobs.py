@@ -18,6 +18,7 @@ STATUSES = frozenset({
 TERMINAL_STATUSES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED", "CANCELLED_BY_USER"})
 DELIVERY_STATES = frozenset({"PENDING", "CLAIMED", "DELIVERED", "ACKED"})
 DEFAULT_COMPLETION_CLAIM_SECONDS = 300
+DEFAULT_COMPLETION_EVENT_RETENTION_SECONDS = 24 * 60 * 60
 
 
 def _normalize_completion_event(
@@ -300,6 +301,68 @@ def mark_completion_delivered(
     return dict(value)
 
 
+
+def expire_stale_completion_events(
+    *,
+    now: float | None = None,
+    retention_seconds: int | None = None,
+) -> int:
+    """Auto-ack abandoned terminal-event notifications while preserving job history."""
+    current = time.time() if now is None else float(now)
+    configured = retention_seconds
+    if configured is None:
+        try:
+            configured = int(os.environ.get(
+                "LIVINGRUNTIME_COMPLETION_EVENT_RETENTION_SECONDS",
+                str(DEFAULT_COMPLETION_EVENT_RETENTION_SECONDS),
+            ))
+        except (TypeError, ValueError):
+            configured = DEFAULT_COMPLETION_EVENT_RETENTION_SECONDS
+    retention = min(30 * 24 * 60 * 60, max(60, int(configured)))
+    cutoff = current - retention
+    root = jobs_root()
+    if not root.exists():
+        return 0
+    expired = 0
+    for path in root.glob("*.json"):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if (
+            not isinstance(value, dict)
+            or value.get("version") != STORE_VERSION
+            or value.get("status") not in TERMINAL_STATUSES
+        ):
+            continue
+        event = value.get("completion_event")
+        if not isinstance(event, dict) or not event.get("event_id"):
+            continue
+        event = _normalize_completion_event(event, now=current)
+        if event.get("acknowledged_at") is not None:
+            continue
+        try:
+            created_at = float(event.get("created_at") or value.get("updated_at") or 0)
+        except (TypeError, ValueError):
+            created_at = 0
+        if created_at > cutoff:
+            continue
+        # Agent delegations must remain recoverable until a consumer ACKs.
+        backend = value.get("backend") or {}
+        if isinstance(backend, dict) and backend.get("type") == "agent-adapter":
+            continue
+        event["delivery_state"] = "ACKED"
+        event["acknowledged_at"] = current
+        event["acknowledged_by"] = "system.retention"
+        event["acknowledged_reason"] = "completion_retention_expired"
+        event["claimed_by_session"] = None
+        event["claim_expires_at"] = None
+        value["completion_event"] = event
+        _save(value)
+        expired += 1
+    return expired
+
+
 def pending_completion_events(limit: int = 50) -> list[dict[str, Any]]:
     rows = []
     for value in list_jobs(limit=max(1, min(200, int(limit)))):
@@ -332,6 +395,7 @@ def mark_completion_event_forwarded(
 
 
 def list_jobs(*, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    expire_stale_completion_events()
     if status is not None and status not in STATUSES:
         raise ValueError("unsupported job status")
     bounded_limit = min(200, max(1, int(limit)))
@@ -639,11 +703,7 @@ def _normalize_backend(backend: dict[str, Any] | None) -> dict[str, Any] | None:
         "job_id": backend_job_id,
     }
     for key in (
-        "pi_remote_dir",
-        "job_root",
-        "session_file",
         "session_id",
-        "controller_mode",
         "provider",
         "model",
         "cwd",

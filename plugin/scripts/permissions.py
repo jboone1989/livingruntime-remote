@@ -9,6 +9,43 @@ from typing import Any
 
 STORE_VERSION = 1
 
+PENDING_TTL_SECONDS = 24 * 60 * 60
+MAX_HISTORY = 500
+SNAPSHOT_LIMIT = 50
+
+
+def _maintain(store: dict[str, Any], *, now: float | None = None) -> bool:
+    """Expire abandoned requests; compact decided history, never active grants."""
+    current = time.time() if now is None else now
+    changed = False
+    for request in store["requests"]:
+        if request.get("status") != "PENDING":
+            continue
+        if current - float(request.get("created_at") or current) >= PENDING_TTL_SECONDS:
+            request["status"] = "EXPIRED"
+            request["decided_at"] = current
+            changed = True
+            continue
+        if any(
+            grant.get("revoked_at") is None
+            and grant.get("argv") == request.get("argv")
+            and grant.get("project") == request.get("project")
+            and grant.get("cwd") == request.get("cwd")
+            and grant.get("host_id") == request.get("host_id")
+            and bool(grant.get("detached")) == bool(request.get("detached"))
+            for grant in store["grants"]
+        ):
+            request["status"] = "SUPERSEDED"
+            request["decided_at"] = current
+            changed = True
+    pending = [r for r in store["requests"] if r.get("status") == "PENDING"]
+    history = [r for r in store["requests"] if r.get("status") != "PENDING"]
+    if len(history) > MAX_HISTORY:
+        store["requests"] = pending + history[-MAX_HISTORY:]
+        changed = True
+    return changed
+
+
 READ_ONLY_DIAGNOSTICS = frozenset({
     "free", "uptime", "nproc", "uname", "lscpu", "lsblk", "vmstat",
     "iostat", "whoami", "id",
@@ -77,6 +114,8 @@ def ensure_request(
             f"executable is hard-denied from dynamic exec authorization: {os.path.basename(str(argv[0]))}"
         )
     store = _load()
+    if _maintain(store):
+        _save(store)
     digest = request_digest(
         host_id=host_id, project=project, cwd=cwd, argv=argv, detached=detached
     )
@@ -155,11 +194,13 @@ def approve(
     if grant_mode not in {"exact", "diagnostic_class"}:
         raise ValueError("grant_mode must be exact or diagnostic_class")
     store = _load()
+    if _maintain(store):
+        _save(store)
     request = next((x for x in store["requests"] if x.get("request_id") == request_id), None)
     if request is None:
         raise KeyError(request_id)
-    if request.get("status") == "DENIED":
-        raise RuntimeError("request was denied")
+    if request.get("status") not in {"PENDING", "APPROVED"}:
+        raise RuntimeError("request is no longer pending approval")
     risk = str(request.get("risk"))
     if risk == "hard_deny":
         raise PermissionError("hard-denied commands cannot be approved")
@@ -173,6 +214,9 @@ def approve(
             request["status"] = "APPROVED"
             _save(store)
             return dict(grant)
+
+    if request.get("status") != "PENDING":
+        raise RuntimeError("request is no longer pending approval")
 
     now = time.time()
     permission_id = "exec_perm_" + hashlib.sha256(
@@ -225,12 +269,32 @@ def revoke(permission_id: str, *, operator: str = "human") -> dict[str, Any]:
 
 
 def snapshot() -> dict[str, Any]:
+    """Return a relay-safe preview while preserving full counts."""
     store = _load()
+    if _maintain(store):
+        _save(store)
+    pending = [dict(x) for x in store["requests"] if x.get("status") == "PENDING"]
+    grants = [dict(x) for x in store["grants"] if x.get("revoked_at") is None]
+    revoked = [dict(x) for x in store["grants"] if x.get("revoked_at") is not None]
+    groups = {"pending": pending, "grants": grants, "revoked": revoked}
+    counts = {key: len(value) for key, value in groups.items()}
+    previews = {"pending": [], "grants": [], "revoked": []}
+    # Leave relay-envelope headroom; a single verbose argv may dwarf 50 records.
+    byte_budget = 32_000
+    for key, max_items in (("pending", 50), ("grants", 50), ("revoked", 10)):
+        for item in reversed(groups[key][-max_items:]):
+            encoded = json.dumps(item, ensure_ascii=False)
+            size = len(encoded.encode("utf-8"))
+            if size > byte_budget:
+                continue
+            previews[key].append(item)
+            byte_budget -= size
+        previews[key].reverse()
     return {
         "version": STORE_VERSION,
-        "pending": [dict(x) for x in store["requests"] if x.get("status") == "PENDING"],
-        "grants": [dict(x) for x in store["grants"] if x.get("revoked_at") is None],
-        "revoked": [dict(x) for x in store["grants"] if x.get("revoked_at") is not None],
+        "counts": counts,
+        **previews,
+        "truncated": any(len(previews[key]) != counts[key] for key in groups),
     }
 
 

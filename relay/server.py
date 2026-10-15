@@ -775,7 +775,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
   .ok .dot { background:#32a852; } .bad .dot { background:#d64545; } .warn .dot { background:#d79a27; }
   h3 { margin:0 0 8px; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--color-text-secondary,#777); }
   .muted { color:var(--color-text-secondary,#777); }
-  .summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin:10px 0 0; }
+  .summary { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin:10px 0 0; }
   .summary-card { padding:9px 10px; border-radius:11px; background:rgba(127,127,127,.07); min-width:0; }
   .summary-card strong { display:block; font-size:18px; line-height:1.1; font-variant-numeric:tabular-nums; }
   .summary-card span { display:block; margin-top:3px; color:var(--color-text-secondary,#777); font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
@@ -805,20 +805,23 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
   <div class="shell">
     <div class="top">
       <div class="row">
-        <div class="brand"><div class="brandmark">LR</div><div class="brandcopy"><strong>LivingRuntime Remote Control Plane</strong><span>live execution · hosts · handoff</span></div></div>
+        <div class="brand"><div class="brandmark">LR</div><div class="brandcopy"><strong>LivingRuntime Remote Control Plane</strong><span>hosts · delegated agents · durable results</span></div></div>
         <div class="actions"><button id="pin">Pin</button><button id="expand">Expand</button><button id="refresh">Refresh</button></div>
       </div>
       <div id="headline" class="muted">Loading snapshot…</div>
       <div class="summary">
         <div class="summary-card"><strong id="sum-running">—</strong><span>Running</span></div>
+        <div class="summary-card"><strong id="sum-agents">—</strong><span>Agent tasks</span></div>
         <div class="summary-card"><strong id="sum-waiting">—</strong><span>Waiting</span></div>
         <div class="summary-card"><strong id="sum-hosts">—</strong><span>Hosts online</span></div>
         <div class="summary-card"><strong id="sum-approvals">—</strong><span>Approvals</span></div>
       </div>
     </div>
     <div class="section"><h3>Execution truth</h3><div id="execution" class="grid"></div></div>
+    <div class="section"><h3>Delegated agent tasks</h3><div class="muted detail">Work runs on your paired machine; this view reports durable task receipts, not a live ChatGPT session.</div><div id="agents" class="grid"></div></div>
     <div class="section"><h3>Running now</h3><div id="running" class="grid"></div></div>
     <div class="section"><h3>Waiting / handoff</h3><div id="waiting" class="grid"></div></div>
+    <div class="section"><h3>Unacknowledged completion receipts</h3><div id="completions" class="grid"></div></div>
     <div class="section"><h3>Hosts</h3><div id="devices" class="grid"></div></div>
     <div class="section pip-secondary"><h3>Recent terminal jobs</h3><div id="jobs" class="grid"></div></div>
     <div class="section pip-secondary"><h3>Permissions & credentials</h3><div id="security" class="grid"></div></div>
@@ -918,11 +921,22 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
           (io.length?' · '+esc(io.join(" · ")):'')+'</div>'+
         '</div>';
     };
-    const runningJobs=jobs.filter(j=>!isTerminal(j)&&live(j));
-    const waitingJobs=jobs.filter(j=>!isTerminal(j)&&!live(j));
+    const delegatedJobs=jobs.filter(j=>j?.backend?.type==="agent-adapter");
+    const directJobs=jobs.filter(j=>j?.backend?.type!=="agent-adapter");
+    const runningJobs=directJobs.filter(j=>!isTerminal(j)&&live(j));
+    const waitingJobs=directJobs.filter(j=>!isTerminal(j)&&!live(j));
     const terminalJobs=jobs.filter(isTerminal);
     q("sum-running").textContent = String(runningJobs.length);
-    q("sum-waiting").textContent = String(waitingJobs.length + (execution.cognition ? 1 : 0) + (overview?.completion_events||[]).length);
+    q("sum-agents").textContent = String(delegatedJobs.filter(j=>!isTerminal(j)).length);
+    q("agents").innerHTML = delegatedJobs.length
+      ? delegatedJobs.slice(0,8).map(j=>
+          '<div class="item"><div><span class="badge '+(j.status==="FAILED"?"bad":j.terminal?"ok":"warn")+'"><span class="dot"></span>'+esc(j.terminal?j.status:"DELEGATED")+' · Agent</span></div>'+
+          '<div class="detail"><strong>'+esc(j.goal||"Agent task")+'</strong></div>'+
+          '<div class="muted">'+esc(j.project||"Unscoped project")+' · '+esc(j.device||"unknown host")+'</div>'+
+          '<div class="muted"><code>'+esc(j.job_id||"")+'</code></div></div>'
+        ).join("")
+      : '<div class="empty">No delegated Agent tasks in recent job history. Direct Remote tools remain available without an Agent.</div>';
+    q("sum-waiting").textContent = String(waitingJobs.length + (execution.cognition ? 1 : 0));
     q("running").innerHTML = runningJobs.length
       ? runningJobs.slice(0,8).map(jobCard).join("")
       : '<div class="empty">No server-side worker or child process is currently alive.</div>';
@@ -930,15 +944,17 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     const cognitionCard=cognition
       ? '<div class="item"><span class="badge warn"><span class="dot"></span>'+esc(cognition.status||"COGNITION")+'</span><div><strong>'+esc(cognition.agent_id||"agent cognition")+'</strong></div><div class="muted"><code>'+esc(cognition.request_id||"")+'</code></div></div>'
       : '';
+    q("waiting").innerHTML = waitingJobs.length || cognitionCard
+      ? waitingJobs.slice(0,8).map(jobCard).join("")+cognitionCard
+      : '<div class="empty">Nothing is waiting for ChatGPT, approval, or a resumed worker.</div>';
     const completions=overview?.completion_events||[];
     const completionCards=completions.slice(0,8).map(event=>
-      '<div class="item"><span class="badge warn"><span class="dot"></span>WAITING_FOR_CHATGPT_SESSION</span>'+
+      '<div class="item"><span class="badge warn"><span class="dot"></span>UNACKNOWLEDGED_COMPLETION</span>'+
       '<div><strong>'+esc(event.status||"COMPLETED")+' · '+esc(event.job_id||"")+'</strong></div>'+
-      '<div class="muted">'+esc(event.goal||"Durable completion pending model handoff")+'</div></div>'
+      '<div class="muted">'+esc(event.goal||"Durable completion receipt")+'</div></div>'
     ).join("");
-    q("waiting").innerHTML = waitingJobs.length || cognitionCard || completionCards
-      ? waitingJobs.slice(0,8).map(jobCard).join("")+cognitionCard+completionCards
-      : '<div class="empty">Nothing is waiting for ChatGPT, approval, or a resumed worker.</div>';
+    q("completions").innerHTML = completionCards ||
+      '<div class="empty">No unacknowledged completion receipts.</div>';
 
     const devices = overview?.devices?.devices || [];
     q("sum-hosts").textContent = devices.length ? String(devices.filter(d=>d.online).length)+"/"+String(devices.length) : "0";
