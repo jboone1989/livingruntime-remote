@@ -27,6 +27,7 @@ jobs:
             plugin/scripts/tunnel.py \
             plugin/scripts/relay_agent.py \
             plugin/scripts/localexec.py \
+            plugin/scripts/filesystem_delete.py \
             plugin/scripts/connector.py \
             plugin/scripts/contract.py \
             plugin/scripts/selfcheck.py

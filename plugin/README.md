@@ -3,6 +3,7 @@
 Identity: `livingruntime.remote`
 
 Current version: `0.4.64`
+Current version: `0.4.57`
 
 This directory contains the ChatGPT/Codex-facing MCP runtime and the local Connector implementation.
 
@@ -200,3 +201,8 @@ The standalone systemd reconciler loads explicit adapter registrations before in
 ### Control Plane presentation
 
 The embedded MCP App now separates delegated Agent jobs from directly executed Remote jobs. The UI shows active delegated work without claiming that an agent process is live unless a backend liveness receipt supports it. Completion receipts remain distinct from pending work and do not indicate automatic ChatGPT host wake-up. The UI is a status and review surface, not a browser shell or a new Agent implementation. A standalone multi-tenant Web/SaaS console is considered separately in `docs/WEB_CONTROL_PLANE.md`.
+### Bounded file deletion
+
+`delete_path` removes a single literal POSIX path inside configured roots. Directories require `recursive=true`; a leaf symlink is unlinked without following its target. `dry_run=true` reports the planned entry/byte count without deleting. `expected_sha256` protects regular files against stale content. Missing unguarded paths return `NOT_FOUND`.
+
+Configured roots, configured project roots and their ancestors cannot be removed. Home credential and Connector state directories are protected recursively. Parent symlinks, traversal segments, special files, other filesystems and trees above 10,000 entries, 512 MiB or 64 levels are refused. Partial failures report actual deletion counts and keep an audit record; directory deletion is not transactional. Native Windows deletion is currently unsupported and fails closed. Generic shell and deletion commands remain hard-denied through exec.

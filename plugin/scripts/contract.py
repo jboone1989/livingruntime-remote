@@ -20,6 +20,7 @@ REMOTE_TOOLS = (
     "watch_agent_events",
     "read_file",
     "write_file",
+    "delete_path",
     "list_dir",
     "git",
     "exec",

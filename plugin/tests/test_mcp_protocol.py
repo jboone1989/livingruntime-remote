@@ -69,6 +69,50 @@ class McpProtocolDiscoveryTests(unittest.TestCase):
         names = asyncio.run(_run())
         self.assertEqual(names, sorted(REMOTE_TOOLS), msg=f"stdio tools/list drifted: {names}")
 
+    @unittest.skipUnless(os.name == "posix", "POSIX deletion required")
+    def test_delete_path_call_through_mcp_is_bounded_and_mutates_file(self) -> None:
+        workspace = Path(self.tmp.name) / "workspace"
+        workspace.mkdir()
+        target = workspace / "trash.txt"
+        target.write_text("junk", encoding="utf-8")
+        self.config.write_text(json.dumps({
+            "default_host": "main",
+            "hosts": {"main": {"transport": "local", "ssh_host": "local",
+                               "roots": [str(workspace)], "units": []}},
+            "projects": {},
+        }), encoding="utf-8")
+
+        async def _run():
+            params = StdioServerParameters(
+                command=sys.executable, args=[str(SCRIPTS / "bridge.py")],
+                env={**os.environ, "HOME": self.tmp.name,
+                     "LIVINGRUNTIME_REMOTE_CONFIG": str(self.config),
+                     "PYTHONPATH": str(SCRIPTS)},
+            )
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    preview = await session.call_tool("delete_path", {
+                        "path": str(target), "dry_run": True,
+                    })
+                    self.assertFalse(preview.isError)
+                    self.assertTrue(target.exists())
+                    deleted = await session.call_tool("delete_path", {"path": str(target)})
+                    self.assertFalse(deleted.isError)
+                    payload = json.loads(deleted.content[0].text)
+                    self.assertEqual(payload["status"], "DELETED")
+                    self.assertEqual(payload["deleted_entries"], 1)
+                    self.assertFalse(target.exists())
+                    blocked = await session.call_tool("delete_path", {
+                        "path": str(workspace), "recursive": True,
+                    })
+                    self.assertTrue(blocked.isError)
+                    self.assertTrue(workspace.is_dir())
+        asyncio.run(_run())
+        audit = Path(self.tmp.name) / ".livingruntime" / "remote-audit.jsonl"
+        events = [json.loads(line) for line in audit.read_text().splitlines()]
+        self.assertEqual([row["ok"] for row in events], [True, True, False])
+
     def test_http_loopback_tools_list_returns_acceptance_tools(self) -> None:
         port = _free_port()
         env = {

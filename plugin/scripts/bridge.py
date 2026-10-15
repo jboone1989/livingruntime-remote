@@ -21,6 +21,7 @@ import localexec
 from agent_adapters import registry as agent_registry, load_installed
 import agent_sessions
 import agent_policy
+import filesystem_delete
 from contract import (
     DEFAULT_HTTP_PORT,
     HANDSHAKE_TOOLS,
@@ -636,6 +637,15 @@ elif op == "write_file":
     with p.open("a" if req["mode"] == "append" else "w", encoding="utf-8") as fh:
         fh.write(req["content"])
     print(json.dumps({"path": str(p), "mode": req["mode"], "bytes": p.stat().st_size, "sha256": digest(p)}))
+elif op == "delete_path":
+    namespace = {}
+    exec(compile(req["delete_worker_source"], "<bounded-filesystem-delete>", "exec"), namespace)
+    result = namespace["delete_path"](
+        req["path"], req["roots"], recursive=req["recursive"], dry_run=req["dry_run"],
+        expected_sha256=req.get("expected_sha256"),
+        protected_paths=req.get("protected_paths", []),
+    )
+    print(json.dumps(result))
 elif op == "list_dir":
     p = inside(req["path"])
     if not p.is_dir():
@@ -2994,6 +3004,51 @@ def write_file(
         "expected_sha256": expected_sha256,
     }, project=project, device=device)
     _audit("write_file", True, {"path": result["path"], "project": project, "device": device, "mode": mode, "bytes": result["bytes"]})
+    return result
+
+
+@server.tool(
+    name="delete_path",
+    annotations=ToolAnnotations(
+        title="Delete remote file or directory",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+def delete_path(
+    path: str,
+    project: str | None = None,
+    device: str | None = None,
+    recursive: bool = False,
+    dry_run: bool = False,
+    expected_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Delete one literal POSIX path within configured roots. Directories require recursive=true.
+    Symlinks are removed without following their targets. Root/project and credential-state
+    deletion is refused. At most 10,000 entries / 512 MiB / 64 levels per call.
+    dry_run reports the candidate size without mutation; expected_sha256 guards regular files.
+    """
+    detail = {"path": path, "project": project, "device": device, "dry_run": bool(dry_run)}
+    try:
+        cfg = _config()
+        host = host_for(cfg, project=project, host_id=device)
+        target = resolve_path(cfg, path, project=project, host_id=device)
+        protected = [item["path"] for item in cfg["projects"].values()
+                     if item["host"] == host["id"]]
+        result = _remote("delete_path", {
+            "path": target, "recursive": bool(recursive), "dry_run": bool(dry_run),
+            "expected_sha256": expected_sha256, "protected_paths": protected,
+            "delete_worker_source": filesystem_delete.DELETE_WORKER_SOURCE,
+        }, project=project, device=device)
+    except Exception as exc:
+        _audit("delete_path", False, {**detail, "error_type": type(exc).__name__})
+        raise
+    _audit("delete_path", result["status"] != "PARTIAL_FAILURE", {
+        **detail, "path": result["path"], "status": result["status"],
+        "deleted_entries": result["deleted_entries"], "deleted_bytes": result["deleted_bytes"],
+    })
     return result
 
 

@@ -679,6 +679,18 @@
         "destructive_justification": "Does not directly mutate host files or services.",
         "open_world_justification": "Only accesses explicitly registered adapters."
       }
+    },
+    "delete_path": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Deletes files, symlinks or explicit recursive directories and records the operation.",
+        "open_world_justification": "All targets stay within the selected Connector's configured private roots.",
+        "destructive_justification": "Deletion removes filesystem entries and can irreversibly lose content; recursive deletion is explicit."
+      }
     }
   },
   "test_cases": [
