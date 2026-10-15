@@ -1,0 +1,15 @@
+{
+  "name": "@livingruntime/remote",
+  "version": "0.4.65",
+  "private": true,
+  "bin": {
+    "livingruntime-remote": "bin/remote.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ]
+}

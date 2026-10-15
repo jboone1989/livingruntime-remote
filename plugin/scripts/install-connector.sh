@@ -1,53 +1,24 @@
 #!/bin/sh
 set -eu
-
-RELAY="${LIVINGRUNTIME_RELAY_URL:-https://remote.livingruntime.com}"
-PAIR_CODE="${LIVINGRUNTIME_PAIR_CODE:-}"
-SSH_HOST="${LIVINGRUNTIME_SSH_HOST:-}"
-ROOT="${LIVINGRUNTIME_ROOT:-}"
-
-os="$(uname -s)"
-arch="$(uname -m)"
-
-case "$os" in
-  Linux) platform="linux" ;;
-  Darwin) platform="macos" ;;
-  *) echo "Unsupported operating system: $os" >&2; exit 1 ;;
+# Install a verified-release executable. Pairing is a separate action.
+VERSION="${LIVINGRUNTIME_VERSION:-v0.4.65}"
+BASE="${LIVINGRUNTIME_RELEASE_BASE:-https://github.com/jboone1989/livingruntime-remote/releases/download}"
+DEST="${LIVINGRUNTIME_INSTALL_DIR:-$HOME/.local/bin}"
+case "$VERSION" in v[0-9]* ) ;; *) echo "Invalid release version" >&2; exit 2 ;; esac
+case "$(uname -s):$(uname -m)" in
+ Linux:x86_64|Linux:amd64) ASSET=linux-amd64 ;;
+ Linux:aarch64|Linux:arm64) ASSET=linux-arm64 ;;
+ Darwin:x86_64) ASSET=macos-amd64 ;;
+ Darwin:arm64) ASSET=macos-arm64 ;;
+ *) echo "Unsupported OS/architecture" >&2; exit 2 ;;
 esac
-
-case "$arch" in
-  x86_64|amd64) machine="amd64" ;;
-  arm64|aarch64) machine="arm64" ;;
-  *) echo "Unsupported CPU architecture: $arch" >&2; exit 1 ;;
-esac
-
-asset="livingruntime-remote-connector-${platform}-${machine}"
-url="https://github.com/jboone1989/livingruntime-remote/releases/latest/download/${asset}"
-tmp="${TMPDIR:-/tmp}/${asset}.$$"
-
-cleanup() { rm -f "$tmp"; }
-trap cleanup EXIT INT TERM
-
-if [ -z "$PAIR_CODE" ]; then
-  printf "Pairing code from ChatGPT (XXXX-XXXX): " >/dev/tty
-  IFS= read -r PAIR_CODE </dev/tty
-fi
-if [ -z "$SSH_HOST" ]; then
-  printf "SSH host or user@host: " >/dev/tty
-  IFS= read -r SSH_HOST </dev/tty
-fi
-if [ -z "$ROOT" ]; then
-  printf "Allowed workspace root (for example /home/ubuntu): " >/dev/tty
-  IFS= read -r ROOT </dev/tty
-fi
-
-echo "Downloading LivingRuntime Remote Connector..."
-curl -fL --retry 3 --connect-timeout 15 "$url" -o "$tmp"
-chmod 700 "$tmp"
-
-echo "Checking SSH, pairing this computer, and enabling autostart..."
-"$tmp" install --pair "$PAIR_CODE" --host "$SSH_HOST" --root "$ROOT" --relay "$RELAY"
-
-echo
-echo "LivingRuntime Remote is ready."
-echo "Return to ChatGPT and run: connection_status"
+mkdir -p "$DEST"
+TMP="$(mktemp "$DEST/.livingruntime-remote.XXXXXXXX")"
+trap 'rm -f "$TMP"' EXIT HUP INT TERM
+curl --fail --location --retry 3 --connect-timeout 15 "$BASE/$VERSION/livingruntime-remote-connector-$ASSET" --output "$TMP"
+chmod 755 "$TMP"
+"$TMP" --version | grep -Fx "${VERSION#v}" >/dev/null || { echo "Downloaded version mismatch" >&2; exit 1; }
+mv -f "$TMP" "$DEST/livingruntime-remote"
+trap - EXIT HUP INT TERM
+printf 'Installed %s to %s\n' "$VERSION" "$DEST/livingruntime-remote"
+printf 'Next: livingruntime-remote install --local --root "$HOME/workspace" --pair YOUR_CODE\n'

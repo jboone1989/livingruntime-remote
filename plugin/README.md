@@ -208,3 +208,21 @@ The embedded MCP App now separates delegated Agent jobs from directly executed R
 Configured roots, configured project roots and their ancestors cannot be removed. Home credential and Connector state directories are protected recursively. Parent symlinks, traversal segments, special files, other filesystems and trees above 10,000 entries, 512 MiB or 64 levels are refused. Partial failures report actual deletion counts and keep an audit record; directory deletion is not transactional. Native Windows deletion is currently unsupported and fails closed. Generic shell and deletion commands remain hard-denied through exec.
 
 Installer 0.4.65: handles inaccessible inherited working directories and automatically sets valid user systemd session environment for linger-enabled service users. Administrator linger authorization remains required where policy restricts it.
+
+## Install without pairing (experimental)
+
+On Linux or macOS, run the version-pinned one-command installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jboone1989/livingruntime-remote/main/plugin/scripts/install-connector.sh | sh
+```
+
+This puts the native binary at `~/.local/bin/livingruntime-remote`. Review
+remote scripts before running; include `~/.local/bin` in PATH. Pair separately:
+
+```sh
+livingruntime-remote install --local --root "$HOME/workspace" --pair YOUR_CODE
+```
+
+The npm wrapper in `packages/npm/` is a prototype marked private and is
+not published to npm. Do not use `npm install -g @livingruntime/remote` yet.
