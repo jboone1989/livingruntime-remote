@@ -1,6 +1,6 @@
 {
   "name": "@livingruntime/remote",
-  "version": "0.4.65",
+  "version": "0.4.66",
   "private": true,
   "bin": {
     "livingruntime-remote": "bin/remote.js"

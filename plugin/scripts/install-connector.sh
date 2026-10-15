@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 # Install a verified-release executable. Pairing is a separate action.
-VERSION="${LIVINGRUNTIME_VERSION:-v0.4.65}"
+VERSION="${LIVINGRUNTIME_VERSION:-v0.4.66}"
 BASE="${LIVINGRUNTIME_RELEASE_BASE:-https://github.com/jboone1989/livingruntime-remote/releases/download}"
 DEST="${LIVINGRUNTIME_INSTALL_DIR:-$HOME/.local/bin}"
 case "$VERSION" in v[0-9]* ) ;; *) echo "Invalid release version" >&2; exit 2 ;; esac
