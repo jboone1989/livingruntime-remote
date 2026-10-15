@@ -814,7 +814,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
         <div class="summary-card"><strong id="sum-running">—</strong><span>Running</span></div>
         <div class="summary-card"><strong id="sum-agents">—</strong><span>Agent tasks</span></div>
         <div class="summary-card"><strong id="sum-waiting">—</strong><span>Waiting</span></div>
-        <div class="summary-card"><strong id="sum-hosts">—</strong><span>Hosts online</span></div>
+        <div class="summary-card"><strong id="sum-hosts">—</strong><span>Default connector hosts</span></div>
         <div class="summary-card"><strong id="sum-approvals">—</strong><span>Approvals</span></div>
       </div>
     </div>
@@ -823,7 +823,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     <div class="section"><h3>Running now</h3><div id="running" class="grid"></div></div>
     <div class="section"><h3>Waiting / handoff</h3><div id="waiting" class="grid"></div></div>
     <div class="section"><h3>Unacknowledged completion receipts</h3><div id="completions" class="grid"></div></div>
-    <div class="section"><h3>Hosts</h3><div id="devices" class="grid"></div></div>
+    <div class="section"><h3>Paired Connectors</h3><div id="connectors" class="grid"></div></div><div class="section"><h3>Hosts managed by default Connector</h3><div id="devices" class="grid"></div></div>
     <div class="section pip-secondary"><h3>Recent terminal jobs</h3><div id="jobs" class="grid"></div></div>
     <div class="section pip-secondary"><h3>Permissions & credentials</h3><div id="security" class="grid"></div></div>
     <div class="section pip-secondary"><h3>Recent activity</h3><div id="activity" class="grid"></div></div>
@@ -957,6 +957,8 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     q("completions").innerHTML = completionCards ||
       '<div class="empty">No unacknowledged completion receipts.</div>';
 
+    const connectors = latest.connectors || [];
+    q("connectors").innerHTML = connectors.length ? connectors.map(c=>'<div class="item"><strong>'+esc(c.name||"Connector")+'</strong><div class="muted">'+(c.online?"ONLINE":"OFFLINE")+(c.default?" · default":"")+"</div></div>").join("") : '<div class="empty">No paired Connectors.</div>';
     const devices = overview?.devices?.devices || [];
     q("sum-hosts").textContent = devices.length ? String(devices.filter(d=>d.online).length)+"/"+String(devices.length) : "0";
     q("devices").innerHTML = devices.length ? devices.map(d=>{
@@ -2069,6 +2071,7 @@ def create_mcp(
             "version": VERSION,
             "generated_at": time.time(),
             "connector": connector,
+            "connectors": [{"name": c.get("name"), "online": c.get("online"), "default": c.get("default")} for c in relay.connector_statuses(user_sub)],
             "overview": overview,
             "cognitionSubscription": cognition_subscription_state(user_sub, "ferro"),
         }
