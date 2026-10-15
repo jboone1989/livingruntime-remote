@@ -2,7 +2,7 @@
 
 Identity: `livingruntime.remote`
 
-Current version: `0.4.64`
+Current version: `0.4.65`
 Current version: `0.4.57`
 
 This directory contains the ChatGPT/Codex-facing MCP runtime and the local Connector implementation.
@@ -176,7 +176,7 @@ is not required for terminal long-job notification.
 
 Widgets are status surfaces only: they never inject `ui/message` or `sendFollowUpMessage` prompts. GitHub wake bridging has been removed. Durable MCP Events handle proactive activation, while lifecycle hooks recover already-bound durable state when a session starts, resumes, compacts, or receives a user prompt.
 
-## Optional Agent Adapters (0.4.64)
+## Optional Agent Adapters (0.4.65)
 
 Remote functions with zero installed agents. Adapter packages are optional and independently installed; agent-specific runtime code must not enter Remote Core. `list_agents` reports adapters; `start_agent`, `get_agent_session`, `send_agent_message`, `resume_agent`, `watch_agent_events`, and `cancel_agent` operate on scoped sessions.
 
@@ -184,17 +184,17 @@ Use `python3 plugin/scripts/adapterctl.py install livingruntime_adapter_http mak
 
 Agent launches are disabled unless the connector environment explicitly specifies a matching `LIVINGRUNTIME_AGENT_LAUNCH_ALLOWLIST` entry of `device:project:adapter_id`. Restart after installation or environment changes. Direct file/Git/exec operation remains available if no agent is installed or an adapter fails to load. Durable Job receipts require explicit ACK, and ChatGPT autonomous wake-up still requires an authenticated host-side event subscription.
 
-### Claude Code adapter (optional, 0.4.64)
+### Claude Code adapter (optional, 0.4.65)
 
 VM09 has Claude Code installed. The optional `livingruntime_adapter_claude` starts read-only planning tasks in a detached worker with owner-only persisted state and result receipts. It supports fresh sessions, follow-up prompts, explicit cancellation and status retrieval even after a connector restart. Its initial mode is strictly `--permission-mode plan --max-turns 1`, not autonomous edits or bypassPermissions. No native event push or host automatic wake-up is available; consumers should query `get_agent_session` or use the durable Job receipt path.
 
 Install by registering `livingruntime_adapter_claude` with `adapterctl.py install livingruntime_adapter_claude make`. Agent launch is **denied by default**. An operator-owned, mode-0600 file `~/.livingruntime/agent-policy.json` may specify `launch_allowlist` entries of `device:project:adapter_id` and `claude_workspaces` entries of `device:project` to an existing directory. Environment allowlists remain supported. The adapter is optional: no Agent is needed for regular Remote use. If the Agent fails, direct Remote tools remain available, without silently inheriting Agent privileges.
 
-### Periodic agent reconciliation (0.4.64)
+### Periodic agent reconciliation (0.4.65)
 
 The one-shot `agent_reconciler.py` inspects persisted Agent Sessions and updates nonterminal Durable Jobs from actual adapter status. Run under a separate user-level timer if autonomous Job recording is required. It does not ACK completion events, claim external host subscriptions, or grant Agent execution permissions. No-Agent mode exits without error. Host-side ChatGPT wake-up still requires an authenticated host event subscriber.
 
-### Reconciliation fix (0.4.64)
+### Reconciliation fix (0.4.65)
 
 The standalone systemd reconciler loads explicit adapter registrations before inspecting persisted sessions. Without this, the connector could list Claude Code while the background reconciler failed to map its durable jobs. Verified using a real delegated Claude Code job: the background one-shot reconcile completed with updated=1, and the durable completion event remained PENDING until ACK.
 
@@ -206,3 +206,5 @@ The embedded MCP App now separates delegated Agent jobs from directly executed R
 `delete_path` removes a single literal POSIX path inside configured roots. Directories require `recursive=true`; a leaf symlink is unlinked without following its target. `dry_run=true` reports the planned entry/byte count without deleting. `expected_sha256` protects regular files against stale content. Missing unguarded paths return `NOT_FOUND`.
 
 Configured roots, configured project roots and their ancestors cannot be removed. Home credential and Connector state directories are protected recursively. Parent symlinks, traversal segments, special files, other filesystems and trees above 10,000 entries, 512 MiB or 64 levels are refused. Partial failures report actual deletion counts and keep an audit record; directory deletion is not transactional. Native Windows deletion is currently unsupported and fails closed. Generic shell and deletion commands remain hard-denied through exec.
+
+Installer 0.4.65: handles inaccessible inherited working directories and automatically sets valid user systemd session environment for linger-enabled service users. Administrator linger authorization remains required where policy restricts it.

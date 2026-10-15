@@ -16,6 +16,17 @@ from xml.sax.saxutils import escape
 
 import configure
 import localexec
+# runuser can preserve an inaccessible /root cwd; FastMCP reads .env during import.
+def _ensure_accessible_cwd():
+    try:
+        os.stat(".")
+        if os.access(".", os.R_OK | os.X_OK):
+            return
+    except OSError:
+        pass
+    os.chdir(str(Path.home()))
+
+_ensure_accessible_cwd()
 import relay_agent
 from configmodel import normalize, normalize_workspace_path, path_style, to_storage
 from contract import PLUGIN_VERSION
@@ -119,10 +130,11 @@ def install_binary() -> list[str]:
     return [str(destination)]
 
 
-def _run(argv: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _run(argv: list[str], *, check: bool = True, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         argv,
         check=check,
+        env=env,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -184,6 +196,17 @@ def ensure_linux_linger() -> None:
     )
 
 
+def _user_systemd_environment() -> dict[str, str]:
+    env = dict(os.environ)
+    uid = os.getuid()
+    runtime = Path(f"/run/user/{uid}")
+    if runtime.is_dir() and runtime.stat().st_uid == uid:
+        env["XDG_RUNTIME_DIR"] = str(runtime)
+        if (runtime / "bus").exists():
+            env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={runtime}/bus"
+    return env
+
+
 def install_linux_user_service(command: list[str]) -> None:
     ensure_linux_linger()
     directory = Path.home() / ".config" / "systemd" / "user"
@@ -202,8 +225,11 @@ def install_linux_user_service(command: list[str]) -> None:
         "WantedBy=default.target\n",
         encoding="utf-8",
     )
-    _run(["systemctl", "--user", "daemon-reload"])
-    enabled = _run(["systemctl", "--user", "enable", "--now", LINUX_SERVICE], check=False)
+    environment = _user_systemd_environment()
+    reload = _run(["systemctl", "--user", "daemon-reload"], check=False, env=environment)
+    if reload.returncode != 0:
+        raise RuntimeError("Unable to access systemd user manager; check linger and user@UID.service: " + (reload.stderr or reload.stdout).strip())
+    enabled = _run(["systemctl", "--user", "enable", "--now", LINUX_SERVICE], check=False, env=environment)
     if enabled.returncode != 0:
         raise RuntimeError(
             (enabled.stderr or enabled.stdout or "systemd user service failed")
