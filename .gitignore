@@ -8,3 +8,18 @@ dist/
 relay/state/
 relay/downloads/
 .DS_Store
+
+# Local deployment/test helpers and machine-owned state (never publish)
+.deploy_plugin_*.py
+.deploy_remote_*.py
+.ack_deployment_*.py
+.bridge_delegate_e2e_*.py
+.bump_*.py
+.claude_delegate_smoke_*.py
+.e2e_chatgpt_only_*.py
+.enable_agent_reconciler_*.py
+.inspect_connectors_*.py
+.install_agent_policy_*.py
+.maintenance_approvals_*.py
+.resolve_merge_*.py
+state/
