@@ -300,6 +300,21 @@ def uninstall_autostart() -> None:
     _run(["systemctl", "--user", "daemon-reload"], check=False)
 
 
+def read_pair_file(path: Path) -> str:
+    """Read a one-time pairing code without exposing it in process argv."""
+    import stat
+    resolved = path.expanduser().resolve(strict=True)
+    info = resolved.stat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        raise ValueError("pairing file must be an owner-controlled regular file")
+    if info.st_mode & 0o077:
+        raise ValueError("pairing file must not be accessible by group or others")
+    code = resolved.read_text(encoding="utf-8").strip()
+    if len(code) != 9 or code[4] != "-" or not code.replace("-", "").isalnum():
+        raise ValueError("invalid pairing code format")
+    return code
+
+
 def install(
     *,
     pair_code: str | None,
@@ -436,7 +451,9 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     install_parser = sub.add_parser("install", help="Pair, configure SSH access, and enable autostart")
-    install_parser.add_argument("--pair", dest="pair_code", help="One-time pairing code from ChatGPT")
+    pair_source = install_parser.add_mutually_exclusive_group()
+    pair_source.add_argument("--pair", dest="pair_code", help="One-time pairing code from ChatGPT")
+    pair_source.add_argument("--pair-file", type=Path, help="Owner-only file containing one-time pairing code")
     install_parser.add_argument("--host", help="SSH alias or user@host")
     install_parser.add_argument("--root", required=True, help="Allowed workspace root")
     install_parser.add_argument(
@@ -468,7 +485,7 @@ def main(argv: list[str] | None = None) -> None:
         if not args.local and not args.host:
             parser.error("--host is required unless --local is used")
         result = install(
-            pair_code=args.pair_code,
+            pair_code=read_pair_file(args.pair_file) if args.pair_file else args.pair_code,
             host=args.host or "local",
             root=args.root,
             relay_url=args.relay,
