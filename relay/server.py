@@ -814,7 +814,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
         <div class="summary-card"><strong id="sum-running">—</strong><span>Running</span></div>
         <div class="summary-card"><strong id="sum-agents">—</strong><span>Agent tasks</span></div>
         <div class="summary-card"><strong id="sum-waiting">—</strong><span>Waiting</span></div>
-        <div class="summary-card"><strong id="sum-hosts">—</strong><span>Default connector hosts</span></div>
+        <div class="summary-card"><strong id="sum-hosts">—</strong><span>Hosts online</span></div>
         <div class="summary-card"><strong id="sum-approvals">—</strong><span>Approvals</span></div>
       </div>
     </div>
@@ -823,7 +823,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     <div class="section"><h3>Running now</h3><div id="running" class="grid"></div></div>
     <div class="section"><h3>Waiting / handoff</h3><div id="waiting" class="grid"></div></div>
     <div class="section"><h3>Unacknowledged completion receipts</h3><div id="completions" class="grid"></div></div>
-    <div class="section"><h3>Paired Connectors</h3><div id="connectors" class="grid"></div></div><div class="section"><h3>Hosts managed by default Connector</h3><div id="devices" class="grid"></div></div>
+    <div class="section"><h3>Paired Connectors</h3><div id="connectors" class="grid"></div></div><div class="section"><h3>Hosts</h3><div id="devices" class="grid"></div></div>
     <div class="section pip-secondary"><h3>Recent terminal jobs</h3><div id="jobs" class="grid"></div></div>
     <div class="section pip-secondary"><h3>Permissions & credentials</h3><div id="security" class="grid"></div></div>
     <div class="section pip-secondary"><h3>Recent activity</h3><div id="activity" class="grid"></div></div>
@@ -959,24 +959,14 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
 
     const connectors = latest.connectors || [];
     q("connectors").innerHTML = connectors.length ? connectors.map(c=>'<div class="item"><strong>'+esc(c.name||"Connector")+'</strong><div class="muted">'+(c.online?"ONLINE":"OFFLINE")+(c.default?" · default":"")+"</div></div>").join("") : '<div class="empty">No paired Connectors.</div>';
-    const devices = overview?.devices?.devices || [];
-    q("sum-hosts").textContent = devices.length ? String(devices.filter(d=>d.online).length)+"/"+String(devices.length) : "0";
-    q("devices").innerHTML = devices.length ? devices.map(d=>{
-      const inv=d.inventory||{}; const mem=inv.memory||{};
-      const disks=(inv.disks||[]).map(x=>{
-        const total=Number(x.total_bytes||0), used=Number(x.used_bytes||0);
-        const pct=total>0?Math.round((used/total)*100):0;
-        return esc(x.path||"disk")+' '+esc(pct)+'% used';
-      }).join(" · ");
-      const services=(inv.services||[]).map(s=>esc(s.unit||"service")+': '+esc(s.state||"?")).join(" · ");
-      const resource=inv.ok
-        ? '<div class="muted metric">CPU '+esc(inv.cpu_count)+' · load '+esc((inv.load_average||[]).map(x=>Number(x).toFixed(2)).join("/"))+
-          ' · RAM '+esc(mem.available_bytes ?? "?")+' free</div>'+
-          (disks?'<div class="muted">'+disks+'</div>':'')+
-          (services?'<div class="muted">'+services+'</div>':'')
-        : '<div class="muted">Live inventory unavailable.</div>';
-      return '<div class="item"><div class="badge '+(d.online?'ok':'bad')+'"><span class="dot"></span>'+esc(d.device_id)+'</div><div><strong>'+esc(d.hostname||d.ssh_host||"")+'</strong></div><div class="muted metric">'+esc(d.latency_ms)+' ms · '+esc((d.projects||[]).join(", "))+'</div>'+resource+'</div>';
-    }).join("") : '<span class="muted">No hosts reported.</span>';
+    const hosts = latest.hosts || [];
+    q("sum-hosts").textContent = hosts.length ?
+      String(hosts.filter(h=>h.online).length)+"/"+String(hosts.length) : "0";
+    q("devices").innerHTML = hosts.length ? hosts.map(h=>
+      '<div class="item"><div class="row"><strong>'+esc(h.name)+'</strong>'+
+      '<span class="badge '+(h.online?'ok':'bad')+'">'+(h.online?'ONLINE':'OFFLINE')+'</span></div>'+
+      '<div class="muted">Connector: '+esc((h.connectors||[]).join(", "))+'</div></div>'
+    ).join("") : '<div class="empty">No enrolled hosts.</div>';
     q("jobs").innerHTML = terminalJobs.length
       ? terminalJobs.slice(0,8).map(jobCard).join("")
       : '<div class="empty">No recent terminal durable jobs.</div>';
@@ -2043,6 +2033,24 @@ def create_mcp(
             "autoClaimed": False,
         }
 
+    def enrolled_hosts(user_sub: str) -> list[dict[str, Any]]:
+        """Aggregate owner-scoped Connector registrations into physical hosts.
+
+        owner-vultr is a legacy privileged management Connector on the same
+        machine as vultr. Avoid counting it as a second server.
+        """
+        aliases = {"owner-main": "main", "owner-vultr": "vultr"}
+        hosts: dict[str, dict[str, Any]] = {}
+        for item in relay.connector_statuses(user_sub):
+            name = str(item.get("name") or item.get("device_id") or "")
+            key = aliases.get(name, name)
+            host = hosts.setdefault(key, {
+                "name": key, "online": False, "connectors": [],
+            })
+            host["online"] = host["online"] or bool(item.get("online"))
+            host["connectors"].append(name)
+        return list(hosts.values())
+
     async def remote_overview(include_resources: bool = False) -> dict[str, Any]:
         user_sub = _principal("remote:read")
         device = relay.device_status(user_sub)
@@ -2060,6 +2068,7 @@ def create_mcp(
                 "generated_at": time.time(),
                 "connector": connector or {"online": False},
                 "overview": None,
+                "hosts": enrolled_hosts(user_sub),
                 "error": "paired connector is offline or unavailable",
             }
         overview = await relay.call(
@@ -2073,6 +2082,7 @@ def create_mcp(
             "connector": connector,
             "connectors": [{"name": c.get("name"), "online": c.get("online"), "default": c.get("default")} for c in relay.connector_statuses(user_sub)],
             "overview": overview,
+            "hosts": enrolled_hosts(user_sub),
             "cognitionSubscription": cognition_subscription_state(user_sub, "ferro"),
         }
 
