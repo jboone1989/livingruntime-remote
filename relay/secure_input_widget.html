@@ -44,7 +44,7 @@ function status(t){el("status").textContent=t;}
 function notifyContinuation(handle){
  const prompt="LivingRuntime Remote 的受保护输入已完成，凭据句柄："+handle+"。请继续刚才因认证而暂停的任务，只使用授权句柄，勿请求或展示密钥明文。";
  if(window.openai?.sendFollowUpMessage){
-  void window.openai.sendFollowUpMessage({prompt}).catch(()=>{});
+  void Promise.resolve(window.openai.sendFollowUpMessage({prompt})).catch(()=>{});
  }
 }
 function disable(t){
