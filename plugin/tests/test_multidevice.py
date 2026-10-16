@@ -514,6 +514,25 @@ class MultiDeviceTests(unittest.TestCase):
                 bridge.exec(["bash", "-c", "id"], device="main")
         self.assertFalse(self.permission_store.exists())
 
+    def test_sudo_exec_only_reaches_host_after_exact_approval(self) -> None:
+        argv = ["sudo", "-n", "docker", "compose", "up", "-d", "api", "web"]
+        env = {"LIVINGRUNTIME_REMOTE_PERMISSIONS": str(self.permission_store)}
+        with patch.dict(os.environ, env), patch.object(
+            bridge, "_config_path", return_value=str(self.config)
+        ), patch.object(bridge, "_ssh", self.fake_ssh):
+            request = bridge.exec(argv, project="ferro", device="main")
+            self.assertTrue(request["approval_required"])
+            self.assertEqual(request["request"]["allowed_scopes"], ["host"])
+            self.assertEqual(request["request"]["allowed_grant_modes"], ["exact"])
+            self.assertEqual(self.calls, [])
+            bridge.approve_exec_permission(request["request"]["request_id"])
+            for _ in range(2):
+                self.assertEqual(bridge.exec(argv, project="ferro", device="main")["returncode"], 0)
+            self.assertEqual(len(self.calls), 2)
+            other = bridge.exec(argv, device="vultr")
+            self.assertTrue(other["approval_required"])
+            self.assertEqual(len(self.calls), 2)
+
     def test_revoked_permission_requires_fresh_approval(self) -> None:
         env = {"LIVINGRUNTIME_REMOTE_PERMISSIONS": str(self.permission_store)}
         with patch.dict(os.environ, env), patch.object(

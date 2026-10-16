@@ -82,8 +82,15 @@ A child Pi step reaching `SUCCEEDED` moves the durable Goal to `WAITING`, not `S
 `exec` keeps the built-in bounded development command set, but an otherwise unlisted executable
 now produces a durable approval request instead of requiring a code change. Approval is exact-command
 and host-scoped by default. Read-only diagnostics may be approved for all owned hosts or as a
-diagnostic class. Hard-denied shells, privilege escalation, destructive filesystem commands, and
-direct system service control cannot be enabled through this path.
+diagnostic class. Non-interactive `sudo -n COMMAND ...` (or `--non-interactive`) is supported for
+Docker, apt/apt-get/apt-cache, dpkg, nginx, caddy and identity checks. Every sudo command requires
+an exact host/project/cwd grant, including identity checks; the same approved command can be reused
+until revoked. Interactive sudo, sudo option overrides, shells, interpreter/wrapper targets,
+destructive filesystem commands and direct system service control remain denied.
+
+The Connector does not edit sudoers or store a sudo password. The Unix account must already be
+authorized by the host's sudo policy; a password-required command fails promptly rather than
+waiting for terminal input. Approved sudo commands also work through durable long jobs.
 
 Use `list_exec_permissions` to inspect requests/grants, `approve_exec_permission` or
 `deny_exec_permission` to decide a request, and `revoke_exec_permission` to remove a grant.

@@ -54,11 +54,32 @@ READ_ONLY_DIAGNOSTICS = frozenset({
 # These are intentionally not dynamically grantable through exec. Dedicated
 # bounded tools should be used where one exists.
 HARD_DENY_EXECUTABLES = frozenset({
-    "bash", "sh", "zsh", "dash", "fish", "sudo", "su",
+    "bash", "sh", "zsh", "dash", "fish", "su",
     "rm", "rmdir", "dd", "mkfs", "mount", "umount",
     "chmod", "chown", "kill", "pkill", "reboot", "shutdown",
     "systemctl", "journalctl",
 })
+
+# Sudo is an explicit administrative capability, never a built-in development
+# command or a diagnostic-class grant. Keep its non-interactive entry points
+# small; the complete argv, host, project and cwd still require an exact grant.
+SUDO_TARGETS = frozenset({
+    "docker", "apt", "apt-get", "apt-cache", "dpkg", "nginx", "caddy",
+    "id", "whoami", "true",
+})
+
+
+def sudo_target(argv: list[str]) -> list[str] | None:
+    if not argv or os.path.basename(str(argv[0])) != "sudo":
+        return None
+    if len(argv) < 3 or argv[1] not in {"-n", "--non-interactive"}:
+        raise PermissionError("sudo requires -n or --non-interactive and a command")
+    target = argv[2:]
+    if target and target[0] == "--":
+        target = target[1:]
+    if not target or os.path.basename(str(target[0])) not in SUDO_TARGETS:
+        raise PermissionError("sudo target is not an approved administrative executable")
+    return target
 
 
 def permission_path() -> Path:
@@ -72,6 +93,12 @@ def classify(argv: list[str], *, detached: bool = False) -> str:
     if not argv:
         raise ValueError("argv is required")
     executable = os.path.basename(str(argv[0]))
+    if executable == "sudo":
+        try:
+            sudo_target(argv)
+        except PermissionError:
+            return "hard_deny"
+        return "explicit_host_approval"
     if executable in HARD_DENY_EXECUTABLES:
         return "hard_deny"
     if detached:

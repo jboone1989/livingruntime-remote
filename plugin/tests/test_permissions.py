@@ -51,6 +51,40 @@ class PermissionMaintenanceTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.req(["sudo", "true"])
 
+    def test_noninteractive_sudo_is_never_a_read_only_diagnostic(self):
+        for argv in (["sudo", "-n", "docker", "compose", "ps"],
+                     ["/usr/bin/sudo", "--non-interactive", "--", "/usr/bin/id"]):
+            with self.subTest(argv=argv):
+                request = self.req(argv)
+                self.assertEqual(request["risk"], "explicit_host_approval")
+                for options in ({"scope": "all_owned_hosts"}, {"grant_mode": "diagnostic_class"}):
+                    with self.assertRaises(PermissionError):
+                        permissions.approve(request["request_id"], **options)
+
+    def test_sudo_rejects_interactive_options_wrappers_and_unbounded_targets(self):
+        for argv in (["sudo"], ["sudo", "docker", "ps"], ["sudo", "-n"],
+                     ["sudo", "-n", "-s"], ["sudo", "-u", "root", "docker", "ps"],
+                     ["sudo", "-n", "env", "docker", "ps"],
+                     ["sudo", "-n", "sh", "-c", "id"],
+                     ["sudo", "-n", "python3", "-c", "print(1)"],
+                     ["sudo", "-n", "systemctl", "restart", "other.service"],
+                     ["sudo", "-n", "sudo", "-n", "docker", "ps"]):
+            with self.subTest(argv=argv), self.assertRaises(PermissionError):
+                self.req(argv)
+
+    def test_sudo_grant_is_exact_scoped_reusable_and_revocable(self):
+        argv = ["sudo", "-n", "docker", "compose", "up", "-d", "api", "web"]
+        context = dict(host_id="main", project="remote", cwd="/repo", argv=argv)
+        request = permissions.ensure_request(**context)
+        grant = permissions.approve(request["request_id"])
+        for _ in range(2):
+            self.assertEqual(permissions.is_granted(**context)["permission_id"], grant["permission_id"])
+        for changes in ({"host_id":"other"}, {"project":"other"}, {"cwd":"/other"},
+                        {"argv":argv + ["worker"]}, {"detached":True}):
+            self.assertIsNone(permissions.is_granted(**{**context, **changes}))
+        permissions.revoke(grant["permission_id"])
+        self.assertIsNone(permissions.is_granted(**context))
+
 
     def test_expired_request_cannot_be_approved(self):
         with patch.object(permissions.time, "time", return_value=100.0):
