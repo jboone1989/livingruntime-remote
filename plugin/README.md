@@ -20,6 +20,8 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 - list_dir
 - git
 - exec
+- terminal_start (model-visible, exact-grant interactive PTY setup)
+- terminal_key_exchange / terminal_input / terminal_read / terminal_close (app-only, encrypted)
 - list_credentials
 - lease_credential
 - list_credential_leases
@@ -46,6 +48,33 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 
 The canonical connector-forwarded registry is `scripts/contract.py`. Relay-only
 ChatGPT Apps entrypoints such as `open_remote_control_plane` are registered in `relay/server.py`.
+
+### Secure interactive terminal
+
+Use the model-visible `terminal_start` tool to nominate an exact
+`argv`, `project`, and optional `device`/`cwd`, for example
+`["claude", "login"]`. If an approval is returned, explicitly approve
+that exact interactive command via the existing permission flow, then
+invoke `terminal_start` again. The ChatGPT app opens an embedded terminal
+panel. **Type passwords, OTPs, or authorization codes in that panel only.**
+Do not pass them in `argv`, tool arguments, or chat messages.
+
+The panel establishes a fresh P-256 ECDH/AES-256-GCM session directly with
+the Connector over the relay, and all terminal input and output are
+encrypted before being sent through MCP. Relay task receipts contain only
+ciphertext. The panel disables input echo, does not write credential text to
+widget state, and offers a Close button. Session lifetime is at most 300
+seconds with automatic process cleanup; maximum four concurrent sessions
+per Connector. The exact-command grant remains subject to normal Remote
+revocation and OS policy. Initial support requires a POSIX Connector;
+Windows native PTY support is not included. The relay and browser host
+remain trusted for active key exchange and app integrity (see SECURITY.md).
+
+Run targeted tests with:
+
+```bash
+python -m unittest discover -s plugin/tests -p 'test_secure_terminal*.py'
+```
 
 ### Credential broker
 

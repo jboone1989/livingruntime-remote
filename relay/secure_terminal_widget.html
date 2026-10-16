@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{color-scheme:light dark}body{font:14px/1.5 system-ui;margin:0;padding:12px;color:var(--color-text-primary,inherit)}
+section{border:1px solid rgba(127,127,127,.35);border-radius:12px;padding:14px}
+header{display:flex;align-items:center;justify-content:space-between;gap:10px}
+small{opacity:.65}pre{margin:12px 0;background:#141921;color:#d4f4dc;padding:12px;border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow-y:auto;min-height:44px}
+form{display:flex;gap:8px;flex-wrap:wrap}input{flex:1;min-width:140px;padding:9px;border-radius:7px;border:1px solid #888;background:transparent;color:inherit}
+button{padding:8px 12px;border:1px solid #888;border-radius:7px;background:transparent;color:inherit;cursor:pointer}button.primary{background:#2361be;color:white;border:0}
+button:disabled{opacity:.45;cursor:default}.note{font-size:12px;opacity:.7;margin-top:8px}
+</style></head>
+<body><section><header><strong>安全交互式终端</strong><button id="close" type="button" disabled>断开</button></header>
+<small id="status">正在连接加密终端…</small>
+<pre id="output" aria-live="polite"></pre>
+<form id="form" autocomplete="off"><input id="entry" type="password" spellcheck="false" autocomplete="off"
+  aria-label="终端输入" placeholder="密码 / 验证码 / stdin" disabled>
+<button class="primary" id="send" type="submit" disabled>加密发送 ↵</button></form>
+<div class="note">浏览器本地 ECDH + AES-GCM 加密输入；仅 Connector 解密。不会写入聊天记录、命令参数或 Remote 审计日志。会话最长 5 分钟。请勿在此输入非可信程序要求的凭据。</div>
+</section>
+<script>
+(() => {
+  "use strict";
+  const el = id => document.getElementById(id);
+  let state = null, aes = null, inputSeq = 0, outputSeq = 0;
+  let stopped = false, inFlight = false, pollTimer = null;
+  const pending = new Map(); let nextId = 1;
+  function bytesToB64(buffer){
+    const b = new Uint8Array(buffer); let s = "";
+    for(const n of b) s += String.fromCharCode(n);
+    return btoa(s);
+  }
+  function b64ToBytes(text) {
+    const raw = atob(text), b = new Uint8Array(raw.length);
+    for(let i=0;i<raw.length;i++) b[i] = raw.charCodeAt(i);
+    return b;
+  }
+  function data(value) {
+    const obj = value?.structuredContent || value?.structured_content || value || {};
+    if(obj?.isError) throw new Error("终端请求失败");
+    return obj;
+  }
+  function tool(name, args) {
+    if(window.openai?.callTool) {
+      return window.openai.callTool(name, args).then(data);
+    }
+    const id = nextId++;
+    window.parent.postMessage({jsonrpc:"2.0",id,method:"tools/call",params:{name,arguments:args}},"*");
+    return new Promise((resolve,reject)=>pending.set(id,{resolve,reject}));
+  }
+  function show(s) { el("status").textContent = s; }
+  function stop(s) {
+    stopped=true; clearTimeout(pollTimer);
+    el("entry").value=""; el("entry").disabled=true; el("send").disabled=true;
+    el("close").disabled=true; if(s) show(s);
+  }
+  async function init(out) {
+    if(state || stopped) return;
+    if(!out?.session_id || !out?.server_public_key) {
+      stop(out?.approval_required ? "需要先批准这个精确命令，然后重新启动终端" : "终端尚未启动");
+      return;
+    }
+    if(!globalThis.crypto?.subtle) { stop("浏览器不支持安全加密，终端已禁用"); return; }
+    state={id:out.session_id};
+    try {
+      const kp = await crypto.subtle.generateKey({name:"ECDH",namedCurve:"P-256"},false,["deriveBits"]);
+      const peer = await crypto.subtle.importKey("raw",b64ToBytes(out.server_public_key),
+        {name:"ECDH",namedCurve:"P-256"},false,[]);
+      const shared = await crypto.subtle.deriveBits({name:"ECDH",public:peer},kp.privateKey,256);
+      const hkdf = await crypto.subtle.importKey("raw",shared,"HKDF",false,["deriveKey"]);
+      aes = await crypto.subtle.deriveKey({name:"HKDF",hash:"SHA-256",
+        salt:new TextEncoder().encode(state.id),
+        info:new TextEncoder().encode("livingruntime-secure-terminal-v1")},
+        hkdf,{name:"AES-GCM",length:256},false,["encrypt","decrypt"]);
+      const key = await crypto.subtle.exportKey("raw",kp.publicKey);
+      const reply=await tool("terminal_key_exchange",{session_id:state.id,client_public_key:bytesToB64(key)});
+      if(!reply?.ready) throw new Error("Handshake failed");
+      el("entry").disabled=false; el("send").disabled=false; el("close").disabled=false;
+      show("已连接 · 输入通过端到端加密通道发送");
+      el("entry").focus();
+      await poll();
+    } catch(error) {
+      stop("建立加密终端失败：" + String(error?.message||"error").slice(0,160));
+      if(state?.id) void tool("terminal_close",{session_id:state.id}).catch(()=>{});
+    }
+  }
+  async function poll() {
+    if(stopped || !state || !aes) return;
+    try {
+      const r = await tool("terminal_read",{session_id:state.id});
+      if(r?.has_output){
+        if(r.seq !== outputSeq + 1) throw new Error("Output sequence mismatch");
+        const plain = await crypto.subtle.decrypt(
+          {name:"AES-GCM",iv:b64ToBytes(r.nonce),
+            additionalData:new TextEncoder().encode(state.id+"|out|"+r.seq)},
+          aes,b64ToBytes(r.ciphertext));
+        outputSeq = r.seq;
+        const view=el("output");
+        view.textContent = (view.textContent + new TextDecoder().decode(plain)).slice(-30000);
+        view.scrollTop = view.scrollHeight;
+      }
+      if(r?.running === false) {stop("命令已退出（代码 " + r.returncode + "）");return;}
+    }catch(error){stop("终端读取失败：" + String(error?.message||"error").slice(0,160));return;}
+    pollTimer = setTimeout(()=>void poll(),800);
+  }
+  el("form").addEventListener("submit",async event=>{
+    event.preventDefault();
+    if(stopped || inFlight || !aes || !state) return;
+    const value = el("entry").value;
+    el("entry").value = ""; // clear immediately; never persist via widgetState
+    if(!value) return;
+    inFlight=true;el("send").disabled=true;
+    try {
+      const seq=++inputSeq, nonce=crypto.getRandomValues(new Uint8Array(12));
+      const payload = new TextEncoder().encode(value+"\n");
+      if(payload.length > 4096) throw new Error("输入过长");
+      const cipher=await crypto.subtle.encrypt(
+        {name:"AES-GCM",iv:nonce,additionalData:new TextEncoder().encode(state.id+"|in|"+seq)},
+        aes,payload);
+      await tool("terminal_input",{
+        session_id:state.id,seq,nonce:bytesToB64(nonce),ciphertext:bytesToB64(cipher)
+      });
+    }catch(error){stop("终端写入失败：" + String(error?.message||"error").slice(0,120));}
+    finally{inFlight=false;if(!stopped){el("send").disabled=false;el("entry").focus();}}
+  });
+  el("close").addEventListener("click",()=>{
+    if(stopped) return; stop("已断开");
+    if(state) void tool("terminal_close",{session_id:state.id}).catch(()=>{});
+  });
+  window.addEventListener("message",event=>{
+    if(event.source!==window.parent) return;
+    const msg=event.data;
+    if(msg?.jsonrpc==="2.0" && pending.has(msg.id)){
+      const task=pending.get(msg.id);pending.delete(msg.id);
+      if(msg.error) task.reject(new Error(msg.error?.message||"tool error"));
+      else task.resolve(data(msg.result));
+    }else if(msg?.method==="ui/notifications/tool-result"){
+      void init(data(msg.params?.structuredContent||msg.params));
+    }
+  });
+  const initial=window.openai?.toolOutput;
+  if(initial) void init(data(initial));
+  window.addEventListener("openai:set_globals",()=> {
+    if(!state && !stopped && window.openai?.toolOutput) void init(data(window.openai.toolOutput));
+  });
+})();
+</script></body></html>

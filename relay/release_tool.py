@@ -9,6 +9,7 @@ ROOT = Path("/opt/livingruntime-remote-relay")
 RELEASES = ROOT / "releases"
 NAME_RE = re.compile(r"^v[0-9A-Za-z._-]+$")
 SEED_FILES = ("auth.py", "embedded_auth.py", "store.py", "mcp_events.py", "contract.py", "requirements.txt", "README.md")
+OPTIONAL_UI_FILES = ("secure_terminal_widget.html",)
 
 
 def release_path(name: str) -> Path:
@@ -34,6 +35,9 @@ def main() -> None:
         target = release_path(sys.argv[3]).resolve(strict=True)
         for name in SEED_FILES:
             shutil.copy2(base / name, target / name)
+        for name in OPTIONAL_UI_FILES:
+            if (base / name).is_file():
+                shutil.copy2(base / name, target / name)
         print(target)
         return
     if action == "activate" and len(sys.argv) == 3:

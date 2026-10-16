@@ -1,1 +1,2 @@
 mcp==1.26.0
+cryptography>=41,<51

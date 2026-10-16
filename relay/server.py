@@ -104,6 +104,8 @@ CONTROL_PLANE_WIDGET_V5_URI = "ui://livingruntime-remote/control-plane-v5.html"
 CONTROL_PLANE_WIDGET_V4_URI = "ui://livingruntime-remote/control-plane-v4.html"
 CONTROL_PLANE_WIDGET_LEGACY_URI = "ui://livingruntime-remote/control-plane-v3.html"
 BROWSER_TAKEOVER_WIDGET_URI = "ui://livingruntime-remote/browser-takeover-v1.html"
+SECURE_TERMINAL_WIDGET_URI = "ui://livingruntime-remote/secure-terminal-v1.html"
+SECURE_TERMINAL_WIDGET_HTML = (Path(__file__).parent / "secure_terminal_widget.html").read_text(encoding="utf-8")
 PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
@@ -128,6 +130,7 @@ TOOL_TEXT = {
     "write_file": ("Write remote file", "Create or replace a file inside an allowed project or configured root, optionally guarded by an expected SHA-256."),
     "git": ("Run Git command", "Run a bounded Git command inside an allowed repository using explicit arguments."),
     "exec": ("Execute bounded command", "Run a built-in development command or an exact command previously approved by the operator. Unapproved commands return a durable approval request."),
+    "terminal_start": ("Start secure interactive terminal", "Start a short-lived, explicitly authorized PTY command and open a browser-only ECDH/AES-GCM input panel. Never pass passwords or OTPs in argv or chat."),
     "list_credentials": ("List credential handles", "List local credential handles and scopes without returning secret values."),
     "lease_credential": ("Lease credential handle", "Issue a short-lived opaque credential lease scoped to one capability, project, and device."),
     "list_credential_leases": ("List credential leases", "List opaque credential leases without returning credential values."),
@@ -1833,6 +1836,85 @@ def create_mcp(
         title="Browser takeover",
         description="Open a short-lived human takeover session for an Agent Runtime browser profile.",
     )
+    add_widget_resource(
+        SECURE_TERMINAL_WIDGET_URI,
+        SECURE_TERMINAL_WIDGET_HTML,
+        name="secure-terminal",
+        title="Secure interactive terminal",
+        description="Browser-to-Connector encrypted, short-lived PTY terminal; no raw stdin in model-visible tool arguments.",
+    )
+
+    @apps.tool(
+        resource_uri=SECURE_TERMINAL_WIDGET_URI,
+        visibility=["model", "app"],
+        name="terminal_start",
+        title=TOOL_TEXT["terminal_start"][0],
+        description=TOOL_TEXT["terminal_start"][1],
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True),
+        meta={**WRITE, "openai/outputTemplate": SECURE_TERMINAL_WIDGET_URI},
+    )
+    async def terminal_start(
+        argv: list[str], cwd: str | None = None,
+        project: str | None = None, device: str | None = None,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"), "terminal_start",
+            {"argv": argv, "cwd": cwd, "project": project, "device": device},
+        )
+
+    @apps.tool(
+        resource_uri=SECURE_TERMINAL_WIDGET_URI,
+        visibility=["app"],
+        name="terminal_key_exchange",
+        title="Exchange terminal ECDH key",
+        description="Browser-only public key exchange; no plaintext terminal data.",
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False),
+        meta=WRITE,
+    )
+    async def terminal_key_exchange(session_id: str, client_public_key: str) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"), "terminal_key_exchange",
+            {"session_id": session_id, "client_public_key": client_public_key},
+        )
+
+    @apps.tool(
+        resource_uri=SECURE_TERMINAL_WIDGET_URI,
+        visibility=["app"],
+        name="terminal_input",
+        title="Send encrypted terminal bytes",
+        description="Browser-only AES-GCM ciphertext input; never send plaintext stdin.",
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False),
+        meta=WRITE,
+    )
+    async def terminal_input(session_id: str, seq: int, nonce: str, ciphertext: str) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"), "terminal_input",
+            {"session_id": session_id, "seq": seq, "nonce": nonce, "ciphertext": ciphertext},
+        )
+
+    @apps.tool(
+        resource_uri=SECURE_TERMINAL_WIDGET_URI,
+        visibility=["app"],
+        name="terminal_read",
+        title="Receive encrypted terminal output",
+        description="Browser-only encrypted output. Plaintext never enters tool receipts.",
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+        meta=WRITE,
+    )
+    async def terminal_read(session_id: str) -> dict[str, Any]:
+        return await relay.call(_principal("remote:write"), "terminal_read", {"session_id": session_id})
+
+    @apps.tool(
+        resource_uri=SECURE_TERMINAL_WIDGET_URI,
+        visibility=["app"],
+        name="terminal_close",
+        title="Close secure terminal",
+        description="Close a secure PTY session and discard its ephemeral key.",
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False),
+        meta=WRITE,
+    )
+    async def terminal_close(session_id: str) -> dict[str, Any]:
+        return await relay.call(_principal("remote:write"), "terminal_close", {"session_id": session_id})
 
     @apps.tool(
         resource_uri=PI_JOB_WIDGET_URI,

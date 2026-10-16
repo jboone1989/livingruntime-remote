@@ -18,6 +18,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 import localexec
+import secure_terminal
 from agent_adapters import registry as agent_registry, load_installed
 import agent_sessions
 import agent_policy
@@ -1515,6 +1516,88 @@ def list_projects() -> dict[str, Any]:
         "projects": rows,
     }
     _audit("list_projects", True, {"count": len(rows)})
+    return result
+
+
+@server.tool(
+    name="terminal_start",
+    annotations=ToolAnnotations(title="Start secure interactive terminal", readOnlyHint=False,
+                                destructiveHint=True, openWorldHint=True),
+)
+def terminal_start(
+    argv: list[str], cwd: str | None = None,
+    project: str | None = None, device: str | None = None,
+) -> dict[str, Any]:
+    """Reserve a short-lived PTY; never receive terminal stdin in this call."""
+    _validate_exec(argv)
+    cfg = _config()
+    selected = host_for(cfg, project=project, host_id=device)
+    workdir = resolve_path(cfg, cwd, project=project, host_id=device) if (cwd or project) else _roots(project, device)[0]
+    # A TTY is always an interactive, potentially long-lived command, so require
+    # an exact device-scoped grant even for a normally built-in executable.
+    if dynamic_exec_grant(
+        host_id=selected["id"], project=project, cwd=workdir,
+        argv=argv, detached=True,
+    ) is None:
+        request = ensure_dynamic_exec_request(
+            host_id=selected["id"], project=project, cwd=workdir,
+            argv=argv, detached=True,
+        )
+        _audit("terminal_permission_request", True, {
+            "request_id": request["request_id"], "host_id": selected["id"],
+        })
+        return {
+            "ok": False, "approval_required": True, "request": request,
+            "reason": "Secure terminals require an exact host-scoped interactive command grant.",
+        }
+    ssh_host = _host(project, device) if _transport(project, device) == "ssh" else None
+    result = secure_terminal.create(argv, workdir, ssh_host)
+    _audit("terminal_start", True, {
+        "session_id": result["session_id"], "host_id": selected["id"],
+        "project": project, "expires_in": result["ttl_seconds"],
+    })
+    return result
+
+
+@server.tool(
+    name="terminal_key_exchange",
+    annotations=ToolAnnotations(title="Bind encrypted terminal client", readOnlyHint=False,
+                                destructiveHint=False, openWorldHint=False),
+)
+def terminal_key_exchange(session_id: str, client_public_key: str) -> dict[str, Any]:
+    """Browser-only client key exchange. Never accept raw terminal input."""
+    return secure_terminal.exchange(session_id, client_public_key)
+
+
+@server.tool(
+    name="terminal_input",
+    annotations=ToolAnnotations(title="Write encrypted terminal input", readOnlyHint=False,
+                                destructiveHint=True, openWorldHint=False),
+)
+def terminal_input(session_id: str, seq: int, nonce: str, ciphertext: str) -> dict[str, Any]:
+    """Only encrypted bytes cross the MCP/relay boundary."""
+    return secure_terminal.send(session_id, seq, nonce, ciphertext)
+
+
+@server.tool(
+    name="terminal_read",
+    annotations=ToolAnnotations(title="Read encrypted terminal output", readOnlyHint=True,
+                                destructiveHint=False, openWorldHint=False),
+)
+def terminal_read(session_id: str) -> dict[str, Any]:
+    """Encrypted output only; never persist transcripts in relay task receipts."""
+    return secure_terminal.read(session_id)
+
+
+@server.tool(
+    name="terminal_close",
+    annotations=ToolAnnotations(title="Close secure interactive terminal", readOnlyHint=False,
+                                destructiveHint=True, openWorldHint=False),
+)
+def terminal_close(session_id: str) -> dict[str, Any]:
+    """Close the ephemeral browser-operated PTY and discard cryptographic keys."""
+    result = secure_terminal.close(session_id)
+    _audit("terminal_close", True, {"session_id": session_id})
     return result
 
 

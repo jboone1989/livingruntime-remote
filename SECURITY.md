@@ -41,6 +41,15 @@ Key boundaries include:
 - Credential values are not general model inputs; controllers receive opaque references/leases.
 - Device/project routing is explicit and conflicting selections fail closed.
 - Public access is protected by OAuth and one-time device pairing.
+- Secure interactive terminals require an exact host/project/cwd/argv grant, even for
+  otherwise built-in commands. They are capped at four concurrent sessions and five
+  minutes each; an expired session terminates its process group.
+- The secure terminal widget performs ephemeral P-256 ECDH, HKDF-SHA256 and AES-256-GCM
+  in the browser. Terminal stdin and output are encrypted before MCP/relay calls;
+  the Connector decrypts stdin in memory and disables PTY echo before starting the
+  approved process. No terminal plaintext is included in audit events or durable
+  relay task payloads. The connector requires a strictly increasing input counter,
+  authenticated ciphertext, and a fresh one-time client key binding.
 
 ## Trust boundary
 
@@ -59,3 +68,19 @@ The project is under active development. Security fixes are applied to the curre
 Never paste SSH private keys, passwords, provider API keys, or other long-lived credentials into a GitHub issue, demo recording, model prompt, or repository file.
 
 When adding a new secret-consuming capability, prefer a dedicated capability that consumes a bounded credential lease internally rather than a generic command that receives the raw secret.
+
+## Secure terminal limitations
+
+- The browser-to-Connector ECDH exchange is authenticated by the existing OAuth
+  and device-pairing transport, not by an independently pinned Connector public
+  identity. An actively malicious/compromised relay or web app host can substitute
+  keys or script content. This protects against accidental transcripts and passive
+  relay storage, **not** a fully untrusted relay.
+- A command can itself echo, print, persist, or forward an entered secret. The
+  Connector disables initial PTY echo, but cannot control a program that later
+  reenables echo or logs stdin. Only type secrets into programs you trust.
+- The first version supports POSIX Connectors and SSH to configured hosts,
+  not native Windows PTYs. The terminal does not grant shell privileges:
+  exact command approvals and existing OS authorization still apply.
+- Do not include credentials in the initial command argv, workspace files,
+  approval requests, issue descriptions, or ordinary chat messages.
