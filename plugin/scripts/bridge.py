@@ -45,6 +45,7 @@ from configmodel import (
 )
 from credentials import (
     create_lease as create_credential_lease,
+    credential_root,
     list_handles as credential_snapshot,
     list_leases as credential_lease_snapshot,
     resolve_secret_for_lease,
@@ -969,6 +970,14 @@ def _validate_git(args: list[str]) -> None:
     joined = " ".join(map(str, args))
     if "credential.helper" in joined or "core.sshCommand" in joined:
         raise PermissionError("credential and ssh command overrides are blocked")
+
+
+def _reject_credential_store_path(path: str) -> None:
+    """Keep normal file tools out of the Connector's private credential broker."""
+    protected = credential_root().expanduser().resolve()
+    candidate = Path(path).expanduser().resolve(strict=False)
+    if candidate == protected or protected in candidate.parents:
+        raise PermissionError("credential store is not accessible via normal file tools")
 
 
 _HUNK_RE = re.compile(r"^@@(?:\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?)?\s*(?:@@)?\s*$")
@@ -3110,6 +3119,7 @@ def read_file(
     cfg = _config()
     host_for(cfg, project=project, host_id=device)
     target = resolve_path(cfg, path, project=project, host_id=device)
+    _reject_credential_store_path(target)
     result = _remote("read_file", {
         "path": target, "offset": max(0, int(offset)),
         "max_bytes": min(MAX_OUTPUT_BYTES, max(1, int(max_bytes))),
@@ -3144,6 +3154,7 @@ def write_file(
     cfg = _config()
     host_for(cfg, project=project, host_id=device)
     target = resolve_path(cfg, path, project=project, host_id=device)
+    _reject_credential_store_path(target)
     result = _remote("write_file", {
         "path": target, "content": content, "mode": mode,
         "expected_sha256": expected_sha256,
@@ -3218,6 +3229,7 @@ def apply_patch(
     cfg = _config()
     host_for(cfg, project=project, host_id=device)
     target = resolve_path(cfg, path, project=project, host_id=device)
+    _reject_credential_store_path(target)
     current = _remote("read_file", {
         "path": target, "offset": 0, "max_bytes": MAX_OUTPUT_BYTES,
     }, project=project, device=device)
@@ -3278,6 +3290,7 @@ def list_dir(
     cfg = _config()
     host_for(cfg, project=project, host_id=device)
     target = resolve_path(cfg, path, project=project, host_id=device) if (path or project) else _roots(device=device)[0]
+    _reject_credential_store_path(target)
     result = _remote("list_dir", {
         "path": target, "max_entries": min(1000, max(1, int(max_entries))),
     }, project=project, device=device)

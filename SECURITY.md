@@ -93,3 +93,9 @@ When adding a new secret-consuming capability, prefer a dedicated capability tha
   Transport encryption does **not** mean encryption at rest; the Connector
   OS account, privileged local processes, and backups may still access
   saved credentials. Use dedicated OS credential storage where available.
+- Ordinary Remote read/write/list/patch file tools now reject direct paths
+  into the Connector credential directory, including symlink aliases.
+  This is defense-in-depth, **not** an execution sandbox: arbitrary code run
+  via an authorized development command under the same OS user may still
+  access these files. Strong separation requires a broker under a distinct
+  OS identity with a narrow consumer-only IPC API.
