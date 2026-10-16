@@ -96,7 +96,8 @@ LONG_JOB_WIDGET_LEGACY_URI = "ui://livingruntime-remote/long-job-watch-v2.html"
 COGNITION_WIDGET_LEGACY_URI = "ui://livingruntime-remote/agent-cognition-watch-v2.html"
 COGNITION_WIDGET_V3_URI = "ui://livingruntime-remote/agent-cognition-watch-v3.html"
 COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v5.html"
-CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v10.html"
+CONTROL_PLANE_WIDGET_V10_URI = "ui://livingruntime-remote/control-plane-v10.html"
+CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v11.html"
 CONTROL_PLANE_WIDGET_V8_URI = "ui://livingruntime-remote/control-plane-v8.html"
 CONTROL_PLANE_WIDGET_V7_URI = "ui://livingruntime-remote/control-plane-v7.html"
 CONTROL_PLANE_WIDGET_V6_URI = "ui://livingruntime-remote/control-plane-v6.html"
@@ -781,6 +782,22 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
   .summary-card strong { display:block; font-size:18px; line-height:1.1; font-variant-numeric:tabular-nums; }
   .summary-card span { display:block; margin-top:3px; color:var(--color-text-secondary,#777); font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
   .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:8px; }
+  [hidden] { display:none !important; }
+  h4 { margin:12px 0 6px; font-size:12px; color:var(--color-text-secondary,#777); }
+  .status-line { display:flex; align-items:center; gap:8px; flex-wrap:wrap; overflow-wrap:anywhere; }
+  .status-line .badge { flex-shrink:0; }
+  .subdetails { margin-top:9px; }
+  summary { cursor:pointer; font-weight:600; padding:4px 0; }
+  .subdetail-body { margin-top:8px; font-size:12px; color:var(--color-text-secondary,#777); }
+  .history-body { margin-top:10px; }
+  .history-list { border-top:1px solid var(--color-border-secondary,rgba(127,127,127,.25)); margin-top:6px; }
+  .history-row { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:5px 12px; border-bottom:1px solid var(--color-border-secondary,rgba(127,127,127,.18)); padding:7px 2px; font-size:12px; }
+  .history-row:last-child { border-bottom:0; }
+  .history-row time { color:var(--color-text-secondary,#777); font-variant-numeric:tabular-nums; }
+  .history-row code { font-size:12px; }
+  .compact { padding:6px 0; }
+  .sync-note { font-size:11px; color:var(--color-text-secondary,#777); }
+  .secondary { opacity:.94; }
   .item { padding:10px; border-radius:10px; background:rgba(127,127,127,.07); border:1px solid rgba(127,127,127,.08); overflow-wrap:anywhere; }
   .item strong { display:inline-block; margin-bottom:2px; }
   .detail { margin-top:4px; }
@@ -797,8 +814,22 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
   body[data-mode="pip"] .summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
   body[data-mode="pip"] .summary-card strong { font-size:15px; }
   @media (max-width:560px) {
-    .summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    body { padding:6px; font-size:13px; }
+    .top { position:relative; padding:10px; border-radius:12px; }
+    .section { padding:10px; border-radius:12px; }
+    .brandmark { width:24px; height:24px; }
+    .brandcopy strong { font-size:13px; }
+    .brandcopy span { display:none; }
+    .actions { gap:4px; }
+    .actions button { padding:5px 7px; font-size:11px; }
+    .summary { display:flex; gap:0; overflow-x:auto; margin-top:8px; scrollbar-width:thin; }
+    .summary-card { flex:1 0 auto; min-width:60px; padding:4px 8px; background:transparent; border-right:1px solid var(--color-border-secondary,rgba(127,127,127,.2)); border-radius:0; }
+    .summary-card:last-child { border-right:0; }
+    .summary-card strong { font-size:16px; }
+    .summary-card span { font-size:9px; letter-spacing:0; }
     .grid { grid-template-columns:1fr; }
+    .item { padding:8px; }
+    .status-line { align-items:flex-start; }
   }
 </style>
 </head>
@@ -809,7 +840,7 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
         <div class="brand"><div class="brandmark">LR</div><div class="brandcopy"><strong>LivingRuntime Remote Control Plane</strong><span>hosts · delegated agents · durable results</span></div></div>
         <div class="actions"><button id="pin">Pin</button><button id="expand">Expand</button><button id="refresh">Refresh</button></div>
       </div>
-      <div id="headline" class="muted">Loading snapshot…</div>
+      <div class="row"><div id="headline" class="muted">Loading snapshot…</div><span id="sync-note" class="sync-note"></span></div>
       <div class="summary">
         <div class="summary-card"><strong id="sum-running">—</strong><span>Running</span></div>
         <div class="summary-card"><strong id="sum-agents">—</strong><span>Agent tasks</span></div>
@@ -818,19 +849,15 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
         <div class="summary-card"><strong id="sum-approvals">—</strong><span>Approvals</span></div>
       </div>
     </div>
-    <div class="section"><h3>Execution truth</h3><div id="execution" class="grid"></div></div>
-    <div class="section"><h3>Delegated agent tasks</h3><div class="muted detail">Work runs on your paired machine; this view reports durable task receipts, not a live ChatGPT session.</div><div id="agents" class="grid"></div></div>
-    <div class="section"><h3>Running now</h3><div id="running" class="grid"></div></div>
-    <div class="section"><h3>Waiting / handoff</h3><div id="waiting" class="grid"></div></div>
-    <div class="section"><h3>Unacknowledged completion receipts</h3><div id="completions" class="grid"></div></div>
-    <div class="section"><h3>Paired Connectors</h3><div id="connectors" class="grid"></div></div><div class="section"><h3>Hosts</h3><div id="devices" class="grid"></div></div>
-    <div class="section pip-secondary"><h3>Recent terminal jobs</h3><div id="jobs" class="grid"></div></div>
-    <div class="section pip-secondary"><h3>Permissions & credentials</h3><div id="security" class="grid"></div></div>
-    <div class="section pip-secondary"><h3>Recent activity</h3><div id="activity" class="grid"></div></div>
+    <div class="section"><h3>Status</h3><div id="execution" role="status"></div><details class="subdetails"><summary>Execution evidence</summary><div id="execution-details" class="subdetail-body"></div></details></div>
+    <div class="section"><h3>Current work</h3><div id="idle-note" class="muted compact">No active tasks.</div><div id="agents-section" hidden><h4>Agent tasks</h4><div id="agents" class="grid"></div></div><div id="running-section" hidden><h4>Running</h4><div id="running" class="grid"></div></div><div id="waiting-section" hidden><h4>Waiting / handoff</h4><div id="waiting" class="grid"></div></div></div>
+    <div class="section" id="attention-section" hidden><h3>Needs attention</h3><div id="approvals" class="grid"></div><h4>Unacknowledged completion receipts</h4><div id="completions" class="grid"></div></div>
+    <div class="section"><h3>Hosts</h3><div id="devices" class="grid"></div></div>
+    <details class="section secondary pip-secondary"><summary>History & diagnostics</summary><div class="history-body"><h4>Recent jobs</h4><div id="jobs"></div><h4>Commands and activity</h4><div id="activity"></div><h4>Connectors</h4><div id="connectors" class="grid"></div><h4>Permissions & credentials</h4><div id="security" class="grid"></div></div></details>
   </div>
 <script>
 (() => {
-  console.info("LivingRuntime control-plane-v10 script loaded");
+  console.info("LivingRuntime control-plane-v11 script loaded");
   const pending = new Map(); let nextId = 1; let connected = false; let latest = null;
   const q = id => document.getElementById(id);
   function request(method, params) {
@@ -871,128 +898,135 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
       hour:"2-digit", minute:"2-digit", second:"2-digit", hour12:false
     });
   }
+  // Avoid replacing unchanged nodes on every refresh: expanded sections stay open.
+  function setHTML(id, markup) {
+    const element=q(id);
+    if (element.innerHTML !== markup) element.innerHTML=markup;
+  }
   function render(snapshot) {
     latest = snapshot || {};
-    const connector = latest.connector || {};
-    const online = connector.online !== false;
-    q("headline").innerHTML = '<span class="badge '+(online?'ok':'bad')+'"><span class="dot"></span>'+(online?'Connector online':'Connector offline')+'</span> · v'+esc(latest.version || latest.overview?.version || "?");
-    const subscription = latest.cognitionSubscription;
-    if (subscription) {
-      q("headline").innerHTML += ' · <span class="badge '+(subscription.subscriptionVerified?'ok':'bad')+'">'+esc(subscription.watcherState)+'</span>';
-    }
-    const overview = latest.overview || latest;
-    const execution = overview?.execution || {};
-    const state = execution.state || "UNKNOWN";
-    const stateClass = state==="RUNNING" ? "ok" : (state==="STALLED" || state==="BLOCKED" ? "bad" : "warn");
-    const active = execution.active_jobs || [];
-    const lastActivity = execution.last_real_activity_at;
-    const warning = execution.ui_warning ? '<div class="item"><strong>UI may be stale</strong><div class="muted">'+esc(execution.ui_warning)+'</div></div>' : '';
-    q("execution").innerHTML =
-      '<div class="item"><span class="badge '+stateClass+'"><span class="dot"></span>'+esc(state)+'</span><div>'+esc(execution.message||"No execution receipt yet.")+'</div></div>'+
-      '<div class="item"><strong class="metric">'+esc(execution.worker_alive_count||0)+'</strong> live workers / child processes<div class="muted">RUNNING requires a real live process</div></div>'+
-      '<div class="item"><strong>Last real activity</strong><div>'+esc(lastActivity?formatTs(lastActivity):"none recorded")+'</div><div class="muted">'+esc(execution.last_tool||"—")+(execution.last_target?' · '+esc(execution.last_target):'')+'</div></div>'+
-      warning;
+    const connector=latest.connector||{};
+    const online=connector.online!==false;
+    let headline='<span class="badge '+(online?'ok':'bad')+'"><span class="dot"></span>'+(online?'Connector online':'Connector offline')+'</span> · v'+esc(latest.version||latest.overview?.version||"?");
+    const subscription=latest.cognitionSubscription;
+    if (subscription) headline+=' · <span class="badge '+(subscription.subscriptionVerified?'ok':'bad')+'">'+esc(subscription.watcherState)+'</span>';
+    setHTML("headline",headline);
 
-    const jobs = overview?.jobs || [];
-    const live = j => Boolean(j?.runtime?.worker_alive || j?.runtime?.child_alive);
-    const isTerminal = j => Boolean(j?.terminal) || ["SUCCEEDED","FAILED","CANCELLED","CANCELED"].includes(String(j?.status||"").toUpperCase());
-    const effectiveStatus = j => {
-      const raw = String(j?.status || "UNKNOWN").toUpperCase();
+    const overview=latest.overview||latest;
+    const execution=overview?.execution||{};
+    const state=execution.state||"UNKNOWN";
+    const cls=state==="RUNNING"?"ok":(["STALLED","BLOCKED"].includes(state)?"bad":"warn");
+    const warning=execution.ui_warning?'<div class="danger compact">'+esc(execution.ui_warning)+'</div>':'';
+    setHTML("execution",'<div class="status-line"><span class="badge '+cls+'"><span class="dot"></span>'+esc(state)+'</span><span>'+esc(execution.message||"No execution receipt yet.")+'</span></div>'+warning);
+    setHTML("execution-details",
+      '<div>'+esc(execution.worker_alive_count||0)+' live workers / child processes (RUNNING requires a live process)</div>'+
+      '<div>Last real activity: '+esc(execution.last_real_activity_at?formatTs(execution.last_real_activity_at):"none recorded")+'</div>'+
+      '<div>'+esc(execution.last_tool||"—")+(execution.last_target?' · '+esc(execution.last_target):'')+'</div>');
+
+    const jobs=overview?.jobs||[];
+    const live=j=>Boolean(j?.runtime?.worker_alive||j?.runtime?.child_alive);
+    const isTerminal=j=>Boolean(j?.terminal)||["SUCCEEDED","FAILED","CANCELLED","CANCELED"].includes(String(j?.status||"").toUpperCase());
+    const effectiveStatus=j=>{
+      const raw=String(j?.status||"UNKNOWN").toUpperCase();
       if (live(j)) return "RUNNING";
-      if (!isTerminal(j) && (raw==="RUNNING" || raw==="PENDING")) return "WAITING";
+      if (!isTerminal(j)&&(raw==="RUNNING"||raw==="PENDING")) return "WAITING";
       return raw;
     };
-    const jobCard = j => {
-      const runtime=j?.runtime||{};
-      const status=effectiveStatus(j);
-      const cls=status==="RUNNING"?"ok":(status==="FAILED"||status==="STALLED"||status==="BLOCKED"?"bad":"warn");
-      const hb=runtime.heartbeat_age_seconds;
-      const pg=runtime.progress_age_seconds;
+    const jobCard=j=>{
+      const runtime=j?.runtime||{}, status=effectiveStatus(j);
+      const badge=status==="RUNNING"?"ok":(["FAILED","STALLED","BLOCKED"].includes(status)?"bad":"warn");
       const io=[];
-      if (runtime.stdout_bytes !== undefined) io.push("stdout "+runtime.stdout_bytes+" B");
-      if (runtime.stderr_bytes !== undefined) io.push("stderr "+runtime.stderr_bytes+" B");
-      if (runtime.returncode !== undefined && runtime.returncode !== null) io.push("rc "+runtime.returncode);
-      return '<div class="item">'+
-        '<div><span class="badge '+cls+'"><span class="dot"></span>'+esc(status)+'</span> <code>'+esc(j.job_id||"")+'</code></div>'+
+      if (runtime.stdout_bytes!==undefined) io.push("stdout "+runtime.stdout_bytes+" B");
+      if (runtime.stderr_bytes!==undefined) io.push("stderr "+runtime.stderr_bytes+" B");
+      if (runtime.returncode!==undefined&&runtime.returncode!==null) io.push("rc "+runtime.returncode);
+      return '<div class="item"><div><span class="badge '+badge+'"><span class="dot"></span>'+esc(status)+'</span></div>'+
         '<div class="detail"><strong>'+esc(j.goal||"Unnamed job")+'</strong></div>'+
         '<div>'+esc(j.current_step||"No current step")+'</div>'+
         '<div class="muted">next: '+esc(j.next_action||"—")+'</div>'+
         '<div class="muted metric">'+esc(j.device||"default host")+(j.project?' · '+esc(j.project):'')+
-          ' · heartbeat '+esc(hb ?? "—")+'s · progress '+esc(pg ?? "—")+'s'+
-          (io.length?' · '+esc(io.join(" · ")):'')+'</div>'+
-        '</div>';
+        ' · heartbeat '+esc(runtime.heartbeat_age_seconds??"—")+'s · progress '+esc(runtime.progress_age_seconds??"—")+'s'+
+        (io.length?' · '+esc(io.join(" · ")):'')+'</div></div>';
     };
     const delegatedJobs=jobs.filter(j=>j?.backend?.type==="agent-adapter");
     const directJobs=jobs.filter(j=>j?.backend?.type!=="agent-adapter");
+    const activeAgents=delegatedJobs.filter(j=>!isTerminal(j));
     const runningJobs=directJobs.filter(j=>!isTerminal(j)&&live(j));
     const waitingJobs=directJobs.filter(j=>!isTerminal(j)&&!live(j));
     const terminalJobs=jobs.filter(isTerminal);
-    q("sum-running").textContent = String(runningJobs.length);
-    q("sum-agents").textContent = String(delegatedJobs.filter(j=>!isTerminal(j)).length);
-    q("agents").innerHTML = delegatedJobs.length
-      ? delegatedJobs.slice(0,8).map(j=>
-          '<div class="item"><div><span class="badge '+(j.status==="FAILED"?"bad":j.terminal?"ok":"warn")+'"><span class="dot"></span>'+esc(j.terminal?j.status:"DELEGATED")+' · Agent</span></div>'+
-          '<div class="detail"><strong>'+esc(j.goal||"Agent task")+'</strong></div>'+
-          '<div class="muted">'+esc(j.project||"Unscoped project")+' · '+esc(j.device||"unknown host")+'</div>'+
-          '<div class="muted"><code>'+esc(j.job_id||"")+'</code></div></div>'
-        ).join("")
-      : '<div class="empty">No delegated Agent tasks in recent job history. Direct Remote tools remain available without an Agent.</div>';
-    q("sum-waiting").textContent = String(waitingJobs.length + (execution.cognition ? 1 : 0));
-    q("running").innerHTML = runningJobs.length
-      ? runningJobs.slice(0,8).map(jobCard).join("")
-      : '<div class="empty">No server-side worker or child process is currently alive.</div>';
     const cognition=execution.cognition||null;
+    q("sum-running").textContent=String(runningJobs.length);
+    q("sum-agents").textContent=String(activeAgents.length);
+    q("sum-waiting").textContent=String(waitingJobs.length+(cognition?1:0));
+    q("agents-section").hidden=!activeAgents.length;
+    q("running-section").hidden=!runningJobs.length;
+    q("waiting-section").hidden=!(waitingJobs.length||cognition);
+    q("idle-note").hidden=Boolean(activeAgents.length||runningJobs.length||waitingJobs.length||cognition);
+    setHTML("agents",activeAgents.slice(0,8).map(j=>
+      '<div class="item"><span class="badge warn"><span class="dot"></span>'+esc(effectiveStatus(j))+' · Agent</span>'+
+      '<div class="detail"><strong>'+esc(j.goal||"Agent task")+'</strong></div>'+
+      '<div class="muted">'+esc(j.project||"Unscoped project")+' · '+esc(j.device||"unknown host")+'</div></div>'
+    ).join(""));
+    setHTML("running",runningJobs.slice(0,8).map(jobCard).join(""));
     const cognitionCard=cognition
-      ? '<div class="item"><span class="badge warn"><span class="dot"></span>'+esc(cognition.status||"COGNITION")+'</span><div><strong>'+esc(cognition.agent_id||"agent cognition")+'</strong></div><div class="muted"><code>'+esc(cognition.request_id||"")+'</code></div></div>'
-      : '';
-    q("waiting").innerHTML = waitingJobs.length || cognitionCard
-      ? waitingJobs.slice(0,8).map(jobCard).join("")+cognitionCard
-      : '<div class="empty">Nothing is waiting for ChatGPT, approval, or a resumed worker.</div>';
+      ? '<div class="item"><span class="badge warn"><span class="dot"></span>'+esc(cognition.status||"COGNITION")+'</span>'+
+        '<div><strong>'+esc(cognition.agent_id||"agent cognition")+'</strong></div></div>' : '';
+    setHTML("waiting",waitingJobs.slice(0,8).map(jobCard).join("")+cognitionCard);
+
+    const approvals=overview?.permissions?.pending||[];
     const completions=overview?.completion_events||[];
-    const completionCards=completions.slice(0,8).map(event=>
-      '<div class="item"><span class="badge warn"><span class="dot"></span>UNACKNOWLEDGED_COMPLETION</span>'+
+    q("sum-approvals").textContent=String(approvals.length);
+    q("attention-section").hidden=!(approvals.length||completions.length);
+    setHTML("approvals",approvals.length
+      ? '<div class="item"><span class="badge warn"><span class="dot"></span>'+esc(approvals.length)+
+        ' command approval(s) pending</span><div class="muted">Inspect each exact request before approval.</div></div>' : "");
+    setHTML("completions",completions.slice(0,8).map(event=>
+      '<div class="item"><span class="badge warn"><span class="dot"></span>UNACKNOWLEDGED</span>'+
       '<div><strong>'+esc(event.status||"COMPLETED")+' · '+esc(event.job_id||"")+'</strong></div>'+
       '<div class="muted">'+esc(event.goal||"Durable completion receipt")+'</div></div>'
-    ).join("");
-    q("completions").innerHTML = completionCards ||
-      '<div class="empty">No unacknowledged completion receipts.</div>';
+    ).join(""));
 
-    const connectors = latest.connectors || [];
-    q("connectors").innerHTML = connectors.length ? connectors.map(c=>'<div class="item"><strong>'+esc(c.name||"Connector")+'</strong><div class="muted">'+(c.online?"ONLINE":"OFFLINE")+(c.default?" · default":"")+"</div></div>").join("") : '<div class="empty">No paired Connectors.</div>';
-    const hosts = latest.hosts || [];
-    q("sum-hosts").textContent = hosts.length ?
-      String(hosts.filter(h=>h.online).length)+"/"+String(hosts.length) : "0";
-    q("devices").innerHTML = hosts.length ? hosts.map(h=>
+    const hosts=latest.hosts||[];
+    q("sum-hosts").textContent=String(hosts.filter(h=>h.online).length)+"/"+String(hosts.length);
+    setHTML("devices",hosts.length?hosts.map(h=>
       '<div class="item"><div class="row"><strong>'+esc(h.name)+'</strong>'+
       '<span class="badge '+(h.online?'ok':'bad')+'">'+(h.online?'ONLINE':'OFFLINE')+'</span></div>'+
-      '<div class="muted">Connector: '+esc((h.connectors||[]).join(", "))+'</div></div>'
-    ).join("") : '<div class="empty">No enrolled hosts.</div>';
-    q("jobs").innerHTML = terminalJobs.length
-      ? terminalJobs.slice(0,8).map(jobCard).join("")
-      : '<div class="empty">No recent terminal durable jobs.</div>';
-    const p=overview?.permissions||{}; const creds=overview?.credentials||[];
-    const approvals=(p.pending||[]);
-    q("sum-approvals").textContent = String(approvals.length);
-    q("security").innerHTML =
-      '<div class="item"><strong>'+esc(approvals.length)+'</strong> pending command approvals<div class="muted">'+esc(p.active_count||0)+' active grants · '+esc(p.revoked_count||0)+' revoked</div>'+
-      (approvals.length?'<div class="muted">'+approvals.slice(0,6).map(a=>esc(a.executable||"?")+' @ '+esc(a.host_id||"?")).join(" · ")+'</div>':'')+'</div>'+
-      '<div class="item"><strong>'+esc(creds.length)+'</strong> credential handles<div class="muted">'+esc(creds.map(c=>c.handle).slice(0,5).join(", ")||"None")+'</div></div>';
+      '<div class="muted">'+esc((h.connectors||[]).join(", "))+'</div></div>'
+    ).join(""):'<div class="muted">No enrolled hosts.</div>');
+
+    // Terminal jobs and command history are never separate expanding cards.
+    setHTML("jobs",terminalJobs.length?'<div class="history-list">'+terminalJobs.slice(0,8).map(j=>
+      '<div class="history-row"><span>'+esc(j.goal||"Unnamed job")+'</span><span class="muted">'+
+      esc(effectiveStatus(j))+' · '+esc(j.device||"default host")+'</span></div>'
+    ).join("")+'</div>':'<div class="muted">No recent finished jobs.</div>');
     const activity=overview?.activity||[];
-    q("activity").innerHTML = activity.length ? activity.slice().reverse().slice(0,12).map(a=>'<div class="item"><span class="badge '+(a.ok?'ok':'bad')+'"><span class="dot"></span>'+esc(a.tool)+'</span><div class="muted" title="'+esc(a.ts)+'">'+esc(formatTs(a.ts))+'</div></div>').join("") : '<span class="muted">No recent activity.</span>';
+    setHTML("activity",activity.length?'<div class="history-list">'+activity.slice(-6).reverse().map(a=>
+      '<div class="history-row"><code>'+esc(a.tool||"command")+'</code>'+
+      '<time title="'+esc(a.ts||"")+'">'+esc(formatTs(a.ts))+' · '+(a.ok?"OK":"Failed")+'</time></div>'
+    ).join("")+'</div>':'<div class="muted">No recent activity.</div>');
+    const connectors=latest.connectors||[];
+    setHTML("connectors",connectors.length?connectors.map(c=>
+      '<div class="item"><strong>'+esc(c.name||"Connector")+'</strong><div class="muted">'+
+      (c.online?"ONLINE":"OFFLINE")+(c.default?" · default":"")+'</div></div>'
+    ).join(""):'<div class="muted">No paired Connectors.</div>');
+    const p=overview?.permissions||{},creds=overview?.credentials||[];
+    setHTML("security",'<div class="item"><strong>'+esc(approvals.length)+'</strong> pending command approvals'+
+      '<div class="muted">'+esc(p.active_count||0)+' active grants · '+esc(p.revoked_count||0)+' revoked</div></div>'+
+      '<div class="item"><strong>'+esc(creds.length)+'</strong> credential handles</div>');
   }
   let refreshTimer = null;
   async function refresh() {
     if (!connected) return;
     if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
-    q("headline").textContent="Refreshing…";
+    q("sync-note").textContent="";
     try {
       const result=window.openai?.callTool
         ? await window.openai.callTool("remote_overview",{include_resources:true})
         : await request("tools/call",{name:"remote_overview",arguments:{include_resources:true}});
       const snapshot=data(result);
       render(snapshot);
+      q("sync-note").textContent="Updated "+new Date().toLocaleTimeString();
     } catch (e) {
-      q("headline").textContent="Refresh failed: "+String(e?.message||e);
+      q("sync-note").textContent="Refresh failed: "+String(e?.message||e);
     } finally {
       if (connected) refreshTimer = setTimeout(()=>void refresh(), 10000);
     }
@@ -1019,12 +1053,11 @@ CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
     if(refreshTimer){clearTimeout(refreshTimer);refreshTimer=null;}
   },{once:true});
   (async()=>{try{
-    await request("ui/initialize",{appInfo:{name:"livingruntime-remote-control-plane",version:"1.3.0"},appCapabilities:{availableDisplayModes:["inline","pip","fullscreen"]},protocolVersion:"2026-01-26"});
+    await request("ui/initialize",{appInfo:{name:"livingruntime-remote-control-plane",version:"1.4.0"},appCapabilities:{availableDisplayModes:["inline","pip","fullscreen"]},protocolVersion:"2026-01-26"});
     notify("ui/notifications/initialized"); connected=true;
     syncDisplayMode();
     const initial=window.openai?.toolOutput||latest;
     render(initial);
-    void requestDisplayMode("pip");
     refreshTimer = setTimeout(()=>void refresh(), 1000);
   }catch(e){q("headline").textContent="Widget initialization failed: "+String(e?.message||e);}})();
 })();
@@ -1817,6 +1850,13 @@ def create_mcp(
         name="remote-control-plane-v8",
         title="LivingRuntime Remote control plane",
         description="Backward-compatible dashboard for sessions using the v8 resource URI.",
+    )
+    add_widget_resource(
+        CONTROL_PLANE_WIDGET_V10_URI,
+        CONTROL_PLANE_WIDGET_HTML,
+        name="remote-control-plane-v10",
+        title="LivingRuntime Remote control plane",
+        description="Backward-compatible dashboard for sessions using the v10 resource URI.",
     )
     add_widget_resource(
         CONTROL_PLANE_WIDGET_URI,
