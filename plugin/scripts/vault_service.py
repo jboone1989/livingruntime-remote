@@ -170,6 +170,8 @@ class VaultServer(socketserver.ThreadingMixIn, _UnixStreamServer):
 def run(socket_path: Path, root: Path, allowed_uid: int) -> None:
     if os.name != "posix" or not hasattr(socket, "SO_PEERCRED"):
         raise RuntimeError("the isolated credential vault requires Linux SO_PEERCRED")
+    if os.geteuid() == 0:
+        raise PermissionError("vault daemon must not run as root")
     if os.geteuid() == allowed_uid:
         raise PermissionError("vault must run under a different OS uid from Connector")
     os.umask(0o077)
