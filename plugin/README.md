@@ -22,6 +22,8 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 - exec
 - terminal_start (model-visible, exact-grant interactive PTY setup)
 - terminal_key_exchange / terminal_input / terminal_read / terminal_close (app-only, encrypted)
+- secure_input_open (model-visible setup for general API keys, passwords, Tokens, and multiline PEM)
+- secure_input_key_exchange / secure_input_submit / secure_input_cancel (app-only encrypted credential intake)
 - list_credentials
 - lease_credential
 - list_credential_leases
@@ -75,6 +77,32 @@ Run targeted tests with:
 ```bash
 python -m unittest discover -s plugin/tests -p 'test_secure_terminal*.py'
 ```
+
+### Protected credential entry
+
+For an API key, provider token, login password to save for reuse, PEM private
+key, or multi-line JSON credential, call `secure_input_open` with a human-readable
+handle, provider, one bounded consumer capability, and the intended project and
+device. This opens a **masked ChatGPT App form**. The human types or pastes the
+secret into the form rather than ChatGPT chat, a model-visible parameter, a
+GitHub issue, or `exec.argv`. The form uses ephemeral P-256 ECDH and
+AES-256-GCM to encrypt the value before `secure_input_submit` is called;
+Connector alone decrypts it and calls the existing local credential broker.
+The tool response carries only the handle and permission metadata. Each
+form expires after three minutes and is consumed on the first submission
+attempt. The user can cancel without saving.
+
+The protected persistent credential store currently requires a POSIX
+Connector: on Windows, safe native credential storage/ACL handling must be
+implemented before enabling this form.
+
+Consumer capabilities are explicit, not an arbitrary `exec_with_secret`.
+Long-term credentials are stored by the existing Connector-local broker in
+user-private **0600** files, not currently encrypted at rest; the Connector's
+OS user/root and local backups can access them. Do not put credentials on an
+untrusted Connector host. One-time login prompts and OTPs should use
+`terminal_start` instead of persistent storage. The browser and Relay are
+still trusted for authentic key delivery and widget integrity.
 
 ### Credential broker
 

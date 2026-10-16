@@ -19,6 +19,7 @@ from mcp.types import ToolAnnotations
 
 import localexec
 import secure_terminal
+import secure_input
 from agent_adapters import registry as agent_registry, load_installed
 import agent_sessions
 import agent_policy
@@ -1517,6 +1518,67 @@ def list_projects() -> dict[str, Any]:
     }
     _audit("list_projects", True, {"count": len(rows)})
     return result
+
+
+@server.tool(
+    name="secure_input_open",
+    annotations=ToolAnnotations(title="Open protected credential input", readOnlyHint=False,
+                                destructiveHint=False, openWorldHint=False),
+)
+def secure_input_open(
+    handle: str, provider: str, capability: str,
+    project: str | None = None, device: str | None = None,
+) -> dict[str, Any]:
+    """Create a secret-free input form bound to an explicit target and capability."""
+    cfg = _config()
+    selected = host_for(cfg, project=project, host_id=device)
+    if project is not None:
+        # Validate project membership on the nominated target before binding.
+        resolve_path(cfg, None, project=project, host_id=device)
+    result = secure_input.begin(
+        handle=handle, provider=provider, capability=capability,
+        project=project, device=selected["id"],
+    )
+    _audit("secure_input_open", True, {
+        "session_id": result["session_id"], "handle": handle,
+        "capability": capability, "device": selected["id"], "project": project,
+    })
+    return result
+
+
+@server.tool(
+    name="secure_input_key_exchange",
+    annotations=ToolAnnotations(title="Bind protected input browser", readOnlyHint=False,
+                                destructiveHint=False, openWorldHint=False),
+)
+def secure_input_key_exchange(session_id: str, client_public_key: str) -> dict[str, Any]:
+    """Bind a one-time browser key; only public metadata passes through MCP."""
+    return secure_input.exchange(session_id, client_public_key)
+
+
+@server.tool(
+    name="secure_input_submit",
+    annotations=ToolAnnotations(title="Store encrypted credential", readOnlyHint=False,
+                                destructiveHint=True, openWorldHint=False),
+)
+def secure_input_submit(session_id: str, nonce: str, ciphertext: str) -> dict[str, Any]:
+    """Consume AES-GCM ciphertext internally; return credential metadata only."""
+    result = secure_input.submit(session_id, nonce, ciphertext)
+    _audit("secure_input_submit", True, {
+        "session_id": session_id, "handle": result["handle"],
+        "stored": True,
+    })
+    return result
+
+
+@server.tool(
+    name="secure_input_cancel",
+    annotations=ToolAnnotations(title="Cancel protected credential input", readOnlyHint=False,
+                                destructiveHint=False, openWorldHint=False),
+)
+def secure_input_cancel(session_id: str) -> dict[str, Any]:
+    """Invalidate a pending protected input without writing credential bytes."""
+    return secure_input.cancel(session_id)
 
 
 @server.tool(

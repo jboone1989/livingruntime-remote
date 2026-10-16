@@ -50,6 +50,10 @@ Key boundaries include:
   approved process. No terminal plaintext is included in audit events or durable
   relay task payloads. The connector requires a strictly increasing input counter,
   authenticated ciphertext, and a fresh one-time client key binding.
+- A separate secure-input widget supports masked single-line and multiline
+  credentials. Each three-minute form is bound to a handle, capability, project,
+  and device before entering any secret. It is consumed at first submission,
+  and only opaque handle/scope metadata returns through MCP.
 
 ## Trust boundary
 
@@ -84,3 +88,8 @@ When adding a new secret-consuming capability, prefer a dedicated capability tha
   exact command approvals and existing OS authorization still apply.
 - Do not include credentials in the initial command argv, workspace files,
   approval requests, issue descriptions, or ordinary chat messages.
+- Credentials stored by the existing local broker are currently plaintext
+  files with owner-only 0600 permissions (atomic writes begin at mode 0600).
+  Transport encryption does **not** mean encryption at rest; the Connector
+  OS account, privileged local processes, and backups may still access
+  saved credentials. Use dedicated OS credential storage where available.

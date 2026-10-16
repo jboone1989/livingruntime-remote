@@ -650,6 +650,18 @@ class RelayServerTests(unittest.TestCase):
             "watch_agent_events",
         })
         self.assertEqual(set(tools), expected)
+        self.assertEqual(
+            tools["secure_input_open"].meta["ui"]["resourceUri"],
+            server.SECURE_INPUT_WIDGET_URI,
+        )
+        self.assertEqual(
+            tools["secure_input_open"].meta["ui"]["visibility"],
+            ["model", "app"],
+        )
+        for app_only in (
+            "secure_input_key_exchange", "secure_input_submit", "secure_input_cancel"
+        ):
+            self.assertEqual(tools[app_only].meta["ui"]["visibility"], ["app"])
         app_bindings = {
             binding.kwargs["name"]: binding
             for extension in mcp._extensions

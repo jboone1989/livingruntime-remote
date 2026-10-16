@@ -106,6 +106,8 @@ CONTROL_PLANE_WIDGET_LEGACY_URI = "ui://livingruntime-remote/control-plane-v3.ht
 BROWSER_TAKEOVER_WIDGET_URI = "ui://livingruntime-remote/browser-takeover-v1.html"
 SECURE_TERMINAL_WIDGET_URI = "ui://livingruntime-remote/secure-terminal-v1.html"
 SECURE_TERMINAL_WIDGET_HTML = (Path(__file__).parent / "secure_terminal_widget.html").read_text(encoding="utf-8")
+SECURE_INPUT_WIDGET_URI = "ui://livingruntime-remote/secure-input-v1.html"
+SECURE_INPUT_WIDGET_HTML = (Path(__file__).parent / "secure_input_widget.html").read_text(encoding="utf-8")
 PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
@@ -131,6 +133,7 @@ TOOL_TEXT = {
     "git": ("Run Git command", "Run a bounded Git command inside an allowed repository using explicit arguments."),
     "exec": ("Execute bounded command", "Run a built-in development command or an exact command previously approved by the operator. Unapproved commands return a durable approval request."),
     "terminal_start": ("Start secure interactive terminal", "Start a short-lived, explicitly authorized PTY command and open a browser-only ECDH/AES-GCM input panel. Never pass passwords or OTPs in argv or chat."),
+    "secure_input_open": ("Open protected credential input", "Create an embedded encrypted credential input form for API keys, tokens, passwords, or multiline private keys; secret never appears in ChatGPT messages or tool arguments."),
     "list_credentials": ("List credential handles", "List local credential handles and scopes without returning secret values."),
     "lease_credential": ("Lease credential handle", "Issue a short-lived opaque credential lease scoped to one capability, project, and device."),
     "list_credential_leases": ("List credential leases", "List opaque credential leases without returning credential values."),
@@ -1843,6 +1846,70 @@ def create_mcp(
         title="Secure interactive terminal",
         description="Browser-to-Connector encrypted, short-lived PTY terminal; no raw stdin in model-visible tool arguments.",
     )
+    add_widget_resource(
+        SECURE_INPUT_WIDGET_URI,
+        SECURE_INPUT_WIDGET_HTML,
+        name="secure-credential-input",
+        title="Protected credential input",
+        description="Browser-only masked API key, password, Token, and multiline PEM intake.",
+    )
+
+    @apps.tool(
+        resource_uri=SECURE_INPUT_WIDGET_URI,
+        visibility=["model", "app"],
+        name="secure_input_open",
+        title=TOOL_TEXT["secure_input_open"][0],
+        description=TOOL_TEXT["secure_input_open"][1],
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False),
+        meta={**WRITE, "openai/outputTemplate": SECURE_INPUT_WIDGET_URI},
+    )
+    async def secure_input_open(
+        handle: str, provider: str, capability: str,
+        project: str | None = None, device: str | None = None,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"), "secure_input_open",
+            {"handle": handle, "provider": provider, "capability": capability,
+             "project": project, "device": device},
+        )
+
+    @apps.tool(
+        resource_uri=SECURE_INPUT_WIDGET_URI, visibility=["app"],
+        name="secure_input_key_exchange", title="Bind protected credential input",
+        description="Browser-only ephemeral key exchange; no secret input accepted.",
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False),
+        meta=WRITE,
+    )
+    async def secure_input_key_exchange(session_id: str, client_public_key: str) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"), "secure_input_key_exchange",
+            {"session_id": session_id, "client_public_key": client_public_key},
+        )
+
+    @apps.tool(
+        resource_uri=SECURE_INPUT_WIDGET_URI, visibility=["app"],
+        name="secure_input_submit", title="Submit encrypted credential",
+        description="Browser-only encrypted payload stored on the Connector; returns only credential handle metadata.",
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False),
+        meta=WRITE,
+    )
+    async def secure_input_submit(
+        session_id: str, nonce: str, ciphertext: str,
+    ) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"), "secure_input_submit",
+            {"session_id": session_id, "nonce": nonce, "ciphertext": ciphertext},
+        )
+
+    @apps.tool(
+        resource_uri=SECURE_INPUT_WIDGET_URI, visibility=["app"],
+        name="secure_input_cancel", title="Cancel protected credential input",
+        description="Discard one-time form and ephemeral encryption key.",
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False),
+        meta=WRITE,
+    )
+    async def secure_input_cancel(session_id: str) -> dict[str, Any]:
+        return await relay.call(_principal("remote:write"), "secure_input_cancel", {"session_id": session_id})
 
     @apps.tool(
         resource_uri=SECURE_TERMINAL_WIDGET_URI,

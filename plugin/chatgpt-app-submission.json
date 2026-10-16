@@ -751,6 +751,54 @@
         "open_world_justification": "Only controls the selected existing session on the Connector.",
         "destructive_justification": "Closing a session terminates its running process."
       }
+    },
+    "secure_input_open": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates an ephemeral form with only public key and scoped handle metadata.",
+        "open_world_justification": "Limited to a nominated Connector and locally configured scope.",
+        "destructive_justification": "Reserves a form; does not execute code or save any credential."
+      }
+    },
+    "secure_input_key_exchange": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Exchanges a browser public key to derive an ephemeral Connector-only encryption key.",
+        "open_world_justification": "Only authenticated browser-to-Connector key exchange.",
+        "destructive_justification": "Does not write secret data or run commands."
+      }
+    },
+    "secure_input_submit": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only AES-GCM ciphertext is received, then decrypted inside the paired Connector credential broker.",
+        "open_world_justification": "Stores only on the owner's Connector; not sent to an arbitrary endpoint.",
+        "destructive_justification": "Can create or replace the named credential scoped to the target device/project/capability."
+      }
+    },
+    "secure_input_cancel": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Drops a single-use form and ephemeral key without consuming a secret.",
+        "open_world_justification": "Only the Connector session is affected.",
+        "destructive_justification": "No persistent resource is modified."
+      }
     }
   },
   "test_cases": [

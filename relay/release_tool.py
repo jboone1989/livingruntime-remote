@@ -9,7 +9,7 @@ ROOT = Path("/opt/livingruntime-remote-relay")
 RELEASES = ROOT / "releases"
 NAME_RE = re.compile(r"^v[0-9A-Za-z._-]+$")
 SEED_FILES = ("auth.py", "embedded_auth.py", "store.py", "mcp_events.py", "contract.py", "requirements.txt", "README.md")
-OPTIONAL_UI_FILES = ("secure_terminal_widget.html",)
+OPTIONAL_UI_FILES = ("secure_terminal_widget.html", "secure_input_widget.html")
 
 
 def release_path(name: str) -> Path:
