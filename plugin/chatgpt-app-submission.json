@@ -799,6 +799,18 @@
         "open_world_justification": "Only the Connector session is affected.",
         "destructive_justification": "No persistent resource is modified."
       }
+    },
+    "delete_credential": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Deletes only the named credential from an isolated vault and revokes related leases; never exposes plaintext.",
+        "open_world_justification": "The deletion is confined to a stored owner credential handle, not external systems.",
+        "destructive_justification": "The irreversible removal must be confirmed in the credential manager UI by typing the handle."
+      }
     }
   },
   "test_cases": [

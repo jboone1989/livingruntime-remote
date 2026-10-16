@@ -28,6 +28,8 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 - lease_credential
 - list_credential_leases
 - revoke_credential_lease
+- delete_credential (app-only in public ChatGPT widget)
+- credential_manager (public ChatGPT widget for metadata and authorization management)
 - github_identity
 - create_job
 - get_job
@@ -78,37 +80,58 @@ Run targeted tests with:
 python -m unittest discover -s plugin/tests -p 'test_secure_terminal*.py'
 ```
 
-### Protected credential entry
+### Isolated credential vault and human handoff
 
-For an API key, provider token, login password to save for reuse, PEM private
-key, or multi-line JSON credential, call `secure_input_open` with a human-readable
-handle, provider, one bounded consumer capability, and the intended project and
-device. This opens a **masked ChatGPT App form**. The human types or pastes the
-secret into the form rather than ChatGPT chat, a model-visible parameter, a
-GitHub issue, or `exec.argv`. The form uses ephemeral P-256 ECDH and
-AES-256-GCM to encrypt the value before `secure_input_submit` is called;
-Connector alone decrypts it and calls the existing local credential broker.
-The tool response carries only the handle and permission metadata. Each
-form expires after three minutes and is consumed on the first submission
-attempt. The user can cancel without saving.
+**Linux only**. Before enabling credential input, install the dedicated
+broker on the actual Connector machine (not the cloud Relay), replacing
+`ubuntu` with the OS account running the Connector:
 
-The protected persistent credential store currently requires a POSIX
-Connector: on Windows, safe native credential storage/ACL handling must be
-implemented before enabling this form.
+```bash
+sudo bash plugin/scripts/install-vault.sh ubuntu
+```
 
-Consumer capabilities are explicit, not an arbitrary `exec_with_secret`.
-Long-term credentials are stored by the existing Connector-local broker in
-user-private **0600** files, not currently encrypted at rest; the Connector's
-OS user/root and local backups can access them. Do not put credentials on an
-untrusted Connector host. One-time login prompts and OTPs should use
-`terminal_start` instead of persistent storage. The browser and Relay are
-still trusted for authentic key delivery and widget integrity.
+The installer creates a separate locked-down `livingruntime-vault` user,
+root-owned code/venv under `/opt/livingruntime-vault`, a systemd service,
+`/var/lib/livingruntime-vault/credentials` (0700), and a Unix socket under
+`/run/livingruntime-vault` (0660) that permits only the exact Connector
+UID via Linux `SO_PEERCRED`. The bridge itself never handles a decrypted
+credential; decryption and fixed GitHub token verification run in the vault
+daemon. No generic secret-resolve API exists. The Connector refuses any
+fallback if the broker is not running. Legacy user-owned credentials are
+**not** imported automatically; rotate them using the new form, then
+delete the old files after verification.
 
-### Credential broker
+Call `secure_input_open` for a password, API Key, token, multiline JSON or
+PEM private key that must be saved for subsequent scoped use. The embedded
+browser form encrypts with ephemeral P-256 ECDH / HKDF / AES-GCM. Only
+ciphertext crosses MCP, with the ephemeral private key held by the isolated
+vault, not the Connector. A form expires in 180 seconds, accepts one
+submission attempt, and returns only a handle/provider/capability/
+project/device receipt. On confirmed storage, the widget asks ChatGPT to
+continue the authentication-blocked operation through the documented
+`sendFollowUpMessage` API; if unsupported, the user can explicitly
+continue. The Agent is never given the secret text.
 
-Secrets are added only on the owned machine with `python scripts/credentialctl.py set ...`; there is intentionally no MCP tool that accepts or returns a secret value. ChatGPT sees only handles and declared capability/project/device scopes. `lease_credential` creates a short-lived opaque lease (30-900 seconds), and `revoke_credential_lease` invalidates it without deleting the underlying credential. Generic `exec_with_secret` is intentionally not provided; dedicated capabilities must consume leases internally so arbitrary commands cannot print or exfiltrate credentials.
+Call `terminal_start` for a short-lived OTP/password prompt that should
+not be stored; every PTY requires an explicit exact command authorization.
+On successful completion the widget can ask ChatGPT to resume the
+interrupted task. Automatic resumption is **chat continuation**, not an
+unsupervised durable job restart.
 
-`github_identity` is the first dedicated lease consumer. It accepts only a `github.identity` lease for provider `github`, sends it only to the fixed `https://api.github.com/user` endpoint with redirects disabled, and returns only public account identity fields.
+Call `credential_manager` to see saved credential handles and leases
+within ChatGPT, revoke a lease, rotate by reopening the secure-input form,
+or delete a credential after typing its handle. No UI/API reveals the raw
+secret. `lease_credential` creates short-lived (30-900s) scoped handles,
+`github_identity` is the only built-in secret consumer (fixed GitHub
+profile endpoint, no redirects). Generic `exec_with_secret` does not exist.
+
+Isolation limits: the vault is reachable by processes running under the
+Connector UID, which can request allowlisted operations. The broker's
+files are private to a **different UID**, but are **not encrypted at rest**;
+root and the vault UID can still read them. Browser-widget and relay
+integrity remain part of the key-authentication trust boundary. Windows
+does not use this Linux broker; native Windows security requires a separate
+implementation. See `SECURITY.md`.
 
 ### Control plane and host discovery
 

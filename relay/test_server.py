@@ -642,6 +642,7 @@ class RelayServerTests(unittest.TestCase):
             "claim_llm_request_for_watcher",
             "open_remote_control_plane",
             "open_browser_takeover",
+            "credential_manager",
         } | (set(REMOTE_TOOLS) - {
             # Agent wrappers are not yet exposed by the public relay. Keep
             # expectations aligned with the actual public tool registry.
@@ -659,9 +660,14 @@ class RelayServerTests(unittest.TestCase):
             ["model", "app"],
         )
         for app_only in (
-            "secure_input_key_exchange", "secure_input_submit", "secure_input_cancel"
+            "secure_input_key_exchange", "secure_input_submit", "secure_input_cancel",
+            "delete_credential",
         ):
             self.assertEqual(tools[app_only].meta["ui"]["visibility"], ["app"])
+        self.assertEqual(
+            tools["credential_manager"].meta["ui"]["resourceUri"],
+            server.CREDENTIAL_MANAGER_WIDGET_URI,
+        )
         app_bindings = {
             binding.kwargs["name"]: binding
             for extension in mcp._extensions

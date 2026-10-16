@@ -99,7 +99,15 @@ button:disabled{opacity:.45;cursor:default}.note{font-size:12px;opacity:.7;margi
         view.textContent = (view.textContent + new TextDecoder().decode(plain)).slice(-30000);
         view.scrollTop = view.scrollHeight;
       }
-      if(r?.running === false) {stop("命令已退出（代码 " + r.returncode + "）");return;}
+      if(r?.running === false) {
+        stop("命令已退出（代码 " + r.returncode + "）");
+        if(r.returncode === 0 && window.openai?.sendFollowUpMessage) {
+          void window.openai.sendFollowUpMessage({
+            prompt:"LivingRuntime Remote 安全交互式终端已成功完成认证步骤。请继续刚才被认证阻塞的任务，不要要求在聊天里粘贴密码或密钥。"
+          }).catch(()=>{});
+        }
+        return;
+      }
     }catch(error){stop("终端读取失败：" + String(error?.message||"error").slice(0,160));return;}
     pollTimer = setTimeout(()=>void poll(),800);
   }

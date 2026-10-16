@@ -37,6 +37,7 @@ REMOTE_TOOLS = (
     "lease_credential",
     "list_credential_leases",
     "revoke_credential_lease",
+    "delete_credential",
     "github_identity",
     "create_job",
     "get_job",

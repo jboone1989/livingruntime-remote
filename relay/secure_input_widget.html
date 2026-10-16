@@ -41,6 +41,12 @@ async function call(name,args){
  return new Promise((resolve,reject)=>pending.set(id,{resolve,reject}));
 }
 function status(t){el("status").textContent=t;}
+function notifyContinuation(handle){
+ const prompt="LivingRuntime Remote 的受保护输入已完成，凭据句柄："+handle+"。请继续刚才因认证而暂停的任务，只使用授权句柄，勿请求或展示密钥明文。";
+ if(window.openai?.sendFollowUpMessage){
+  void window.openai.sendFollowUpMessage({prompt}).catch(()=>{});
+ }
+}
 function disable(t){
  finished=true;busy=false;el("save").disabled=true;el("cancel").disabled=true;
  el("value").value="";el("multiline").value="";
@@ -93,6 +99,7 @@ el("form").addEventListener("submit",async e=>{
   const r=await call("secure_input_submit",{session_id:session.id,nonce:b64(nonce),ciphertext:b64(encrypted)});
   if(!r.stored)throw new Error("未收到凭据保存确认");
   disable("已安全接收，保存句柄："+r.handle+"。凭据内容未返回聊天。");
+  notifyContinuation(r.handle);
  }catch(e){
   bytes.fill(0);disable("保存未确认。输入已清空，请重新打开安全输入组件。");
  }

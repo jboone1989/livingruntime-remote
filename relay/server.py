@@ -108,6 +108,8 @@ SECURE_TERMINAL_WIDGET_URI = "ui://livingruntime-remote/secure-terminal-v1.html"
 SECURE_TERMINAL_WIDGET_HTML = (Path(__file__).parent / "secure_terminal_widget.html").read_text(encoding="utf-8")
 SECURE_INPUT_WIDGET_URI = "ui://livingruntime-remote/secure-input-v1.html"
 SECURE_INPUT_WIDGET_HTML = (Path(__file__).parent / "secure_input_widget.html").read_text(encoding="utf-8")
+CREDENTIAL_MANAGER_WIDGET_URI = "ui://livingruntime-remote/credential-manager-v1.html"
+CREDENTIAL_MANAGER_WIDGET_HTML = (Path(__file__).parent / "credential_manager_widget.html").read_text(encoding="utf-8")
 PI_JOB_WIDGET_DOMAIN = "https://remote.livingruntime.com"
 IDENTITY_SCOPES = ["openid", "email"]
 SESSION_SCOPES = ["offline_access"]
@@ -138,6 +140,7 @@ TOOL_TEXT = {
     "lease_credential": ("Lease credential handle", "Issue a short-lived opaque credential lease scoped to one capability, project, and device."),
     "list_credential_leases": ("List credential leases", "List opaque credential leases without returning credential values."),
     "revoke_credential_lease": ("Revoke credential lease", "Revoke one opaque credential lease without deleting the underlying credential."),
+    "delete_credential": ("Delete vault credential", "Delete one stored credential and invalidate its leases. Used only through the credential manager interface."),
     "github_identity": ("Verify GitHub credential", "Use a scoped credential lease internally to verify the authenticated GitHub identity without returning the credential value."),
     "create_job": ("Create durable job", "Create a durable LivingRuntime Remote job for a long-running goal, optionally linked to an existing Pi job."),
     "get_job": ("Get durable job", "Read one durable Remote job including progress, backend, next action, and checkpoints."),
@@ -1853,6 +1856,40 @@ def create_mcp(
         title="Protected credential input",
         description="Browser-only masked API key, password, Token, and multiline PEM intake.",
     )
+
+    add_widget_resource(
+        CREDENTIAL_MANAGER_WIDGET_URI,
+        CREDENTIAL_MANAGER_WIDGET_HTML,
+        name="credential-manager",
+        title="Credential handles and authorizations",
+        description="Manage protected vault handles and authorization leases.",
+    )
+
+    @apps.tool(
+        resource_uri=CREDENTIAL_MANAGER_WIDGET_URI,
+        visibility=["model", "app"],
+        name="credential_manager",
+        title="Open credential manager",
+        description="Open an in-ChatGPT view of protected vault handles, rotations, lease revocations and credential deletion.",
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+        meta={**READ, "openai/outputTemplate": CREDENTIAL_MANAGER_WIDGET_URI},
+    )
+    async def credential_manager() -> dict[str, Any]:
+        return {"opened": True, "vault": "isolated", "secret_exposure": False}
+
+    @apps.tool(
+        resource_uri=CREDENTIAL_MANAGER_WIDGET_URI,
+        visibility=["app"],
+        name="delete_credential",
+        title=TOOL_TEXT["delete_credential"][0],
+        description=TOOL_TEXT["delete_credential"][1],
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False),
+        meta=WRITE,
+    )
+    async def delete_credential(handle: str) -> dict[str, Any]:
+        return await relay.call(
+            _principal("remote:write"), "delete_credential", {"handle": handle},
+        )
 
     @apps.tool(
         resource_uri=SECURE_INPUT_WIDGET_URI,

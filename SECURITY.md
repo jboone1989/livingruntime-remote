@@ -88,14 +88,26 @@ When adding a new secret-consuming capability, prefer a dedicated capability tha
   exact command approvals and existing OS authorization still apply.
 - Do not include credentials in the initial command argv, workspace files,
   approval requests, issue descriptions, or ordinary chat messages.
-- Credentials stored by the existing local broker are currently plaintext
-  files with owner-only 0600 permissions (atomic writes begin at mode 0600).
-  Transport encryption does **not** mean encryption at rest; the Connector
-  OS account, privileged local processes, and backups may still access
-  saved credentials. Use dedicated OS credential storage where available.
-- Ordinary Remote read/write/list/patch file tools now reject direct paths
-  into the Connector credential directory, including symlink aliases.
-  This is defense-in-depth, **not** an execution sandbox: arbitrary code run
-  via an authorized development command under the same OS user may still
-  access these files. Strong separation requires a broker under a distinct
-  OS identity with a narrow consumer-only IPC API.
+- The isolated vault runs as a **different Linux UID** (`livingruntime-vault`)
+  from the Connector/remote command executor. Vault state is held in 0700
+  directories with owner-only credential files, and the Unix socket requires
+  an exact Connector UID through `SO_PEERCRED`; no raw-secret-resolution
+  RPC exists. A process under the Connector UID can still request the
+  broker's finite allowlisted operations, such as named provider identity
+  checks. All invalid requests fail closed and no plaintext is returned.
+- The broker's credential files are **not encrypted at rest**. Root,
+  processes with the vault UID, or privileged local backups can read them.
+  The daemon's source and Python environment must be root-owned and not
+  writable by Connector-side executors. The installer copies broker code
+  outside the user's home rather than directly importing code from a
+  development worktree.
+- Ordinary Remote read/write/list/patch tools additionally deny the old
+  user credential directory to reduce accidental exposure. This is not a
+  sandbox; an authorized same-UID command can read **other** files owned by
+  that UID, so vault state must never be under the Connector account.
+  Earlier legacy files are not automatically migrated, and old copies
+  must be retired after rotation.
+- Authentication handoff and resume use the host-provided
+  `sendFollowUpMessage` UI API after a confirmed terminal or vault
+  receipt; it requests the agent to continue the interrupted work but
+  cannot guarantee that a separately running job resumes autonomously.

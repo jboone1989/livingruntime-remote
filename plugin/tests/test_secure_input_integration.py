@@ -14,6 +14,7 @@ sys.path.insert(0, str(SCRIPTS))
 import bridge
 
 WIDGET = ROOT / "relay" / "secure_input_widget.html"
+MANAGER = ROOT / "relay" / "credential_manager_widget.html"
 RELAY = ROOT / "relay" / "server.py"
 
 
@@ -22,7 +23,7 @@ class SecureInputIntegrationTests(unittest.TestCase):
         with patch.object(bridge, "_config", return_value={}), \
              patch.object(bridge, "host_for", return_value={"id": "target"}), \
              patch.object(bridge, "resolve_path", return_value="/work/repo"), \
-             patch.object(bridge.secure_input, "begin",
+             patch.object(bridge.vault_client, "call",
                           return_value={"session_id": "secret_test", "server_public_key": "public",
                                         "handle": "cloud", "device": "target"}) as begin, \
              patch.object(bridge, "_audit") as audit:
@@ -32,16 +33,18 @@ class SecureInputIntegrationTests(unittest.TestCase):
             )
         self.assertEqual(r["session_id"], "secret_test")
         self.assertEqual(begin.call_args.kwargs["device"], "target")
+        self.assertEqual(begin.call_args.args, ("input_begin",))
         self.assertNotIn("server_public_key", str(audit.call_args))
 
     def test_write_accepts_only_ciphertext_and_returns_receipt(self):
         expected = {"stored": True, "handle": "cloud", "provider": "provider",
                     "capabilities": ["cap"], "projects": [], "devices": ["host"]}
-        with patch.object(bridge.secure_input, "submit", return_value=expected) as submit, \
+        with patch.object(bridge.vault_client, "call", return_value=expected) as submit, \
              patch.object(bridge, "_audit") as audit:
             r = bridge.secure_input_submit("secret_x", "nonce64", "ciphertext64")
         self.assertEqual(r, expected)
-        self.assertEqual(submit.call_args.args, ("secret_x", "nonce64", "ciphertext64"))
+        self.assertEqual(submit.call_args.args, ("input_submit",))
+        self.assertEqual(submit.call_args.kwargs["ciphertext"], "ciphertext64")
         self.assertNotIn("ciphertext64", str(audit.call_args))
 
     def test_masked_widget_never_sends_plaintext(self):
@@ -56,6 +59,23 @@ class SecureInputIntegrationTests(unittest.TestCase):
         self.assertNotIn('innerHTML', html)
         self.assertNotIn('setWidgetState', html)
         self.assertNotIn('console.log', html)
+
+    def test_manager_is_metadata_only_and_requires_deletion_confirmation(self):
+        html = MANAGER.read_text(encoding="utf-8")
+        source = RELAY.read_text(encoding="utf-8")
+        self.assertIn('verify.value!==item.handle', html)
+        self.assertIn('delete_credential', html)
+        self.assertIn('revoke_credential_lease', html)
+        self.assertIn('credential_manager', source)
+        self.assertNotIn('innerHTML', html)
+        self.assertNotIn('setWidgetState', html)
+        if shutil.which("node"):
+            script, = re.findall(r"<script>(.*?)</script>", html, re.S)
+            compiled = subprocess.run(
+                ["node", "--check"], input=script, text=True,
+                capture_output=True, timeout=10,
+            )
+            self.assertEqual(compiled.returncode, 0, compiled.stderr)
 
     @unittest.skipUnless(shutil.which("node"), "Node is unavailable")
     def test_widget_javascript_parses(self):

@@ -20,6 +20,7 @@ from mcp.types import ToolAnnotations
 import localexec
 import secure_terminal
 import secure_input
+import vault_client
 from agent_adapters import registry as agent_registry, load_installed
 import agent_sessions
 import agent_policy
@@ -43,14 +44,7 @@ from configmodel import (
     resolve_path,
     resolve_unit,
 )
-from credentials import (
-    create_lease as create_credential_lease,
-    credential_root,
-    list_handles as credential_snapshot,
-    list_leases as credential_lease_snapshot,
-    resolve_secret_for_lease,
-    revoke_lease as revoke_credential_lease_runtime,
-)
+from credentials import credential_root
 from execution_status import (
     record_tool_event as record_execution_tool_event,
     snapshot as execution_status_snapshot,
@@ -1435,7 +1429,16 @@ def remote_overview(include_resources: bool = False) -> dict[str, Any]:
         jobs=jobs,
         cognition_status=cognition_status,
     )
-    credential_rows = credential_snapshot()
+    vault_available = True
+    try:
+        credential_rows = vault_client.call("list_credentials")["credentials"]
+        leases = vault_client.call("list_leases", active_only=True)["leases"]
+    except RuntimeError:
+        # Never fall back to a user-readable credential directory. Surface
+        # the isolation service outage while keeping diagnostics available.
+        vault_available = False
+        credential_rows = []
+        leases = []
     credentials = [
         {
             "handle": row.get("handle"),
@@ -1449,7 +1452,6 @@ def remote_overview(include_resources: bool = False) -> dict[str, Any]:
         }
         for row in credential_rows
     ]
-    leases = credential_lease_snapshot(active_only=True)
     completion_events = []
     for job in jobs:
         event = job.get("completion_event") if isinstance(job, dict) else None
@@ -1483,6 +1485,7 @@ def remote_overview(include_resources: bool = False) -> dict[str, Any]:
             "revoked_count": len(permission_state.get("revoked") or []),
         },
         "credentials": credentials,
+        "vault_available": vault_available,
         "active_credential_leases": leases,
         "completion_events": completion_events,
         "activity": _recent_audit_events(20),
@@ -1544,7 +1547,7 @@ def secure_input_open(
     if project is not None:
         # Validate project membership on the nominated target before binding.
         resolve_path(cfg, None, project=project, host_id=device)
-    result = secure_input.begin(
+    result = vault_client.call("input_begin",
         handle=handle, provider=provider, capability=capability,
         project=project, device=selected["id"],
     )
@@ -1562,7 +1565,7 @@ def secure_input_open(
 )
 def secure_input_key_exchange(session_id: str, client_public_key: str) -> dict[str, Any]:
     """Bind a one-time browser key; only public metadata passes through MCP."""
-    return secure_input.exchange(session_id, client_public_key)
+    return vault_client.call("input_exchange", session_id=session_id, client_public_key=client_public_key)
 
 
 @server.tool(
@@ -1572,7 +1575,7 @@ def secure_input_key_exchange(session_id: str, client_public_key: str) -> dict[s
 )
 def secure_input_submit(session_id: str, nonce: str, ciphertext: str) -> dict[str, Any]:
     """Consume AES-GCM ciphertext internally; return credential metadata only."""
-    result = secure_input.submit(session_id, nonce, ciphertext)
+    result = vault_client.call("input_submit", session_id=session_id, nonce=nonce, ciphertext=ciphertext)
     _audit("secure_input_submit", True, {
         "session_id": session_id, "handle": result["handle"],
         "stored": True,
@@ -1587,7 +1590,7 @@ def secure_input_submit(session_id: str, nonce: str, ciphertext: str) -> dict[st
 )
 def secure_input_cancel(session_id: str) -> dict[str, Any]:
     """Invalidate a pending protected input without writing credential bytes."""
-    return secure_input.cancel(session_id)
+    return vault_client.call("input_cancel", session_id=session_id)
 
 
 @server.tool(
@@ -1940,7 +1943,7 @@ def revoke_exec_permission(permission_id: str) -> dict[str, Any]:
 )
 def list_credentials() -> dict[str, Any]:
     """List local credential handles and scopes without reading or returning secret values."""
-    rows = credential_snapshot()
+    rows = vault_client.call("list_credentials")["credentials"]
     _audit("list_credentials", True, {"count": len(rows)})
     return {"credentials": rows}
 
@@ -1971,8 +1974,8 @@ def lease_credential(
     if project is not None or device is not None:
         selected = host_for(cfg, project=project, host_id=device)
         resolved_device = selected["id"]
-    lease = create_credential_lease(
-        handle,
+    lease = vault_client.call(
+        "lease_credential", handle=handle,
         capability=capability,
         project=project,
         device=resolved_device,
@@ -2001,7 +2004,7 @@ def lease_credential(
 )
 def list_credential_leases(active_only: bool = True) -> dict[str, Any]:
     """List opaque credential leases; never returns credential values."""
-    rows = credential_lease_snapshot(active_only=active_only)
+    rows = vault_client.call("list_leases", active_only=active_only)["leases"]
     _audit("list_credential_leases", True, {
         "active_only": active_only,
         "count": len(rows),
@@ -2021,12 +2024,26 @@ def list_credential_leases(active_only: bool = True) -> dict[str, Any]:
 )
 def revoke_credential_lease(lease_id: str) -> dict[str, Any]:
     """Revoke one opaque credential lease without deleting the underlying credential."""
-    result = revoke_credential_lease_runtime(lease_id, operator="mcp_operator")
+    result = vault_client.call("revoke_lease", lease_id=lease_id, operator="mcp_operator")
     _audit("revoke_credential_lease", True, {
         "lease_id": lease_id,
         "handle": result.get("handle"),
         "capability": result.get("capability"),
     })
+    return result
+
+
+@server.tool(
+    name="delete_credential",
+    annotations=ToolAnnotations(
+        title="Delete stored credential",
+        readOnlyHint=False, destructiveHint=True, openWorldHint=False,
+    ),
+)
+def delete_credential(handle: str) -> dict[str, Any]:
+    """Irreversibly delete a named vault credential and revoke its active leases."""
+    result = vault_client.call("delete_credential", handle=handle)
+    _audit("delete_credential", True, {"handle": result["deleted"]})
     return result
 
 
@@ -2049,64 +2066,24 @@ def github_identity(
     project: str | None = None,
     device: str | None = None,
 ) -> dict[str, Any]:
-    """Use a scoped GitHub credential lease internally without exposing its secret."""
+    """Verify a GitHub identity inside the separate vault process.
+
+    Neither a secret nor an Authorization header is returned over the IPC
+    connection. Only a fixed GitHub endpoint may receive the token.
+    """
     cfg = _config()
     resolved_device = device
     if project is not None or device is not None:
-        selected = host_for(cfg, project=project, host_id=device)
-        resolved_device = selected["id"]
-    secret = resolve_secret_for_lease(
-        lease_id,
-        capability="github.identity",
-        project=project,
-        device=resolved_device,
-        provider="github",
+        resolved_device = host_for(cfg, project=project, host_id=device)["id"]
+    result = vault_client.call(
+        "github_identity", lease_id=lease_id,
+        project=project, device=resolved_device,
     )
-    request = urllib.request.Request(
-        "https://api.github.com/user",
-        headers={
-            "authorization": f"Bearer {secret}",
-            "accept": "application/vnd.github+json",
-            "user-agent": f"LivingRuntime-Remote/{VERSION}",
-            "x-github-api-version": "2022-11-28",
-        },
-        method="GET",
-    )
-    opener = urllib.request.build_opener(_NoRedirect())
-    try:
-        with opener.open(request, timeout=10) as response:
-            body = response.read(65537)
-            status = int(getattr(response, "status", 200))
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"GitHub credential verification failed with HTTP {exc.code}") from None
-    except (urllib.error.URLError, TimeoutError, OSError):
-        raise RuntimeError("GitHub credential verification failed") from None
-    if status != 200:
-        raise RuntimeError(f"GitHub credential verification failed with HTTP {status}")
-    if len(body) > 65536:
-        raise RuntimeError("GitHub identity response exceeded size limit")
-    try:
-        payload = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        raise RuntimeError("GitHub identity response was invalid") from None
-    if not isinstance(payload, dict):
-        raise RuntimeError("GitHub identity response was invalid")
-    result = {
-        "provider": "github",
-        "authenticated": True,
-        "login": payload.get("login"),
-        "id": payload.get("id"),
-        "name": payload.get("name"),
-        "type": payload.get("type"),
-    }
     _audit("github_identity", True, {
-        "lease_id": lease_id,
-        "project": project,
-        "device": resolved_device,
-        "login": result["login"],
+        "lease_id": lease_id, "project": project,
+        "device": resolved_device, "login": result.get("login"),
     })
     return result
-
 
 @server.tool(
     name="create_job",
