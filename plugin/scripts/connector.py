@@ -124,7 +124,13 @@ def install_binary() -> list[str]:
     suffix = ".exe" if os.name == "nt" else ""
     destination = bin_dir() / f"livingruntime-remote-connector{suffix}"
     if not destination.exists() or source != destination.resolve():
-        shutil.copy2(source, destination)
+        # Replacing the inode also works while the old Linux binary is running.
+        temporary = destination.with_suffix(destination.suffix + ".next")
+        try:
+            shutil.copy2(source, temporary)
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
     if os.name != "nt":
         destination.chmod(destination.stat().st_mode | 0o111)
     return [str(destination)]
@@ -229,6 +235,7 @@ def install_linux_user_service(command: list[str]) -> None:
     reload = _run(["systemctl", "--user", "daemon-reload"], check=False, env=environment)
     if reload.returncode != 0:
         raise RuntimeError("Unable to access systemd user manager; check linger and user@UID.service: " + (reload.stderr or reload.stdout).strip())
+    was_active = _run(["systemctl", "--user", "is-active", "--quiet", LINUX_SERVICE], check=False, env=environment).returncode == 0
     enabled = _run(["systemctl", "--user", "enable", "--now", LINUX_SERVICE], check=False, env=environment)
     if enabled.returncode != 0:
         raise RuntimeError(
@@ -236,6 +243,16 @@ def install_linux_user_service(command: list[str]) -> None:
             + "\nRun the connector manually with: "
             + _systemd_exec(command)
         )
+    if was_active:
+        # The installer can be a child of the Connector being upgraded. Queue the
+        # restart in a separate systemd unit so the tool can deliver its receipt
+        # before the old service cgroup is stopped.
+        restarted = _run([
+            "systemd-run", "--user", "--quiet", "--collect", "--on-active=3s",
+            "systemctl", "--user", "restart", LINUX_SERVICE,
+        ], check=False, env=environment)
+        if restarted.returncode != 0:
+            raise RuntimeError("Unable to activate installed Connector: " + (restarted.stderr or restarted.stdout).strip())
 
 
 def _launchagent_plist(command: list[str]) -> str:

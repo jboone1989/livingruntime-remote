@@ -25,7 +25,7 @@ while [ "$#" -gt 0 ]; do
   shift
   cat > "$1" <<'END'
 #!/bin/sh
-[ "$1" = "--version" ] && echo 0.4.66
+[ "$1" = "--version" ] && echo 0.4.67
 END
   chmod 700 "$1"
   exit 0
@@ -45,7 +45,7 @@ exit 1
             binary=root/"bin"/"livingruntime-remote"
             self.assertTrue(binary.exists())
             check=subprocess.run([str(binary),"--version"],capture_output=True,text=True)
-            self.assertEqual(check.stdout.strip(),"0.4.66")
+            self.assertEqual(check.stdout.strip(),"0.4.67")
     def test_npm_package_not_published_claim(self):
         manifest=json.loads((ROOT/"packages/npm/package.json").read_text())
         self.assertTrue(manifest["private"])
