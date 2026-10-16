@@ -635,13 +635,20 @@ class RelayServerTests(unittest.TestCase):
             "device_status",
             "disconnect_device",
             "start_pi_agent",
+            "start_pi_step",
             "watch_pi_job",
             "wait_pi_job_completion",
             "bind_openai_pi_continuation",
             "claim_llm_request_for_watcher",
             "open_remote_control_plane",
             "open_browser_takeover",
-        } | set(REMOTE_TOOLS)
+        } | (set(REMOTE_TOOLS) - {
+            # Agent wrappers are not yet exposed by the public relay. Keep
+            # expectations aligned with the actual public tool registry.
+            "list_agents", "start_agent", "get_agent_session",
+            "send_agent_message", "cancel_agent", "resume_agent",
+            "watch_agent_events",
+        })
         self.assertEqual(set(tools), expected)
         app_bindings = {
             binding.kwargs["name"]: binding
