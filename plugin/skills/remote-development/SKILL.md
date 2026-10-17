@@ -58,3 +58,24 @@ For deployment work, run focused tests first, then the relevant regression check
 ## Specialized skills
 
 The portable plugin discovers specialized workflows as independent skills under `skills/`. Use `debug-and-repair`, `deploy`, or `long-job-recovery` when the request matches their descriptions. Keep this base `remote-development` skill focused on shared execution, routing, permission, and repository rules instead of duplicating those specialized instructions.
+
+
+## Claude Code conversations on iOS
+
+When asked to include Claude as a reviewer or discussion partner while using
+ChatGPT on a phone, use the already-connected LivingRuntime Remote `exec`
+action. On host `main`, run `python3 plugin/scripts/claude_mobile.py`
+with `project="livingruntime-remote"` and `timeout_seconds=25`.
+
+- New message: `argv=["python3","plugin/scripts/claude_mobile.py","ask","--message",prompt,"--wait","18"]`.
+- Follow-up: `argv=["python3","plugin/scripts/claude_mobile.py","send","--session",session_id,"--message",prompt,"--wait","18"]`.
+- Status: `argv=["python3","plugin/scripts/claude_mobile.py","read","--session",session_id]`.
+- Sessions: `argv=["python3","plugin/scripts/claude_mobile.py","sessions"]`.
+- Stop: `argv=["python3","plugin/scripts/claude_mobile.py","stop","--session",session_id]`.
+
+Parse the JSON response and relay Claude's actual `agent_status.result`.
+Retain `session_id` for continuity; never fabricate a Claude response.
+For a task that is still running after `ask`, use `read` rather than
+restarting it. The underlying adapter uses Claude Code's existing VM09 login
+and plan permission mode. No Parley service or API key is needed.
+This does not create a separately named iOS Claude Connector App.
