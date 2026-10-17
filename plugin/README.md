@@ -20,10 +20,16 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 - list_dir
 - git
 - exec
+- terminal_start (model-visible, exact-grant interactive PTY setup)
+- terminal_key_exchange / terminal_input / terminal_read / terminal_close (app-only, encrypted)
+- secure_input_open (model-visible setup for general API keys, passwords, Tokens, and multiline PEM)
+- secure_input_key_exchange / secure_input_submit / secure_input_cancel (app-only encrypted credential intake)
 - list_credentials
 - lease_credential
 - list_credential_leases
 - revoke_credential_lease
+- delete_credential (app-only in public ChatGPT widget)
+- credential_manager (public ChatGPT widget for metadata and authorization management)
 - github_identity
 - create_job
 - get_job
@@ -47,11 +53,85 @@ This directory contains the ChatGPT/Codex-facing MCP runtime and the local Conne
 The canonical connector-forwarded registry is `scripts/contract.py`. Relay-only
 ChatGPT Apps entrypoints such as `open_remote_control_plane` are registered in `relay/server.py`.
 
-### Credential broker
+### Secure interactive terminal
 
-Secrets are added only on the owned machine with `python scripts/credentialctl.py set ...`; there is intentionally no MCP tool that accepts or returns a secret value. ChatGPT sees only handles and declared capability/project/device scopes. `lease_credential` creates a short-lived opaque lease (30-900 seconds), and `revoke_credential_lease` invalidates it without deleting the underlying credential. Generic `exec_with_secret` is intentionally not provided; dedicated capabilities must consume leases internally so arbitrary commands cannot print or exfiltrate credentials.
+Use the model-visible `terminal_start` tool to nominate an exact
+`argv`, `project`, and optional `device`/`cwd`, for example
+`["claude", "login"]`. If an approval is returned, explicitly approve
+that exact interactive command via the existing permission flow, then
+invoke `terminal_start` again. The ChatGPT app opens an embedded terminal
+panel. **Type passwords, OTPs, or authorization codes in that panel only.**
+Do not pass them in `argv`, tool arguments, or chat messages.
 
-`github_identity` is the first dedicated lease consumer. It accepts only a `github.identity` lease for provider `github`, sends it only to the fixed `https://api.github.com/user` endpoint with redirects disabled, and returns only public account identity fields.
+The panel establishes a fresh P-256 ECDH/AES-256-GCM session directly with
+the Connector over the relay, and all terminal input and output are
+encrypted before being sent through MCP. Relay task receipts contain only
+ciphertext. The panel disables input echo, does not write credential text to
+widget state, and offers a Close button. Session lifetime is at most 300
+seconds with automatic process cleanup; maximum four concurrent sessions
+per Connector. The exact-command grant remains subject to normal Remote
+revocation and OS policy. Initial support requires a POSIX Connector;
+Windows native PTY support is not included. The relay and browser host
+remain trusted for active key exchange and app integrity (see SECURITY.md).
+
+Run targeted tests with:
+
+```bash
+python -m unittest discover -s plugin/tests -p 'test_secure_terminal*.py'
+```
+
+### Isolated credential vault and human handoff
+
+**Linux only**. Before enabling credential input, install the dedicated
+broker on the actual Connector machine (not the cloud Relay), replacing
+`ubuntu` with the OS account running the Connector:
+
+```bash
+sudo bash plugin/scripts/install-vault.sh ubuntu
+```
+
+The installer creates a separate locked-down `livingruntime-vault` user,
+root-owned code/venv under `/opt/livingruntime-vault`, a systemd service,
+`/var/lib/livingruntime-vault/credentials` (0700), and a Unix socket under
+`/run/livingruntime-vault` (0660) that permits only the exact Connector
+UID via Linux `SO_PEERCRED`. The bridge itself never handles a decrypted
+credential; decryption and fixed GitHub token verification run in the vault
+daemon. No generic secret-resolve API exists. The Connector refuses any
+fallback if the broker is not running. Legacy user-owned credentials are
+**not** imported automatically; rotate them using the new form, then
+delete the old files after verification.
+
+Call `secure_input_open` for a password, API Key, token, multiline JSON or
+PEM private key that must be saved for subsequent scoped use. The embedded
+browser form encrypts with ephemeral P-256 ECDH / HKDF / AES-GCM. Only
+ciphertext crosses MCP, with the ephemeral private key held by the isolated
+vault, not the Connector. A form expires in 180 seconds, accepts one
+submission attempt, and returns only a handle/provider/capability/
+project/device receipt. On confirmed storage, the widget asks ChatGPT to
+continue the authentication-blocked operation through the documented
+`sendFollowUpMessage` API; if unsupported, the user can explicitly
+continue. The Agent is never given the secret text.
+
+Call `terminal_start` for a short-lived OTP/password prompt that should
+not be stored; every PTY requires an explicit exact command authorization.
+On successful completion the widget can ask ChatGPT to resume the
+interrupted task. Automatic resumption is **chat continuation**, not an
+unsupervised durable job restart.
+
+Call `credential_manager` to see saved credential handles and leases
+within ChatGPT, revoke a lease, rotate by reopening the secure-input form,
+or delete a credential after typing its handle. No UI/API reveals the raw
+secret. `lease_credential` creates short-lived (30-900s) scoped handles,
+`github_identity` is the only built-in secret consumer (fixed GitHub
+profile endpoint, no redirects). Generic `exec_with_secret` does not exist.
+
+Isolation limits: the vault is reachable by processes running under the
+Connector UID, which can request allowlisted operations. The broker's
+files are private to a **different UID**, but are **not encrypted at rest**;
+root and the vault UID can still read them. Browser-widget and relay
+integrity remain part of the key-authentication trust boundary. Windows
+does not use this Linux broker; native Windows security requires a separate
+implementation. See `SECURITY.md`.
 
 ### Control plane and host discovery
 

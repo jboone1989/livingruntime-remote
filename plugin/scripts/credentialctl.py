@@ -5,7 +5,7 @@ import getpass
 import json
 from typing import Sequence
 
-from credentials import list_handles, remove_local_secret, set_local_secret
+import vault_client
 
 
 def _csv(value: str | None) -> list[str]:
@@ -40,28 +40,17 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     args = parser.parse_args(argv)
     if args.command == "set":
-        first = getpass.getpass("Secret: ")
-        second = getpass.getpass("Confirm secret: ")
-        if first != second:
-            raise SystemExit("Secrets did not match; nothing was changed.")
-        result = set_local_secret(
-            args.handle,
-            first,
-            provider=args.provider,
-            capabilities=args.capabilities,
-            projects=_csv(args.projects),
-            devices=_csv(args.devices),
+        raise SystemExit(
+            "Direct user-owned plaintext storage disabled. "
+            "Use the secure_input_open ChatGPT App widget with the isolated vault."
         )
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return
 
     if args.command == "list":
-        print(json.dumps({"credentials": list_handles()}, ensure_ascii=False, indent=2))
+        print(json.dumps(vault_client.call("list_credentials"), ensure_ascii=False, indent=2))
         return
 
     if args.command == "remove":
-        remove_local_secret(args.handle)
-        print(json.dumps({"removed": args.handle}, ensure_ascii=False))
+        print(json.dumps(vault_client.call("delete_credential", handle=args.handle), ensure_ascii=False))
         return
 
 

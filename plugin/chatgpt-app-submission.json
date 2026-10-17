@@ -691,6 +691,126 @@
         "open_world_justification": "All targets stay within the selected Connector's configured private roots.",
         "destructive_justification": "Deletion removes filesystem entries and can irreversibly lose content; recursive deletion is explicit."
       }
+    },
+    "terminal_start": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Reserves an exact-approved interactive PTY session and returns only ephemeral public-key/session metadata.",
+        "open_world_justification": "The approved program may contact outside providers.",
+        "destructive_justification": "Interactive processes can modify files or run network operations."
+      }
+    },
+    "terminal_key_exchange": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Binds the one-time browser public key to an in-memory terminal session; no terminal bytes are accepted.",
+        "open_world_justification": "Key exchange remains inside the authenticated Connector path.",
+        "destructive_justification": "Only establishes a browser encryption context, before any stdin."
+      }
+    },
+    "terminal_input": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Receives AES-GCM ciphertext only and writes decrypted input to a prior-approved PTY.",
+        "open_world_justification": "Input is delivered solely to the approved Connector command (which might contact other hosts).",
+        "destructive_justification": "Input to an approved interactive command can have destructive effects."
+      }
+    },
+    "terminal_read": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns only AES-GCM encrypted terminal output without persisting plaintext transcripts.",
+        "open_world_justification": "Reads from an existing Connector-local session only.",
+        "destructive_justification": "Does not change the command being executed."
+      }
+    },
+    "terminal_close": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Stops the PTY process and erases the ephemeral key in memory.",
+        "open_world_justification": "Only controls the selected existing session on the Connector.",
+        "destructive_justification": "Closing a session terminates its running process."
+      }
+    },
+    "secure_input_open": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates an ephemeral form with only public key and scoped handle metadata.",
+        "open_world_justification": "Limited to a nominated Connector and locally configured scope.",
+        "destructive_justification": "Reserves a form; does not execute code or save any credential."
+      }
+    },
+    "secure_input_key_exchange": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Exchanges a browser public key to derive an ephemeral Connector-only encryption key.",
+        "open_world_justification": "Only authenticated browser-to-Connector key exchange.",
+        "destructive_justification": "Does not write secret data or run commands."
+      }
+    },
+    "secure_input_submit": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Only AES-GCM ciphertext is received, then decrypted inside the paired Connector credential broker.",
+        "open_world_justification": "Stores only on the owner's Connector; not sent to an arbitrary endpoint.",
+        "destructive_justification": "Can create or replace the named credential scoped to the target device/project/capability."
+      }
+    },
+    "secure_input_cancel": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Drops a single-use form and ephemeral key without consuming a secret.",
+        "open_world_justification": "Only the Connector session is affected.",
+        "destructive_justification": "No persistent resource is modified."
+      }
+    },
+    "delete_credential": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Deletes only the named credential from an isolated vault and revokes related leases; never exposes plaintext.",
+        "open_world_justification": "The deletion is confined to a stored owner credential handle, not external systems.",
+        "destructive_justification": "The irreversible removal must be confirmed in the credential manager UI by typing the handle."
+      }
     }
   },
   "test_cases": [

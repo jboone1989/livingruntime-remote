@@ -474,11 +474,13 @@ class SchemaAndToolTests(unittest.TestCase):
         self.assertIn("temporarily unavailable", listed["jobs"][0]["runtime"]["reconcile_error"])
 
     def test_credential_broker_exposes_only_handles_and_leases(self) -> None:
+        import vault_service
         root = Path(self.tmp.name) / "credentials"
         with patch.dict(
             os.environ,
             {"LIVINGRUNTIME_REMOTE_CREDENTIALS": str(root)},
-        ), patch.object(bridge, "_config_path", return_value=str(self.config)):
+        ), patch.object(bridge, "_config_path", return_value=str(self.config)), \
+             patch.object(bridge.vault_client, "call", side_effect=lambda op, **args: vault_service.dispatch({"op": op, "args": args})):
             credentials.set_local_secret(
                 "github.production",
                 "never-return-this-value",
@@ -506,60 +508,42 @@ class SchemaAndToolTests(unittest.TestCase):
         self.assertFalse(revoked["active"])
 
     def test_github_identity_consumes_scoped_lease_without_returning_secret(self) -> None:
+        import vault_service
         root = Path(self.tmp.name) / "credentials"
-
         class FakeResponse:
             status = 200
-
             def __enter__(self):
                 return self
-
             def __exit__(self, exc_type, exc, tb):
                 return False
-
             def read(self, size):
-                return json.dumps({
-                    "login": "octocat",
-                    "id": 1,
-                    "name": "The Octocat",
-                    "type": "User",
-                }).encode("utf-8")
-
+                return json.dumps({"login": "octocat", "id": 1,
+                                   "name": "The Octocat", "type": "User"}).encode()
         class FakeOpener:
             def open(self, request, timeout=10):
                 self.authorization = request.headers.get("Authorization")
                 return FakeResponse()
-
         fake = FakeOpener()
+        def vault_call(op, **args):
+            return vault_service.dispatch({"op": op, "args": args})
         with patch.dict(
-            os.environ,
-            {"LIVINGRUNTIME_REMOTE_CREDENTIALS": str(root)},
-        ), patch.object(bridge, "_config_path", return_value=str(self.config)), patch.object(
-            bridge.urllib.request, "build_opener", return_value=fake
-        ):
+            os.environ, {"LIVINGRUNTIME_REMOTE_CREDENTIALS": str(root)}
+        ), patch.object(bridge, "_config_path", return_value=str(self.config)), \
+             patch.object(bridge.vault_client, "call", side_effect=vault_call), \
+             patch.object(vault_service.urllib.request, "build_opener", return_value=fake):
             credentials.set_local_secret(
-                "github.production",
-                "never-return-this-value",
-                provider="github",
-                capabilities=["github.identity"],
-                projects=["ferro"],
-                devices=["main"],
+                "github.production", "synthetic-secret",
+                provider="github", capabilities=["github.identity"],
+                projects=["ferro"], devices=["main"],
             )
             lease = bridge.lease_credential(
-                "github.production",
-                "github.identity",
-                project="ferro",
-                ttl_seconds=60,
+                "github.production", "github.identity", project="ferro", ttl_seconds=60,
             )
-            result = bridge.github_identity(
-                lease["lease_id"],
-                project="ferro",
-            )
-
+            result = bridge.github_identity(lease["lease_id"], project="ferro")
         self.assertEqual(result["login"], "octocat")
         self.assertTrue(result["authenticated"])
-        self.assertIn("never-return-this-value", fake.authorization)
-        self.assertNotIn("never-return-this-value", json.dumps(result))
+        self.assertIn("synthetic-secret", fake.authorization)
+        self.assertNotIn("synthetic-secret", json.dumps(result))
 
     def test_remote_overview_is_secret_free_and_summarizes_control_plane(self) -> None:
         jobs_root = Path(self.tmp.name) / "jobs"
@@ -579,6 +563,12 @@ class SchemaAndToolTests(unittest.TestCase):
         ), patch.object(
             bridge, "_recent_audit_events",
             return_value=[{"ts": 1.0, "tool": "connection_status", "ok": True}],
+        ), patch.object(
+            bridge.vault_client, "call",
+            side_effect=lambda op, **kw: (
+                {"credentials": credentials.list_handles()}
+                if op == "list_credentials" else {"leases": []}
+            ),
         ):
             credentials.set_local_secret(
                 "github.production",

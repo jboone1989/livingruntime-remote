@@ -18,6 +18,9 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 import localexec
+import secure_terminal
+import secure_input
+import vault_client
 from agent_adapters import registry as agent_registry, load_installed
 import agent_sessions
 import agent_policy
@@ -41,13 +44,7 @@ from configmodel import (
     resolve_path,
     resolve_unit,
 )
-from credentials import (
-    create_lease as create_credential_lease,
-    list_handles as credential_snapshot,
-    list_leases as credential_lease_snapshot,
-    resolve_secret_for_lease,
-    revoke_lease as revoke_credential_lease_runtime,
-)
+from credentials import credential_root
 from execution_status import (
     record_tool_event as record_execution_tool_event,
     snapshot as execution_status_snapshot,
@@ -969,6 +966,14 @@ def _validate_git(args: list[str]) -> None:
         raise PermissionError("credential and ssh command overrides are blocked")
 
 
+def _reject_credential_store_path(path: str) -> None:
+    """Keep normal file tools out of the Connector's private credential broker."""
+    protected = credential_root().expanduser().resolve()
+    candidate = Path(path).expanduser().resolve(strict=False)
+    if candidate == protected or protected in candidate.parents:
+        raise PermissionError("credential store is not accessible via normal file tools")
+
+
 _HUNK_RE = re.compile(r"^@@(?:\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?)?\s*(?:@@)?\s*$")
 
 
@@ -1424,7 +1429,16 @@ def remote_overview(include_resources: bool = False) -> dict[str, Any]:
         jobs=jobs,
         cognition_status=cognition_status,
     )
-    credential_rows = credential_snapshot()
+    vault_available = True
+    try:
+        credential_rows = vault_client.call("list_credentials")["credentials"]
+        leases = vault_client.call("list_leases", active_only=True)["leases"]
+    except RuntimeError:
+        # Never fall back to a user-readable credential directory. Surface
+        # the isolation service outage while keeping diagnostics available.
+        vault_available = False
+        credential_rows = []
+        leases = []
     credentials = [
         {
             "handle": row.get("handle"),
@@ -1438,7 +1452,6 @@ def remote_overview(include_resources: bool = False) -> dict[str, Any]:
         }
         for row in credential_rows
     ]
-    leases = credential_lease_snapshot(active_only=True)
     completion_events = []
     for job in jobs:
         event = job.get("completion_event") if isinstance(job, dict) else None
@@ -1472,6 +1485,7 @@ def remote_overview(include_resources: bool = False) -> dict[str, Any]:
             "revoked_count": len(permission_state.get("revoked") or []),
         },
         "credentials": credentials,
+        "vault_available": vault_available,
         "active_credential_leases": leases,
         "completion_events": completion_events,
         "activity": _recent_audit_events(20),
@@ -1515,6 +1529,149 @@ def list_projects() -> dict[str, Any]:
         "projects": rows,
     }
     _audit("list_projects", True, {"count": len(rows)})
+    return result
+
+
+@server.tool(
+    name="secure_input_open",
+    annotations=ToolAnnotations(title="Open protected credential input", readOnlyHint=False,
+                                destructiveHint=False, openWorldHint=False),
+)
+def secure_input_open(
+    handle: str, provider: str, capability: str,
+    project: str | None = None, device: str | None = None,
+) -> dict[str, Any]:
+    """Create a secret-free input form bound to an explicit target and capability."""
+    cfg = _config()
+    selected = host_for(cfg, project=project, host_id=device)
+    if project is not None:
+        # Validate project membership on the nominated target before binding.
+        resolve_path(cfg, None, project=project, host_id=device)
+    result = vault_client.call("input_begin",
+        handle=handle, provider=provider, capability=capability,
+        project=project, device=selected["id"],
+    )
+    _audit("secure_input_open", True, {
+        "session_id": result["session_id"], "handle": handle,
+        "capability": capability, "device": selected["id"], "project": project,
+    })
+    return result
+
+
+@server.tool(
+    name="secure_input_key_exchange",
+    annotations=ToolAnnotations(title="Bind protected input browser", readOnlyHint=False,
+                                destructiveHint=False, openWorldHint=False),
+)
+def secure_input_key_exchange(session_id: str, client_public_key: str) -> dict[str, Any]:
+    """Bind a one-time browser key; only public metadata passes through MCP."""
+    return vault_client.call("input_exchange", session_id=session_id, client_public_key=client_public_key)
+
+
+@server.tool(
+    name="secure_input_submit",
+    annotations=ToolAnnotations(title="Store encrypted credential", readOnlyHint=False,
+                                destructiveHint=True, openWorldHint=False),
+)
+def secure_input_submit(session_id: str, nonce: str, ciphertext: str) -> dict[str, Any]:
+    """Consume AES-GCM ciphertext internally; return credential metadata only."""
+    result = vault_client.call("input_submit", session_id=session_id, nonce=nonce, ciphertext=ciphertext)
+    _audit("secure_input_submit", True, {
+        "session_id": session_id, "handle": result["handle"],
+        "stored": True,
+    })
+    return result
+
+
+@server.tool(
+    name="secure_input_cancel",
+    annotations=ToolAnnotations(title="Cancel protected credential input", readOnlyHint=False,
+                                destructiveHint=False, openWorldHint=False),
+)
+def secure_input_cancel(session_id: str) -> dict[str, Any]:
+    """Invalidate a pending protected input without writing credential bytes."""
+    return vault_client.call("input_cancel", session_id=session_id)
+
+
+@server.tool(
+    name="terminal_start",
+    annotations=ToolAnnotations(title="Start secure interactive terminal", readOnlyHint=False,
+                                destructiveHint=True, openWorldHint=True),
+)
+def terminal_start(
+    argv: list[str], cwd: str | None = None,
+    project: str | None = None, device: str | None = None,
+) -> dict[str, Any]:
+    """Reserve a short-lived PTY; never receive terminal stdin in this call."""
+    _validate_exec(argv)
+    cfg = _config()
+    selected = host_for(cfg, project=project, host_id=device)
+    workdir = resolve_path(cfg, cwd, project=project, host_id=device) if (cwd or project) else _roots(project, device)[0]
+    # A TTY is always an interactive, potentially long-lived command, so require
+    # an exact device-scoped grant even for a normally built-in executable.
+    if dynamic_exec_grant(
+        host_id=selected["id"], project=project, cwd=workdir,
+        argv=argv, detached=True,
+    ) is None:
+        request = ensure_dynamic_exec_request(
+            host_id=selected["id"], project=project, cwd=workdir,
+            argv=argv, detached=True,
+        )
+        _audit("terminal_permission_request", True, {
+            "request_id": request["request_id"], "host_id": selected["id"],
+        })
+        return {
+            "ok": False, "approval_required": True, "request": request,
+            "reason": "Secure terminals require an exact host-scoped interactive command grant.",
+        }
+    ssh_host = _host(project, device) if _transport(project, device) == "ssh" else None
+    result = secure_terminal.create(argv, workdir, ssh_host)
+    _audit("terminal_start", True, {
+        "session_id": result["session_id"], "host_id": selected["id"],
+        "project": project, "expires_in": result["ttl_seconds"],
+    })
+    return result
+
+
+@server.tool(
+    name="terminal_key_exchange",
+    annotations=ToolAnnotations(title="Bind encrypted terminal client", readOnlyHint=False,
+                                destructiveHint=False, openWorldHint=False),
+)
+def terminal_key_exchange(session_id: str, client_public_key: str) -> dict[str, Any]:
+    """Browser-only client key exchange. Never accept raw terminal input."""
+    return secure_terminal.exchange(session_id, client_public_key)
+
+
+@server.tool(
+    name="terminal_input",
+    annotations=ToolAnnotations(title="Write encrypted terminal input", readOnlyHint=False,
+                                destructiveHint=True, openWorldHint=False),
+)
+def terminal_input(session_id: str, seq: int, nonce: str, ciphertext: str) -> dict[str, Any]:
+    """Only encrypted bytes cross the MCP/relay boundary."""
+    return secure_terminal.send(session_id, seq, nonce, ciphertext)
+
+
+@server.tool(
+    name="terminal_read",
+    annotations=ToolAnnotations(title="Read encrypted terminal output", readOnlyHint=True,
+                                destructiveHint=False, openWorldHint=False),
+)
+def terminal_read(session_id: str) -> dict[str, Any]:
+    """Encrypted output only; never persist transcripts in relay task receipts."""
+    return secure_terminal.read(session_id)
+
+
+@server.tool(
+    name="terminal_close",
+    annotations=ToolAnnotations(title="Close secure interactive terminal", readOnlyHint=False,
+                                destructiveHint=True, openWorldHint=False),
+)
+def terminal_close(session_id: str) -> dict[str, Any]:
+    """Close the ephemeral browser-operated PTY and discard cryptographic keys."""
+    result = secure_terminal.close(session_id)
+    _audit("terminal_close", True, {"session_id": session_id})
     return result
 
 
@@ -1786,7 +1943,7 @@ def revoke_exec_permission(permission_id: str) -> dict[str, Any]:
 )
 def list_credentials() -> dict[str, Any]:
     """List local credential handles and scopes without reading or returning secret values."""
-    rows = credential_snapshot()
+    rows = vault_client.call("list_credentials")["credentials"]
     _audit("list_credentials", True, {"count": len(rows)})
     return {"credentials": rows}
 
@@ -1817,8 +1974,8 @@ def lease_credential(
     if project is not None or device is not None:
         selected = host_for(cfg, project=project, host_id=device)
         resolved_device = selected["id"]
-    lease = create_credential_lease(
-        handle,
+    lease = vault_client.call(
+        "lease_credential", handle=handle,
         capability=capability,
         project=project,
         device=resolved_device,
@@ -1847,7 +2004,7 @@ def lease_credential(
 )
 def list_credential_leases(active_only: bool = True) -> dict[str, Any]:
     """List opaque credential leases; never returns credential values."""
-    rows = credential_lease_snapshot(active_only=active_only)
+    rows = vault_client.call("list_leases", active_only=active_only)["leases"]
     _audit("list_credential_leases", True, {
         "active_only": active_only,
         "count": len(rows),
@@ -1867,12 +2024,26 @@ def list_credential_leases(active_only: bool = True) -> dict[str, Any]:
 )
 def revoke_credential_lease(lease_id: str) -> dict[str, Any]:
     """Revoke one opaque credential lease without deleting the underlying credential."""
-    result = revoke_credential_lease_runtime(lease_id, operator="mcp_operator")
+    result = vault_client.call("revoke_lease", lease_id=lease_id, operator="mcp_operator")
     _audit("revoke_credential_lease", True, {
         "lease_id": lease_id,
         "handle": result.get("handle"),
         "capability": result.get("capability"),
     })
+    return result
+
+
+@server.tool(
+    name="delete_credential",
+    annotations=ToolAnnotations(
+        title="Delete stored credential",
+        readOnlyHint=False, destructiveHint=True, openWorldHint=False,
+    ),
+)
+def delete_credential(handle: str) -> dict[str, Any]:
+    """Irreversibly delete a named vault credential and revoke its active leases."""
+    result = vault_client.call("delete_credential", handle=handle)
+    _audit("delete_credential", True, {"handle": result["deleted"]})
     return result
 
 
@@ -1895,64 +2066,24 @@ def github_identity(
     project: str | None = None,
     device: str | None = None,
 ) -> dict[str, Any]:
-    """Use a scoped GitHub credential lease internally without exposing its secret."""
+    """Verify a GitHub identity inside the separate vault process.
+
+    Neither a secret nor an Authorization header is returned over the IPC
+    connection. Only a fixed GitHub endpoint may receive the token.
+    """
     cfg = _config()
     resolved_device = device
     if project is not None or device is not None:
-        selected = host_for(cfg, project=project, host_id=device)
-        resolved_device = selected["id"]
-    secret = resolve_secret_for_lease(
-        lease_id,
-        capability="github.identity",
-        project=project,
-        device=resolved_device,
-        provider="github",
+        resolved_device = host_for(cfg, project=project, host_id=device)["id"]
+    result = vault_client.call(
+        "github_identity", lease_id=lease_id,
+        project=project, device=resolved_device,
     )
-    request = urllib.request.Request(
-        "https://api.github.com/user",
-        headers={
-            "authorization": f"Bearer {secret}",
-            "accept": "application/vnd.github+json",
-            "user-agent": f"LivingRuntime-Remote/{VERSION}",
-            "x-github-api-version": "2022-11-28",
-        },
-        method="GET",
-    )
-    opener = urllib.request.build_opener(_NoRedirect())
-    try:
-        with opener.open(request, timeout=10) as response:
-            body = response.read(65537)
-            status = int(getattr(response, "status", 200))
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"GitHub credential verification failed with HTTP {exc.code}") from None
-    except (urllib.error.URLError, TimeoutError, OSError):
-        raise RuntimeError("GitHub credential verification failed") from None
-    if status != 200:
-        raise RuntimeError(f"GitHub credential verification failed with HTTP {status}")
-    if len(body) > 65536:
-        raise RuntimeError("GitHub identity response exceeded size limit")
-    try:
-        payload = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        raise RuntimeError("GitHub identity response was invalid") from None
-    if not isinstance(payload, dict):
-        raise RuntimeError("GitHub identity response was invalid")
-    result = {
-        "provider": "github",
-        "authenticated": True,
-        "login": payload.get("login"),
-        "id": payload.get("id"),
-        "name": payload.get("name"),
-        "type": payload.get("type"),
-    }
     _audit("github_identity", True, {
-        "lease_id": lease_id,
-        "project": project,
-        "device": resolved_device,
-        "login": result["login"],
+        "lease_id": lease_id, "project": project,
+        "device": resolved_device, "login": result.get("login"),
     })
     return result
-
 
 @server.tool(
     name="create_job",
@@ -2965,6 +3096,7 @@ def read_file(
     cfg = _config()
     host_for(cfg, project=project, host_id=device)
     target = resolve_path(cfg, path, project=project, host_id=device)
+    _reject_credential_store_path(target)
     result = _remote("read_file", {
         "path": target, "offset": max(0, int(offset)),
         "max_bytes": min(MAX_OUTPUT_BYTES, max(1, int(max_bytes))),
@@ -2999,6 +3131,7 @@ def write_file(
     cfg = _config()
     host_for(cfg, project=project, host_id=device)
     target = resolve_path(cfg, path, project=project, host_id=device)
+    _reject_credential_store_path(target)
     result = _remote("write_file", {
         "path": target, "content": content, "mode": mode,
         "expected_sha256": expected_sha256,
@@ -3073,6 +3206,7 @@ def apply_patch(
     cfg = _config()
     host_for(cfg, project=project, host_id=device)
     target = resolve_path(cfg, path, project=project, host_id=device)
+    _reject_credential_store_path(target)
     current = _remote("read_file", {
         "path": target, "offset": 0, "max_bytes": MAX_OUTPUT_BYTES,
     }, project=project, device=device)
@@ -3133,6 +3267,7 @@ def list_dir(
     cfg = _config()
     host_for(cfg, project=project, host_id=device)
     target = resolve_path(cfg, path, project=project, host_id=device) if (path or project) else _roots(device=device)[0]
+    _reject_credential_store_path(target)
     result = _remote("list_dir", {
         "path": target, "max_entries": min(1000, max(1, int(max_entries))),
     }, project=project, device=device)

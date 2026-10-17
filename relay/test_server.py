@@ -635,14 +635,39 @@ class RelayServerTests(unittest.TestCase):
             "device_status",
             "disconnect_device",
             "start_pi_agent",
+            "start_pi_step",
             "watch_pi_job",
             "wait_pi_job_completion",
             "bind_openai_pi_continuation",
             "claim_llm_request_for_watcher",
             "open_remote_control_plane",
             "open_browser_takeover",
-        } | set(REMOTE_TOOLS)
+            "credential_manager",
+        } | (set(REMOTE_TOOLS) - {
+            # Agent wrappers are not yet exposed by the public relay. Keep
+            # expectations aligned with the actual public tool registry.
+            "list_agents", "start_agent", "get_agent_session",
+            "send_agent_message", "cancel_agent", "resume_agent",
+            "watch_agent_events",
+        })
         self.assertEqual(set(tools), expected)
+        self.assertEqual(
+            tools["secure_input_open"].meta["ui"]["resourceUri"],
+            server.SECURE_INPUT_WIDGET_URI,
+        )
+        self.assertEqual(
+            tools["secure_input_open"].meta["ui"]["visibility"],
+            ["model", "app"],
+        )
+        for app_only in (
+            "secure_input_key_exchange", "secure_input_submit", "secure_input_cancel",
+            "delete_credential",
+        ):
+            self.assertEqual(tools[app_only].meta["ui"]["visibility"], ["app"])
+        self.assertEqual(
+            tools["credential_manager"].meta["ui"]["resourceUri"],
+            server.CREDENTIAL_MANAGER_WIDGET_URI,
+        )
         app_bindings = {
             binding.kwargs["name"]: binding
             for extension in mcp._extensions

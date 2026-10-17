@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{color-scheme:light dark}body{font:14px/1.5 system-ui;margin:0;padding:12px;color:var(--color-text-primary,inherit)}
+section{border:1px solid rgba(127,127,127,.35);border-radius:12px;padding:14px;max-width:650px}
+h3{font-size:16px;margin:0 0 8px}p{margin:8px 0}small{opacity:.7}
+dl{display:grid;grid-template-columns:90px 1fr;gap:5px;margin:10px 0}
+dt{opacity:.7}dd{margin:0;font-family:ui-monospace,monospace;overflow-wrap:anywhere}
+input[type=password],textarea{width:100%;box-sizing:border-box;border:1px solid #888;border-radius:8px;padding:10px;background:transparent;color:inherit;font:14px ui-monospace,monospace}
+textarea{min-height:110px;resize:vertical;-webkit-text-security:disc}
+textarea.visible{-webkit-text-security:none}
+label{display:block;margin:8px 0}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+button{padding:9px 15px;cursor:pointer;border:1px solid #888;border-radius:8px;background:transparent;color:inherit}
+button.primary{background:#2364ae;color:white;border:0}button:disabled{opacity:.5;cursor:default}
+#status{min-height:20px;margin-top:8px}.danger{color:#b34a4a}
+</style></head><body><section>
+<h3>安全输入凭据</h3><small>明文只在当前输入组件与 Connector 内短暂使用，不发送给聊天模型。</small>
+<dl><dt>凭据名称</dt><dd id="handle">—</dd><dt>服务</dt><dd id="provider">—</dd><dt>用途</dt><dd id="capability">—</dd><dt>项目</dt><dd id="project">—</dd><dt>设备</dt><dd id="device">—</dd></dl>
+<form id="form" autocomplete="off">
+<label for="value">密钥 / 密码 / Token（不回显）</label>
+<input id="value" type="password" autocomplete="new-password" spellcheck="false" disabled>
+<textarea id="multiline" autocomplete="off" spellcheck="false" hidden disabled placeholder="在这里粘贴多行 PEM / JSON 密钥"></textarea>
+<div class="row"><label><input type="checkbox" id="use-multiline"> 多行密钥 / 私钥</label>
+<label id="reveal-label" hidden><input type="checkbox" id="reveal"> 显示多行文本</label></div>
+<div class="row"><button type="submit" class="primary" id="save" disabled>加密传输并保存</button><button type="button" id="cancel" disabled>取消</button></div>
+</form><p id="status">建立加密通道…</p>
+<small>本地保存的长期凭据按能力、项目和设备限制用途。请只在确认目标正确后提交。输入不会进入聊天历史，但仍应信任 ChatGPT 插件页面、Relay 和 Connector。</small>
+</section><script>
+(()=>{
+"use strict";
+const el=id=>document.getElementById(id);
+let session=null,key=null,finished=false,busy=false;
+const pending=new Map();let n=1;
+function fromB64(v){const t=atob(v),r=new Uint8Array(t.length);for(let i=0;i<t.length;i++)r[i]=t.charCodeAt(i);return r;}
+function b64(v){const b=new Uint8Array(v);let s="";for(const c of b)s+=String.fromCharCode(c);return btoa(s);}
+function data(v){return v?.structuredContent||v?.structured_content||v||{};}
+async function call(name,args){
+ if(window.openai?.callTool) return data(await window.openai.callTool(name,args));
+ const id=n++;window.parent.postMessage({jsonrpc:"2.0",id,method:"tools/call",params:{name,arguments:args}},"*");
+ return new Promise((resolve,reject)=>pending.set(id,{resolve,reject}));
+}
+function status(t){el("status").textContent=t;}
+function notifyContinuation(handle){
+ const prompt="LivingRuntime Remote 的受保护输入已完成，凭据句柄："+handle+"。请继续刚才因认证而暂停的任务，只使用授权句柄，勿请求或展示密钥明文。";
+ if(window.openai?.sendFollowUpMessage){
+  void Promise.resolve(window.openai.sendFollowUpMessage({prompt})).catch(()=>{});
+ }
+}
+function disable(t){
+ finished=true;busy=false;el("save").disabled=true;el("cancel").disabled=true;
+ el("value").value="";el("multiline").value="";
+ el("value").disabled=true;el("multiline").disabled=true;if(t)status(t);
+}
+function selectMultiline(){
+ const enabled=el("use-multiline").checked;
+ const old=enabled?el("value"):el("multiline"),target=enabled?el("multiline"):el("value");
+ target.value=old.value;old.value="";
+ old.hidden=true;target.hidden=false;target.disabled=finished;
+ el("reveal-label").hidden=!enabled;el("reveal").checked=false;
+ el("multiline").classList.remove("visible");
+}
+el("use-multiline").addEventListener("change",selectMultiline);
+el("reveal").addEventListener("change",()=>el("multiline").classList.toggle("visible",el("reveal").checked));
+async function init(out){
+ if(session||finished) return;
+ if(!out?.session_id||!out?.server_public_key){disable("无法开启受保护的输入");return;}
+ if(!globalThis.crypto?.subtle){disable("当前浏览器缺少 WebCrypto，加密失败并已禁用输入");return;}
+ session={id:out.session_id};
+ for(const name of ["handle","provider","capability","device"])el(name).textContent=out[name]||"—";
+ el("project").textContent=out.project||"不限项目";
+ try{
+  const pair=await crypto.subtle.generateKey({name:"ECDH",namedCurve:"P-256"},false,["deriveBits"]);
+  const peer=await crypto.subtle.importKey("raw",fromB64(out.server_public_key),{name:"ECDH",namedCurve:"P-256"},false,[]);
+  const shared=await crypto.subtle.deriveBits({name:"ECDH",public:peer},pair.privateKey,256);
+  const material=await crypto.subtle.importKey("raw",shared,"HKDF",false,["deriveKey"]);
+  key=await crypto.subtle.deriveKey({name:"HKDF",hash:"SHA-256",salt:new TextEncoder().encode(session.id),
+   info:new TextEncoder().encode("livingruntime-secure-credential-v1")},
+   material,{name:"AES-GCM",length:256},false,["encrypt"]);
+  const pub=await crypto.subtle.exportKey("raw",pair.publicKey);
+  const r=await call("secure_input_key_exchange",{session_id:session.id,client_public_key:b64(pub)});
+  if(!r.ready)throw new Error("握手失败");
+  el("value").disabled=false;el("save").disabled=false;el("cancel").disabled=false;
+  status("加密通道已建立。请在这里粘贴凭据。");
+ }catch(e){disable("加密通道建立失败");void call("secure_input_cancel",{session_id:session.id}).catch(()=>{});}
+}
+el("form").addEventListener("submit",async e=>{
+ e.preventDefault();if(finished||busy||!session||!key)return;
+ const input=el("use-multiline").checked?el("multiline"):el("value");
+ const plaintext=input.value;input.value="";
+ const bytes=new TextEncoder().encode(plaintext);
+ if(!bytes.length||bytes.length>65536){status("请提供 1–65536 字节凭据");return;}
+ busy=true;el("save").disabled=true;el("cancel").disabled=true;
+ try{
+  const nonce=crypto.getRandomValues(new Uint8Array(12));
+  const encrypted=await crypto.subtle.encrypt({name:"AES-GCM",iv:nonce,
+   additionalData:new TextEncoder().encode(session.id+"|store|1")},key,bytes);
+  bytes.fill(0);
+  const r=await call("secure_input_submit",{session_id:session.id,nonce:b64(nonce),ciphertext:b64(encrypted)});
+  if(!r.stored)throw new Error("未收到凭据保存确认");
+  disable("已安全接收，保存句柄："+r.handle+"。凭据内容未返回聊天。");
+  notifyContinuation(r.handle);
+ }catch(e){
+  bytes.fill(0);disable("保存未确认。输入已清空，请重新打开安全输入组件。");
+ }
+});
+el("cancel").addEventListener("click",()=>{
+ if(finished)return;
+ disable("已取消，未保存凭据。");
+ if(session)void call("secure_input_cancel",{session_id:session.id}).catch(()=>{});
+});
+window.addEventListener("message",event=>{
+ if(event.source!==window.parent)return;
+ const m=event.data;
+ if(m?.jsonrpc==="2.0"&&pending.has(m.id)){
+  const p=pending.get(m.id);pending.delete(m.id);
+  if(m.error)p.reject(new Error("工具调用失败"));else p.resolve(data(m.result));
+ }else if(m?.method==="ui/notifications/tool-result"){
+  void init(data(m.params?.structuredContent||m.params));
+ }
+});
+if(window.openai?.toolOutput)void init(data(window.openai.toolOutput));
+window.addEventListener("openai:set_globals",()=>{
+ if(!session&&!finished&&window.openai?.toolOutput)void init(data(window.openai.toolOutput));
+});
+})();
+</script></body></html>

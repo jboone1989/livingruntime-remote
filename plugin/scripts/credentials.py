@@ -5,6 +5,7 @@ import json
 import os
 import re
 import time
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
@@ -41,14 +42,19 @@ def _lease_path() -> Path:
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(text, encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Never write a secret to a default-permission file and chmod it later.
+    # mkstemp creates an unpredictable 0600 file and avoids symlink races.
+    fd, temporary = tempfile.mkstemp(prefix="." + path.name + "-", dir=str(path.parent))
     try:
-        temp.chmod(0o600)
-    except OSError:
-        pass
-    temp.replace(path)
+        with os.fdopen(fd, "w", encoding="utf-8") as target:
+            target.write(text)
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def _normalize_scope(values: list[str] | tuple[str, ...] | None, *, field: str) -> list[str]:
