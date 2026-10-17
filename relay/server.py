@@ -1595,6 +1595,65 @@ a{{color:#b9ccff}}
     )
 
 
+async def aggregate_connector_devices(
+    relay: Relay, user_sub: str, include_resources: bool = False
+) -> dict[str, Any]:
+    """Discover every paired Connector without conflating their local device IDs."""
+    connectors = relay.connector_statuses(user_sub)
+    default = next((c for c in connectors if c.get("default")), None)
+
+    async def discover(connector: dict[str, Any]) -> tuple[dict[str, Any], Any, str | None]:
+        try:
+            inventory = await relay.call(
+                user_sub, "list_devices",
+                {"include_resources": include_resources},
+                connector=str(connector["device_id"]),
+            )
+            return connector, inventory, None
+        except Exception as exc:
+            return connector, None, str(exc)
+
+    results = await asyncio.gather(
+        *(discover(c) for c in connectors if c.get("online"))
+    )
+    devices: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for connector, inventory, error in results:
+        name = str(connector["name"])
+        if error or not isinstance(inventory, dict) or not isinstance(inventory.get("devices"), list):
+            errors.append({
+                "connector": name,
+                "error": error or "invalid device inventory",
+            })
+            continue
+        for entry in inventory["devices"]:
+            if not isinstance(entry, dict):
+                continue
+            inner = str(entry.get("device_id") or "")
+            if not inner:
+                continue
+            devices.append({
+                **entry,
+                "device_id": f"{name}::{inner}",
+                "connector": name,
+                "managed_device_id": inner,
+                "default": bool(
+                    default and connector["device_id"] == default["device_id"]
+                    and entry.get("default")
+                ),
+            })
+    return {
+        "default_device": next(
+            (entry["device_id"] for entry in devices if entry["default"]), None
+        ),
+        "devices": devices,
+        "connectors": [
+            {"name": c["name"], "online": c["online"], "default": c["default"]}
+            for c in connectors
+        ],
+        "errors": errors,
+    }
+
 def create_mcp(
     relay: Relay,
     embedded_provider: EmbeddedOAuthProvider | None = None,
@@ -2839,10 +2898,8 @@ def create_mcp(
 
     @expose("list_devices", True, False, False)
     async def list_devices(include_resources: bool = False) -> dict[str, Any]:
-        return await relay.call(
-            _principal("remote:read"),
-            "list_devices",
-            {"include_resources": bool(include_resources)},
+        return await aggregate_connector_devices(
+            relay, _principal("remote:read"), bool(include_resources)
         )
 
     @expose("read_file", True, False, False)
