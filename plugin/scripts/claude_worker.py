@@ -123,7 +123,10 @@ def main(path):
                     try:
                         with decisions_path.open(encoding="utf-8") as f:
                             f.seek(offset)
-                            for line in f:
+                            while True:
+                                line = f.readline()
+                                if not line:
+                                    break
                                 try:
                                     item = json.loads(line)
                                 except ValueError:
