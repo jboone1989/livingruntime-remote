@@ -83,6 +83,15 @@ def public_events(raw):
             elif item.get("type") == "text" and item.get("text"):
                 result.append({"kind": "assistant_text", "text": str(item["text"])[:4000]})
         return result[:30]
+    if kind in ("hook_started", "hook_progress", "hook_response"):
+        return [{"kind": kind, "hook_name": str(raw.get("hook_name", raw.get("hook_id", "")))[:100]}]
+    if kind == "user":
+        results = []
+        for item in (raw.get("message") or {}).get("content", []):
+            if isinstance(item, dict) and item.get("type") == "tool_result":
+                results.append({"kind": "tool_result", "tool_id": str(item.get("tool_use_id", ""))[:128],
+                                "success": not item.get("is_error", False)})
+        return results[:30]
     if kind == "control_request":
         req = raw.get("request") or {}
         if not isinstance(req, dict):
@@ -247,11 +256,14 @@ def main(path):
                 output["error"] = "Claude returned no result event"
             elif last_result.get("is_error") or str(last_result.get("subtype", "")).startswith("error_"):
                 output["error"] = "Claude: " + str(last_result.get("result") or last_result.get("subtype") or "unknown error")[-800:]
-            elif not isinstance(last_result.get("result"), str) or not last_result["result"].strip():
+            elif ((not isinstance(last_result.get("result"), str) or not last_result["result"].strip())
+                  and not isinstance(last_result.get("structured_output"), (dict, list))):
                 output["error"] = "Claude returned no result text"
             else:
                 output["status"] = "SUCCEEDED"
-                output["result"] = last_result["result"][:80000]
+                output["result"] = str(last_result.get("result") or "")[:80000]
+                if isinstance(last_result.get("structured_output"), (dict, list)):
+                    output["structured_output"] = last_result["structured_output"]
                 output["usage"] = {"num_turns": last_result.get("num_turns"),
                                    "total_cost_usd": last_result.get("total_cost_usd"),
                                    "duration_ms": last_result.get("duration_ms"),
