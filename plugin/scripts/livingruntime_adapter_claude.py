@@ -19,9 +19,11 @@ from agent_policy import claude_workspace
 _ALLOWED_OPTIONS = {
     "agent", "agents", "model", "effort", "permission_mode", "max_turns",
     "allowed_tools", "disallowed_tools", "tools", "append_system_prompt",
-    "duplex", "timeout_seconds",
+    "duplex", "timeout_seconds", "fallback_model", "forward_subagent_text",
+    "include_hook_events", "json_schema", "max_budget_usd", "autocompact",
+    "append_subagent_system_prompt", "mcp_configs", "plugin_dirs", "additional_dirs",
 }
-_MODES = {"plan", "default", "acceptEdits", "auto"}
+_MODES = {"plan", "default", "acceptEdits", "auto", "dontAsk"}
 _EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultracode"}
 _IDENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
 _TOOL = re.compile(r"^[A-Za-z_][^,\r\n\x00]{0,199}$")
@@ -67,6 +69,36 @@ def validate_options(value):
         or len(opts["append_system_prompt"]) > 20000
     ):
         raise ValueError("invalid append_system_prompt")
+    for key in ("forward_subagent_text", "include_hook_events"):
+        if key in opts and type(opts[key]) is not bool:
+            raise ValueError("invalid " + key)
+    for key in ("fallback_model", "autocompact"):
+        if key in opts and (
+            not isinstance(opts[key], str) or len(opts[key]) > 160
+            or opts[key].startswith("-") or "\n" in opts[key] or "\0" in opts[key]
+        ):
+            raise ValueError("invalid " + key)
+    if "append_subagent_system_prompt" in opts and (
+        not isinstance(opts["append_subagent_system_prompt"], str)
+        or len(opts["append_subagent_system_prompt"]) > 20000
+    ):
+        raise ValueError("invalid append_subagent_system_prompt")
+    if "max_budget_usd" in opts and (
+        type(opts["max_budget_usd"]) not in (float, int) or
+        not 0 < opts["max_budget_usd"] <= 100
+    ):
+        raise ValueError("invalid max_budget_usd")
+    if "json_schema" in opts and (
+        not isinstance(opts["json_schema"], dict) or
+        len(json.dumps(opts["json_schema"])) > 20000
+    ):
+        raise ValueError("invalid json_schema")
+    for key in ("mcp_configs", "plugin_dirs", "additional_dirs"):
+        if key in opts and (
+            not isinstance(opts[key], list) or len(opts[key]) > 8 or
+            not all(isinstance(p, str) and 0 < len(p) <= 512 for p in opts[key])
+        ):
+            raise ValueError("invalid " + key)
     return opts
 
 
@@ -131,10 +163,26 @@ class ClaudeCodeAdapter:
         if not isinstance(goal, str) or not goal.strip() or len(goal) > 40000:
             raise ValueError("invalid goal")
         cwd = claude_workspace(device, project)
+        validated = validate_options(options)
+        # CLI paths may not extend the already authorized project workspace.
+        root = Path(cwd).resolve()
+        for key in ("mcp_configs", "plugin_dirs", "additional_dirs"):
+            if key in validated:
+                paths = []
+                for raw in validated[key]:
+                    target = (root / raw).resolve()
+                    if not target.is_relative_to(root) or not target.exists():
+                        raise PermissionError("Claude CLI path outside authorized workspace")
+                    if key == "mcp_configs" and not target.is_file():
+                        raise ValueError("MCP config must be a file")
+                    if key != "mcp_configs" and not target.is_dir():
+                        raise ValueError("Claude directory must be a directory")
+                    paths.append(str(target))
+                validated[key] = paths
         sid = str(uuid.uuid4())
         self._write(sid, {"session_id": sid, "cwd": str(Path(cwd).resolve()),
                           "executable": self.executable, "status": "PENDING",
-                          "project": project, "device": device, "options": validate_options(options)})
+                          "project": project, "device": device, "options": validated})
         return self._spawn(sid, goal, False)
 
     def _worker_alive(self, record):
