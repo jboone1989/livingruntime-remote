@@ -22,6 +22,11 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertIn("stream-json", args)
         self.assertIn("plan", args)
         self.assertNotIn("--max-turns", args)
+        record["prompt"] = "--dangerously-skip-permissions"
+        safe = cli_args(record)
+        self.assertEqual(safe[-2:], ["--", "--dangerously-skip-permissions"])
+        self.assertEqual(safe.count("--dangerously-skip-permissions"), 1)
+        record["prompt"] = "investigate"
         record["options"] = validate_options({
             "agent": "devils-advocate", "model": "sonnet", "effort": "high",
             "max_turns": 25, "permission_mode": "default", "duplex": True,
@@ -84,6 +89,7 @@ class ClaudeAdapterTests(unittest.TestCase):
                 with patch("livingruntime_adapter_claude.subprocess.Popen", return_value=Mock(pid=12346)):
                     b.send(sid, "follow up")
                 self.assertTrue(b._read(sid)["continue"])
+                self.assertIn("review", event_path.read_text())  # follow-up retains event history
 
     def test_native_stream_worker_and_failure_receipts(self):
         with tempfile.TemporaryDirectory() as td:
@@ -128,6 +134,7 @@ class ClaudeAdapterTests(unittest.TestCase):
                 "allowed=answer['response']['response']['behavior']=='allow'\n"
                 "print(json.dumps({'type':'result','result':'approved' if allowed else 'denied',"
                 "'is_error':False}),flush=True)\n"
+                "sys.stdin.read()\n"  # real duplex CLI waits for EOF even after final result
             )
             cli.chmod(0o700)
             record = Path(td) / "session.json"
@@ -155,6 +162,52 @@ class ClaudeAdapterTests(unittest.TestCase):
             self.assertEqual(receipt["status"], "SUCCEEDED", receipt)
             self.assertEqual(receipt["result"], "approved")
 
+    def test_scoped_native_cli_feature_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "skills").mkdir()
+            (root / "mcp.json").write_text('{"mcpServers": {}}')
+            cli = root / "claude"
+            cli.write_text("")
+            env = {"LIVINGRUNTIME_CLAUDE_JOBS": str(root / "jobs"),
+                   "LIVINGRUNTIME_CLAUDE_WORKSPACES": json.dumps({"main:demo": td})}
+            with patch.dict(os.environ, env):
+                adapter = ClaudeCodeAdapter(str(cli))
+                options = {"plugin_dirs": ["skills"], "mcp_configs": ["mcp.json"],
+                           "fallback_model": "sonnet,haiku", "forward_subagent_text": True,
+                           "include_hook_events": True, "max_budget_usd": 2.0,
+                           "json_schema": {"type": "object"}}
+                with patch("livingruntime_adapter_claude.subprocess.Popen", return_value=Mock(pid=12345)):
+                    sid = adapter.start("test", project="demo", device="main", options=options)
+                args = cli_args(adapter._read(sid))
+                for flag in ("--plugin-dir", "--mcp-config", "--forward-subagent-text",
+                             "--include-hook-events", "--json-schema", "--max-budget-usd"):
+                    self.assertIn(flag, args)
+                with self.assertRaises(PermissionError):
+                    adapter.start("test", project="demo", device="main",
+                                  options={"plugin_dirs": [".."]})
+                with self.assertRaises(ValueError):
+                    adapter.start("test", project="demo", device="main",
+                                  options={"mcp_configs": ["skills"]})
+
+    def test_events_have_monotonic_sequences_across_turns(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli = Path(td) / "fake-claude"
+            cli.write_text("#!/usr/bin/python3\nimport json\n"
+                           "print(json.dumps({'type':'result','result':'done','is_error':False}))\n")
+            cli.chmod(0o700)
+            record = Path(td) / "session.json"
+            record.write_text(json.dumps({
+                "executable": str(cli), "prompt": "review", "cwd": td,
+                "session_id": "00000000-0000-4000-8000-000000000001",
+                "continue": False, "options": {},
+            }))
+            run_worker(str(record))
+            record.write_text(json.dumps({**json.loads(record.read_text()), "continue": True}))
+            run_worker(str(record))
+            events = [json.loads(x) for x in record.with_suffix(".events.jsonl").read_text().splitlines()]
+            self.assertEqual([e["seq"] for e in events], [1, 2])
+
     def test_decisions_require_live_matching_permission(self):
         with tempfile.TemporaryDirectory() as td:
             cli = Path(td) / "claude"
@@ -172,6 +225,11 @@ class ClaudeAdapterTests(unittest.TestCase):
                         a.decide(sid, "req_1", "allow")
                     with self.assertRaises(ValueError):
                         a.decide(sid, "unknown", "allow")
+                    a._path(sid).with_suffix(".events.jsonl").write_text(json.dumps({
+                        "seq": 2, "kind": "permission_request", "request_id": "large",
+                        "approvable": False, "input": {"truncated": True}}) + "\n")
+                    with self.assertRaisesRegex(ValueError, "oversized"):
+                        a.decide(sid, "large", "allow")
 
 
 if __name__ == "__main__":
