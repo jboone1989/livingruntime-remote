@@ -39,7 +39,7 @@ class ClaudeAdapterTests(unittest.TestCase):
     def test_real_detached_worker_survives_adapter_restart(self):
         with tempfile.TemporaryDirectory(dir=str(Path(__file__).resolve().parents[2])) as td:
             cli=Path(td)/"mock-claude"
-            cli.write_text("#!/usr/bin/python3\nimport json\nprint(json.dumps({'result':'worker-ok'}))\n")
+            cli.write_text("#!/usr/bin/python3\nimport json,sys\nassert sys.argv[sys.argv.index('--max-turns')+1]=='10'\nprint(json.dumps({'result':'worker-ok'}))\n")
             cli.chmod(0o700)
             with patch.dict(os.environ,{"LIVINGRUNTIME_CLAUDE_JOBS":str(Path(td)/"jobs"),
                                      "LIVINGRUNTIME_CLAUDE_WORKSPACES":json.dumps({"main:demo":td})}):

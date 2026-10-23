@@ -12,7 +12,7 @@ def main(path: str) -> None:
     receipt_path=record_path.with_suffix(".result.json")
     record=json.loads(record_path.read_text(encoding="utf-8"))
     args=[record["executable"],"-p",record["prompt"],"--output-format","json",
-          "--permission-mode","plan","--max-turns","1"]
+          "--permission-mode","plan","--max-turns","10"]
     if record.get("continue"):
         args += ["--resume",record["session_id"]]
     else:
@@ -21,11 +21,12 @@ def main(path: str) -> None:
     try:
         done=subprocess.run(args,cwd=record["cwd"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                             text=True,timeout=300,check=False)
-        if done.returncode:
-            output["error"]="Claude process returned nonzero exit status"
+        result=json.loads(done.stdout[-131072:]) if done.stdout.strip() else {}
+        if done.returncode or result.get("is_error"):
+            detail=str(result.get("result") or result.get("subtype") or done.stderr.strip() or "unknown error")
+            output["error"]=f"Claude exit={done.returncode}: {detail[-800:]}"
         else:
-            result=json.loads(done.stdout[-131072:])
-            output["status"]="FAILED" if result.get("is_error") else "SUCCEEDED"
+            output["status"]="SUCCEEDED"
             output["result"]=str(result.get("result",""))[:8192]
     except subprocess.TimeoutExpired:
         output["status"]="STALLED"
