@@ -644,6 +644,18 @@
         "open_world_justification": "Uses only configured adapters and project-scoped hosts."
       }
     },
+    "decide_agent_permission": {
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Responds to an explicit tool permission request of the active Claude native CLI session.",
+        "destructive_justification": "An allow decision can enable Claude Code to execute the exact tool request presented for human review.",
+        "open_world_justification": "Only an authenticated existing Claude session and pending request ID may be answered."
+      }
+    },
     "cancel_agent": {
       "annotations": {
         "readOnlyHint": false,

@@ -635,6 +635,7 @@ class RelayServerTests(unittest.TestCase):
             "device_status",
             "disconnect_device",
             "start_pi_agent",
+            "start_pi_step",
             "watch_pi_job",
             "wait_pi_job_completion",
             "bind_openai_pi_continuation",
@@ -855,7 +856,7 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn(server.LONG_JOB_WIDGET_LEGACY_URI, resource_uris)
         self.assertIn(server.LONG_JOB_WIDGET_V3_URI, resource_uris)
         self.assertIn(server.LONG_JOB_WIDGET_V4_URI, resource_uris)
-        self.assertTrue(server.CONTROL_PLANE_WIDGET_URI.endswith("control-plane-v10.html"))
+        self.assertTrue(server.CONTROL_PLANE_WIDGET_URI.endswith("control-plane-v11.html"))
         self.assertIn(server.CONTROL_PLANE_WIDGET_V8_URI, resource_uris)
         self.assertIn(server.CONTROL_PLANE_WIDGET_V7_URI, resource_uris)
         self.assertIn(server.CONTROL_PLANE_WIDGET_V6_URI, resource_uris)

@@ -3371,12 +3371,13 @@ def list_agents() -> dict[str, Any]:
 
 
 @server.tool(name="start_agent", annotations=ToolAnnotations(title="Start installed agent",readOnlyHint=False,destructiveHint=True,openWorldHint=False))
-def start_agent(adapter_id: str, goal: str, project: str, device: str | None = None) -> dict[str, Any]:
+def start_agent(adapter_id: str, goal: str, project: str, device: str | None = None,
+                options: dict[str, Any] | None = None) -> dict[str, Any]:
     """Start a registered adapter only on the requested authorized project host."""
     selected = host_for(_config(), project=project, host_id=device)
     if not agent_policy.may_launch(selected["id"],project,adapter_id):
         raise PermissionError("agent launch not approved for this device, project and adapter")
-    return agent_sessions.start(adapter_id,goal,project=project,device=selected["id"],authorized=True)
+    return agent_sessions.start(adapter_id,goal,project=project,device=selected["id"],authorized=True,options=options)
 
 
 @server.tool(name="get_agent_session", annotations=ToolAnnotations(title="Get agent session",readOnlyHint=True,destructiveHint=False,openWorldHint=False))
@@ -3389,6 +3390,12 @@ def get_agent_session(session_id: str) -> dict[str, Any]:
 def send_agent_message(session_id: str, message: str) -> dict[str, Any]:
     """Send a bounded message if the adapter supports messaging."""
     return agent_sessions.send(session_id,message)
+
+
+@server.tool(name="decide_agent_permission", annotations=ToolAnnotations(title="Decide Claude tool permission",readOnlyHint=False,destructiveHint=True,openWorldHint=False))
+def decide_agent_permission(session_id: str, request_id: str, decision: str) -> dict[str, Any]:
+    """Respond to one pending native Claude CLI tool request; not a host exec grant."""
+    return agent_sessions.decide(session_id,request_id,decision)
 
 
 @server.tool(name="cancel_agent", annotations=ToolAnnotations(title="Cancel agent session",readOnlyHint=False,destructiveHint=True,openWorldHint=False))

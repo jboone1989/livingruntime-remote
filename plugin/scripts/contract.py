@@ -15,6 +15,7 @@ REMOTE_TOOLS = (
     "start_agent",
     "get_agent_session",
     "send_agent_message",
+    "decide_agent_permission",
     "cancel_agent",
     "resume_agent",
     "watch_agent_events",
