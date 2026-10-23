@@ -33,9 +33,10 @@ def cli_args(record):
             args.append(flag + "=" + ",".join(opts[key]))
     if opts.get("duplex"):
         args += ["--input-format", "stream-json", "--permission-prompt-tool", "stdio"]
-    else:
-        args.insert(2, record["prompt"])
     args += ["--resume" if record.get("continue") else "--session-id", record["session_id"]]
+    if not opts.get("duplex"):
+        # Protect untrusted prompt text beginning with CLI-style flags.
+        args += ["--", record["prompt"]]
     return args
 
 
@@ -69,10 +70,13 @@ def public_events(raw):
             return []
         # Include the requested input so the human can make an informed decision.
         tool_input = req.get("input") if isinstance(req.get("input"), dict) else {}
-        if len(json.dumps(tool_input)) > 12000:
+        approvable = len(json.dumps(tool_input)) <= 12000
+        if not approvable:
+            # Never permit a truncated preview to become the executed tool input.
             tool_input = {"truncated": True}
         return [{"kind": "permission_request", "request_id": rid,
-                 "tool_name": str(req.get("tool_name", ""))[:100], "input": tool_input}]
+                 "tool_name": str(req.get("tool_name", ""))[:100],
+                 "approvable": approvable, "input": tool_input}]
     if kind == "control_cancel_request":
         return [{"kind": "permission_cancelled", "request_id": str(raw.get("request_id", ""))[:128]}]
     if kind == "result":
@@ -90,8 +94,17 @@ def main(path):
     output = {"status": "FAILED", "finished_at": time.time()}
     proc = None
     killed = False
+    # A session has multiple turns; event cursors never restart at one.
     seq = 0
+    if events_path.exists():
+        with events_path.open(encoding="utf-8") as previous_events:
+            for line in previous_events:
+                try:
+                    seq = max(seq, int(json.loads(line).get("seq", 0)))
+                except (ValueError, TypeError):
+                    continue
     stop_monitor = threading.Event()
+    stdin_lock = threading.Lock()
 
     try:
         opts = record.get("options") or {}
@@ -112,8 +125,9 @@ def main(path):
             )
             if opts.get("duplex"):
                 message = {"type": "user", "message": {"role": "user", "content": record["prompt"]}}
-                proc.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
-                proc.stdin.flush()
+                with stdin_lock:
+                    proc.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
+                    proc.stdin.flush()
 
             def apply_decisions():
                 offset = 0
@@ -137,8 +151,11 @@ def main(path):
                                 control = {"type": "control_response", "response": {
                                     "subtype": "success", "request_id": item["request_id"],
                                     "response": response}}
-                                proc.stdin.write(json.dumps(control) + "\n")
-                                proc.stdin.flush()
+                                with stdin_lock:
+                                    if proc.stdin.closed:
+                                        return
+                                    proc.stdin.write(json.dumps(control) + "\n")
+                                    proc.stdin.flush()
                             offset = f.tell()
                     except (OSError, BrokenPipeError, ValueError):
                         return
@@ -170,6 +187,20 @@ def main(path):
                         last_result = raw
                     for event in public_events(raw):
                         append(event)
+                        if (event["kind"] == "permission_request" and
+                                not event["approvable"] and opts.get("duplex")):
+                            deny = {"type": "control_response", "response": {
+                                "subtype": "success", "request_id": event["request_id"],
+                                "response": {"behavior": "deny", "message": "Permission input exceeds review limit"}}}
+                            with stdin_lock:
+                                proc.stdin.write(json.dumps(deny) + "\n")
+                                proc.stdin.flush()
+                    if raw.get("type") == "result" and opts.get("duplex"):
+                        # Claude waits for EOF in stream-json input mode.
+                        stop_monitor.set()
+                        with stdin_lock:
+                            if not proc.stdin.closed:
+                                proc.stdin.close()
                 stderr = proc.stderr.read()[-1500:]
                 returncode = proc.wait()
             finally:
