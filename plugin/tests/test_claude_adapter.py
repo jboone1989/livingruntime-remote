@@ -4,6 +4,7 @@ import sys
 import time
 import tempfile
 import unittest
+import threading
 from pathlib import Path
 from unittest.mock import patch, Mock
 
@@ -113,6 +114,46 @@ class ClaudeAdapterTests(unittest.TestCase):
             fail = json.loads(record.with_suffix(".result.json").read_text())
             self.assertEqual(fail["status"], "FAILED")
             self.assertIn("no result", fail["error"])
+
+    def test_duplex_stream_permission_roundtrip(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli = Path(td) / "fake-claude"
+            cli.write_text(
+                "#!/usr/bin/python3\\nimport json,sys\\n"
+                "first=json.loads(sys.stdin.readline())\\n"
+                "assert first['type']=='user'\\n"
+                "print(json.dumps({'type':'control_request','request_id':'req_duplex',"
+                "'request':{'tool_name':'Bash','input':{'command':'git status'}}}),flush=True)\\n"
+                "answer=json.loads(sys.stdin.readline())\\n"
+                "allowed=answer['response']['response']['behavior']=='allow'\\n"
+                "print(json.dumps({'type':'result','result':'approved' if allowed else 'denied',"
+                "'is_error':False}),flush=True)\\n"
+            )
+            cli.chmod(0o700)
+            record = Path(td) / "session.json"
+            record.write_text(json.dumps({
+                "executable": str(cli), "prompt": "review", "cwd": td,
+                "session_id": "00000000-0000-4000-8000-000000000001",
+                "continue": False, "options": {"permission_mode": "default",
+                                                 "duplex": True, "timeout_seconds": 30},
+            }))
+            worker = threading.Thread(target=run_worker, args=(str(record),), daemon=True)
+            worker.start()
+            events = record.with_suffix(".events.jsonl")
+            for _ in range(100):
+                if events.exists() and "req_duplex" in events.read_text():
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("no streamed native permission request")
+            decision = record.with_suffix(".decisions.jsonl")
+            decision.write_text(json.dumps({"request_id": "req_duplex", "decision": "allow",
+                                            "input": {"command": "git status"}}) + "\\n")
+            worker.join(5)
+            self.assertFalse(worker.is_alive(), "duplex worker stalled")
+            receipt = json.loads(record.with_suffix(".result.json").read_text())
+            self.assertEqual(receipt["status"], "SUCCEEDED", receipt)
+            self.assertEqual(receipt["result"], "approved")
 
     def test_decisions_require_live_matching_permission(self):
         with tempfile.TemporaryDirectory() as td:
