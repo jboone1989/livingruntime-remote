@@ -27,12 +27,16 @@ GitHub's temporary `GITHUB_TOKEN` is scoped to the review workflow and used
 for reading the PR and posting the result; it is not a Claude API credential.
 
 The workflow runs **trusted default-branch code** under `pull_request_target`.
-It rejects forks and drafts. Review worktrees are read-only to Claude:
-`Read,Glob,Grep` only, no repo hooks, no MCP, no Bash, no test execution.
+It rejects forks and drafts. Claude Code runs its bundled `/code-review high`
+against the exact merge-base-to-PR-commit range using the authenticated local
+subscription. It runs in plan mode, with edits, MCP integrations and hooks
+disabled. Native review needs Git history and diff access, so unlike the
+previous text-only reviewer it may use Git read commands; it must not execute
+PR code or tests. Sonnet independently verifies candidate findings before
+the script posts a GitHub report.
 Reviews are pinned to the PR head SHA; if the head changes mid-review, the
 old attempt does not post. Each SHA is reviewed once, with a cap on repeated
-blocked rounds. Initial pass uses Haiku; Sonnet verifies only when the first
-pass reports candidate findings. CI/tests and human approval remain separate.
+blocked rounds. CI/tests and human approval remain separate.
 
 **Scope:** this workflow and its repo-scoped runner cover
 `jboone1989/livingruntime-remote` only. Other repositories need their own

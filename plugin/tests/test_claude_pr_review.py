@@ -1,4 +1,5 @@
 import argparse
+import json
 import importlib.util
 from pathlib import Path
 import tempfile
@@ -94,7 +95,8 @@ class ReviewerUnitTests(unittest.TestCase):
               "base": {"ref": "main"}}
         state = {"prs": {"2": {"reviewed": ["s1", "s2", "s3"],
                                   "outcomes": {"s1": True, "s2": False, "s3": False}}}}
-        with patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF)), \
+        with patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "a"*40)), \
+             patch.object(reviewer, "native_review", return_value=[]), \
              patch.object(reviewer, "ask_claude", return_value=[]), \
              patch.object(reviewer, "api", return_value=pr), \
              patch.object(reviewer, "already_commented", return_value=True), \
@@ -118,6 +120,42 @@ class ReviewerUnitTests(unittest.TestCase):
     def test_candidate_response_parsing(self):
         self.assertEqual(reviewer.parse_claude(
             '{"result":"{\\"findings\\":[]}", "is_error":false}'), [])
+
+    def test_native_review_parses_bundled_findings(self):
+        native = [{"file": "src/a.mjs", "line": 4, "summary": "Crash",
+                   "failure_scenario": "a is None"}]
+        output = json.dumps({"subtype": "success", "is_error": False,
+                             "result": "```json\n" + json.dumps(native) + "\n```"})
+        self.assertEqual(reviewer.parse_native_review(output),
+                         [{"path": "src/a.mjs", "line": 4,
+                           "reason": "Crash", "evidence": "a is None"}])
+        self.assertEqual(reviewer.parse_native_review(json.dumps(
+            {"subtype": "success", "is_error": False, "result": "```json\n[]\n```"})), [])
+
+        wrapped = json.dumps({"subtype": "success", "is_error": False,
+                              "result": "Reviewing PR diff...\n```json\n" +
+                                        json.dumps(native) +
+                                        "\n```\nAdditional context."})
+        self.assertEqual(reviewer.parse_native_review(wrapped),
+                         reviewer.parse_native_review(output))
+
+    def test_native_review_rejects_nonreview_or_failure(self):
+        for result in ({"result": "I couldn't run git diff", "is_error": False},
+                       {"result": "```json\n{}\n```", "is_error": False},
+                       {"result": "[]", "is_error": True}):
+            with self.subTest(result=result), self.assertRaises(reviewer.ReviewError):
+                reviewer.parse_native_review(json.dumps(result))
+
+    def test_native_invocation_uses_real_review_skill(self):
+        with patch.object(reviewer, "run", return_value=json.dumps({
+                "subtype": "success", "is_error": False,
+                "result": "```json\n[]\n```"})) as cli:
+            self.assertEqual(reviewer.native_review("claude", Path("/tmp"), "a"*40, "b"*40, 60), [])
+            argv = cli.call_args.args[0]
+            self.assertIn("/code-review high " + "a"*40 + ".." + "b"*40, argv)
+            self.assertIn("--permission-mode", argv)
+            self.assertIn("--disallowedTools", argv)
+            self.assertNotIn("--bare", argv)
 
     def test_event_reviews_only_requested_pr(self):
         with tempfile.TemporaryDirectory() as root:
