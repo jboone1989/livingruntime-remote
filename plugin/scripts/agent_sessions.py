@@ -27,13 +27,18 @@ def _save(record):
     os.replace(tmp,path)
 def get(sid):
     return json.loads(_path(sid).read_text(encoding="utf-8"))
-def start(adapter_id,goal,*,project,device,authorized=False):
+def start(adapter_id,goal,*,project,device,authorized=False,options=None):
     if not goal.strip() or len(goal)>8000 or not project or not device:
         raise ValueError("invalid agent start arguments")
     if authorized is not True:
         raise PermissionError("agent launch requires explicit authorization")
     adapter=registry.get(adapter_id)
-    external=adapter.start(goal,project=project,device=device)
+    if options is not None and adapter_id != "claude-code":
+        raise ValueError("CLI options are only supported by Claude Code")
+    kwargs={"project":project,"device":device}
+    if options is not None:
+        kwargs["options"]=options
+    external=adapter.start(goal,**kwargs)
     if not isinstance(external,str) or not external or len(external)>256:
         raise ValueError("adapter returned invalid session")
     record={"session_id":"lra_"+uuid.uuid4().hex,"adapter_id":adapter_id,
@@ -107,6 +112,12 @@ def resume(sid):
     if not isinstance(result,dict):
         raise ValueError("adapter resume must return an object")
     return {"session_id":sid,"agent_status":result}
+
+def decide(sid,request_id,decision):
+    record,adapter=_resolve(sid,"claude-code")
+    if record.get("state")=="CANCELLED":
+        raise RuntimeError("cancelled session")
+    return adapter.decide(record["external_session_id"],request_id,decision)
 
 def events(sid,after=0):
     record,adapter=_resolve(sid)
