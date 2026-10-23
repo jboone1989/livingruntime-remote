@@ -21,10 +21,22 @@ def main(path: str) -> None:
     try:
         done=subprocess.run(args,cwd=record["cwd"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                             text=True,timeout=300,check=False)
-        result=json.loads(done.stdout[-131072:]) if done.stdout.strip() else {}
-        if done.returncode or result.get("is_error"):
-            detail=str(result.get("result") or result.get("subtype") or done.stderr.strip() or "unknown error")
-            output["error"]=f"Claude exit={done.returncode}: {detail[-800:]}"
+        result=None
+        if done.stdout.strip() and len(done.stdout)<=2_000_000:
+            try:
+                result=json.loads(done.stdout)
+            except ValueError:
+                pass
+        if done.returncode:
+            detail=(result.get("result") if isinstance(result,dict) else None) or done.stderr.strip() or "no JSON result"
+            output["error"]=f"Claude exit={done.returncode}: {str(detail)[-800:]}"
+        elif not isinstance(result,dict):
+            output["error"]="Claude returned no valid JSON result object"
+        elif result.get("is_error") or str(result.get("subtype","")).startswith("error_"):
+            detail=result.get("result") or result.get("subtype") or "unknown error"
+            output["error"]=f"Claude exit=0: {str(detail)[-800:]}"
+        elif not isinstance(result.get("result"),str) or not result["result"].strip():
+            output["error"]="Claude returned no result text"
         else:
             output["status"]="SUCCEEDED"
             output["result"]=str(result.get("result",""))[:8192]
