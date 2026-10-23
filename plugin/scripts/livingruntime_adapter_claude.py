@@ -202,6 +202,7 @@ class ClaudeCodeAdapter:
             report = json.loads(receipt.read_text(encoding="utf-8"))
             record.update({"status": report["status"], "result": report.get("result", ""),
                            "error": report.get("error"), "usage": report.get("usage"),
+                           "structured_output": report.get("structured_output"),
                            "finished_at": report["finished_at"]})
             self._write(sid, record)
         elif record["status"] == "RUNNING" and not self._worker_alive(record):
@@ -210,7 +211,7 @@ class ClaudeCodeAdapter:
                 record["error"] = "Worker not running and no completion receipt"
                 self._write(sid, record)
         return {key: record.get(key) for key in (
-            "status", "result", "error", "usage", "started_at", "finished_at"
+            "status", "result", "structured_output", "error", "usage", "started_at", "finished_at"
         )}
 
     def events(self, sid, *, after=0):
