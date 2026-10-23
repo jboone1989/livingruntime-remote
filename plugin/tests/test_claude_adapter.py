@@ -121,6 +121,23 @@ class ClaudeAdapterTests(unittest.TestCase):
             self.assertEqual(fail["status"], "FAILED")
             self.assertIn("no result", fail["error"])
 
+    def test_native_structured_output_without_text(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli = Path(td) / "claude"
+            cli.write_text("#!/usr/bin/python3\nimport json\n"
+                           "print(json.dumps({'type':'result','result':'',"
+                           "'structured_output':{'answer':42},'is_error':False}))\n")
+            cli.chmod(0o700)
+            record = Path(td) / "session.json"
+            record.write_text(json.dumps({
+                "executable": str(cli), "prompt": "structured response", "cwd": td,
+                "session_id": "00000000-0000-4000-8000-000000000001", "options": {},
+            }))
+            run_worker(str(record))
+            receipt = json.loads(record.with_suffix(".result.json").read_text())
+            self.assertEqual(receipt["status"], "SUCCEEDED", receipt)
+            self.assertEqual(receipt["structured_output"], {"answer": 42})
+
     def test_duplex_stream_permission_roundtrip(self):
         with tempfile.TemporaryDirectory() as td:
             cli = Path(td) / "fake-claude"
