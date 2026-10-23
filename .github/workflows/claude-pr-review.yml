@@ -1,0 +1,44 @@
+name: Claude PR review (subscription CLI)
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+  statuses: write
+
+concurrency:
+  group: claude-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  claude-review:
+    # Only trusted in-repository PRs; the workflow and review script are
+    # checked out from the default branch, never from the PR head.
+    if: github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft
+    runs-on: [self-hosted, Linux, X64, claude-review]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Review PR with server's authenticated Claude Code
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: "credential.helper"
+          GIT_CONFIG_VALUE_0: "!/home/ubuntu/.local/bin/gh auth git-credential"
+        run: |
+          set -eu
+          state="$HOME/.local/state/claude-review/${REPO//\//_}-pr-$PR_NUMBER.json"
+          work="$HOME/.local/share/claude-review/${REPO//\//_}/$PR_NUMBER"
+          python3 plugin/scripts/claude_pr_review.py \
+            --repo "$REPO" --pr-number "$PR_NUMBER" \
+            --gh /home/ubuntu/.local/bin/gh \
+            --claude /home/ubuntu/.local/bin/claude \
+            --state "$state" --work "$work" --timeout 180
