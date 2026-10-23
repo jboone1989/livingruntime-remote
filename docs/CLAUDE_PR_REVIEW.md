@@ -46,6 +46,15 @@ runner was registered with the `claude-review` label and confirmed online.
 The reviewer is considered operational only after an actual PR event yields
 the expected commit status and review comment.
 
+## Native review benchmark (2026-10-23)
+
+Against the original buggy PR #17 revision (`717da62`), the old Haiku-first
+reviewer reported 0 candidates, while native `/code-review high` returned 8;
+independent Sonnet verification retained 2 reproducible defects. On the
+documentation-only PR #19 control, native review returned a documentation
+suggestion that Sonnet rejected. Findings are non-deterministic; a successful
+review never replaces CI or human approval.
+
 Original tested review code: `jboone1989/claude-connector/automation/review_worker.py`.
 The code was reused here so decommissioning the old Claude Connector does not
 remove the review mechanism.
