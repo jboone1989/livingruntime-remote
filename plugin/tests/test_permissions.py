@@ -61,16 +61,33 @@ class PermissionMaintenanceTests(unittest.TestCase):
                     with self.assertRaises(PermissionError):
                         permissions.approve(request["request_id"], **options)
 
-    def test_sudo_rejects_interactive_options_wrappers_and_unbounded_targets(self):
+    def test_sudo_rejects_interactive_options_and_nested_sudo(self):
         for argv in (["sudo"], ["sudo", "docker", "ps"], ["sudo", "-n"],
                      ["sudo", "-n", "-s"], ["sudo", "-u", "root", "docker", "ps"],
-                     ["sudo", "-n", "env", "docker", "ps"],
-                     ["sudo", "-n", "sh", "-c", "id"],
-                     ["sudo", "-n", "python3", "-c", "print(1)"],
-                     ["sudo", "-n", "systemctl", "restart", "other.service"],
                      ["sudo", "-n", "sudo", "-n", "docker", "ps"]):
             with self.subTest(argv=argv), self.assertRaises(PermissionError):
                 self.req(argv)
+
+    def test_sudo_systemctl_and_cleanup_require_individual_exact_grants(self):
+        commands = [
+            ["sudo", "-n", "systemctl", "disable", "--now", "dsh-web.service", "dsh-gate.service"],
+            ["sudo", "-n", "rm", "-f", "/etc/systemd/system/dsh-web.service"],
+            ["sudo", "-n", "rm", "-rf", "/opt/dsh-gate"],
+            ["sudo", "-n", "systemctl", "daemon-reload"],
+            ["sudo", "-n", "npm", "uninstall", "-g", "@deepseek-ai/dsh"],
+            ["sudo", "--non-interactive", "--", "/usr/bin/id"],
+        ]
+        for argv in commands:
+            with self.subTest(argv=argv):
+                context = dict(host_id="main", project="remote", cwd="/repo", argv=argv)
+                self.assertIsNone(permissions.is_granted(**context))
+                request = permissions.ensure_request(**context)
+                self.assertEqual(request["risk"], "explicit_host_approval")
+                grant = permissions.approve(request["request_id"])
+                self.assertEqual(permissions.is_granted(**context)["permission_id"], grant["permission_id"])
+                self.assertIsNone(permissions.is_granted(**{**context, "argv": argv + ["extra"]}))
+                permissions.revoke(grant["permission_id"])
+                self.assertIsNone(permissions.is_granted(**context))
 
     def test_sudo_grant_is_exact_scoped_reusable_and_revocable(self):
         argv = ["sudo", "-n", "docker", "compose", "up", "-d", "api", "web"]
