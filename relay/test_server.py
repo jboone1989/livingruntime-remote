@@ -635,6 +635,7 @@ class RelayServerTests(unittest.TestCase):
             "device_status",
             "disconnect_device",
             "start_pi_agent",
+            "start_pi_step",
             "watch_pi_job",
             "wait_pi_job_completion",
             "bind_openai_pi_continuation",
