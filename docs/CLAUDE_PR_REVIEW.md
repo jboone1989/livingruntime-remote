@@ -37,8 +37,10 @@ pass reports candidate findings. CI/tests and human approval remain separate.
 **Scope:** this workflow and its repo-scoped runner cover
 `jboone1989/livingruntime-remote` only. Other repositories need their own
 approved workflow/runner registration, or a separately designed organization-
-wide routing setup. Until the runner is online, the workflow is configured
-but **not operational**.
+wide routing setup. On 2026-10-23, the repository-scoped VM09-ClaudeReview
+runner was registered with the `claude-review` label and confirmed online.
+The reviewer is considered operational only after an actual PR event yields
+the expected commit status and review comment.
 
 Original tested review code: `jboone1989/claude-connector/automation/review_worker.py`.
 The code was reused here so decommissioning the old Claude Connector does not
