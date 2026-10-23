@@ -34,10 +34,13 @@ Key boundaries include:
 - Git credential/config override paths are blocked.
 - Service operations are exact-unit allowlisted.
 - Dynamic exec approvals are explicit, scoped, durable, auditable, and revocable.
-- Hard-denied command classes cannot become allowed merely through dynamic approval.
-- Non-interactive sudo supports a small administrative executable set and always needs an exact,
-  revocable host/project/cwd grant. It never receives an all-host diagnostic grant, changes sudoers,
-  or prompts for or stores a password. The host's existing sudo policy remains authoritative.
+- Direct hard-denied command classes cannot become allowed merely through dynamic approval.
+- `sudo -n` is a separate explicit administrative capability: *any* requested target
+  requires an exact, revocable host/project/cwd/argv grant, with every argv change
+  prompting anew. Approved commands can have root-level effects, so review each
+  complete command before approval. Sudo never receives an all-host diagnostic
+  grant, changes sudoers, or prompts for/stores a password. The host sudo policy
+  remains authoritative.
 - Credential values are not general model inputs; controllers receive opaque references/leases.
 - Device/project routing is explicit and conflicting selections fail closed.
 - Public access is protected by OAuth and one-time device pairing.

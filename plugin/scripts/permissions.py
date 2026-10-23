@@ -60,13 +60,10 @@ HARD_DENY_EXECUTABLES = frozenset({
     "systemctl", "journalctl",
 })
 
-# Sudo is an explicit administrative capability, never a built-in development
-# command or a diagnostic-class grant. Keep its non-interactive entry points
-# small; the complete argv, host, project and cwd still require an exact grant.
-SUDO_TARGETS = frozenset({
-    "docker", "apt", "apt-get", "apt-cache", "dpkg", "nginx", "caddy",
-    "id", "whoami", "true",
-})
+# Sudo remains non-interactive and never built in. After explicit operator
+# approval its entire argv is granted for one host/project/cwd, with no
+# executable allowlist that makes legitimate administration unapprovable.
+# The host's own sudoers policy still decides whether execution is permitted.
 
 
 def sudo_target(argv: list[str]) -> list[str] | None:
@@ -77,8 +74,8 @@ def sudo_target(argv: list[str]) -> list[str] | None:
     target = argv[2:]
     if target and target[0] == "--":
         target = target[1:]
-    if not target or os.path.basename(str(target[0])) not in SUDO_TARGETS:
-        raise PermissionError("sudo target is not an approved administrative executable")
+    if not target or str(target[0]).startswith("-") or os.path.basename(str(target[0])) == "sudo":
+        raise PermissionError("sudo requires one explicit command (no nested sudo or sudo options)")
     return target
 
 
