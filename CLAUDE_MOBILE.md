@@ -27,7 +27,7 @@ actual model output or terminal/error status.
 - The only agent started is the explicitly allowlisted `claude-code` adapter.
 - Native Claude login is used on the VM09 host; no Claude API key is sent to ChatGPT.
 - An existing session can be resumed across ChatGPT turns.
-- Claude is run with `--permission-mode plan --max-turns 1` by the installed adapter,
+- Claude is run with `--permission-mode plan --max-turns 10` by the installed adapter,
   so this path is for discussion/review, not for editing a repository.
 - Default project `livingruntime-remote` is preapproved in the VM09 agent policy.
   Additional projects require explicit host policy changes.

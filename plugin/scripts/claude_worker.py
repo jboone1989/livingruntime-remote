@@ -12,7 +12,7 @@ def main(path: str) -> None:
     receipt_path=record_path.with_suffix(".result.json")
     record=json.loads(record_path.read_text(encoding="utf-8"))
     args=[record["executable"],"-p",record["prompt"],"--output-format","json",
-          "--permission-mode","plan","--max-turns","1"]
+          "--permission-mode","plan","--max-turns","10"]
     if record.get("continue"):
         args += ["--resume",record["session_id"]]
     else:
@@ -21,11 +21,24 @@ def main(path: str) -> None:
     try:
         done=subprocess.run(args,cwd=record["cwd"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                             text=True,timeout=300,check=False)
+        result=None
+        if done.stdout.strip() and len(done.stdout)<=2_000_000:
+            try:
+                result=json.loads(done.stdout)
+            except ValueError:
+                pass
         if done.returncode:
-            output["error"]="Claude process returned nonzero exit status"
+            detail=(result.get("result") if isinstance(result,dict) else None) or done.stderr.strip() or "no JSON result"
+            output["error"]=f"Claude exit={done.returncode}: {str(detail)[-800:]}"
+        elif not isinstance(result,dict):
+            output["error"]="Claude returned no valid JSON result object"
+        elif result.get("is_error") or str(result.get("subtype","")).startswith("error_"):
+            detail=result.get("result") or result.get("subtype") or "unknown error"
+            output["error"]=f"Claude exit=0: {str(detail)[-800:]}"
+        elif not isinstance(result.get("result"),str) or not result["result"].strip():
+            output["error"]="Claude returned no result text"
         else:
-            result=json.loads(done.stdout[-131072:])
-            output["status"]="FAILED" if result.get("is_error") else "SUCCEEDED"
+            output["status"]="SUCCEEDED"
             output["result"]=str(result.get("result",""))[:8192]
     except subprocess.TimeoutExpired:
         output["status"]="STALLED"

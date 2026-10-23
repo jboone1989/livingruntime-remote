@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch, Mock
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"scripts"))
 from livingruntime_adapter_claude import ClaudeCodeAdapter
+from claude_worker import main as run_worker
 
 class ClaudeAdapterTests(unittest.TestCase):
     def test_detached_receipt_and_restart(self):
@@ -39,7 +40,7 @@ class ClaudeAdapterTests(unittest.TestCase):
     def test_real_detached_worker_survives_adapter_restart(self):
         with tempfile.TemporaryDirectory(dir=str(Path(__file__).resolve().parents[2])) as td:
             cli=Path(td)/"mock-claude"
-            cli.write_text("#!/usr/bin/python3\nimport json\nprint(json.dumps({'result':'worker-ok'}))\n")
+            cli.write_text("#!/usr/bin/python3\nimport json,sys\nassert sys.argv[sys.argv.index('--max-turns')+1]=='10'\nprint(json.dumps({'result':'worker-ok'}))\n")
             cli.chmod(0o700)
             with patch.dict(os.environ,{"LIVINGRUNTIME_CLAUDE_JOBS":str(Path(td)/"jobs"),
                                      "LIVINGRUNTIME_CLAUDE_WORKSPACES":json.dumps({"main:demo":td})}):
@@ -54,6 +55,26 @@ class ClaudeAdapterTests(unittest.TestCase):
                     time.sleep(0.1)
                 self.assertEqual(observed["status"],"SUCCEEDED",observed)
                 self.assertEqual(observed["result"],"worker-ok")
+
+    def test_worker_invalid_output_creates_failure_receipt(self):
+        with tempfile.TemporaryDirectory() as td:
+            path=Path(td)/"session.json"
+            path.write_text(json.dumps({
+                "executable":"/bin/true","prompt":"read-only review","cwd":td,
+                "session_id":"9ef98370-1111-4222-8333-777777777777", "continue":False
+            }))
+            for code,body,stderr,fragment in [(0,"[]","","no valid JSON result object"),
+                                              (0,"not-json","","no valid JSON result object"),
+                                              (1,"not-json","CLI failed","Claude exit=1: CLI failed"),
+                                              (0,json.dumps({"is_error":True,"result":"tool limit"}),"","tool limit"),
+                                              (0,json.dumps({"subtype":"error_max_turns"}),"","error_max_turns")]:
+                with self.subTest(code=code,body=body):
+                    with patch("claude_worker.subprocess.run",return_value=Mock(
+                        returncode=code,stdout=body,stderr=stderr)):
+                        run_worker(str(path))
+                    receipt=json.loads(path.with_suffix(".result.json").read_text())
+                    self.assertEqual(receipt["status"],"FAILED")
+                    self.assertIn(fragment,receipt["error"])
 
 if __name__=="__main__":
     unittest.main()
