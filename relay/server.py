@@ -122,6 +122,14 @@ TOOL_TEXT = {
     "open_browser_takeover": ("Open browser takeover", "Create a short-lived Remote URL for an allowlisted Agent Runtime noVNC browser takeover session."),
     "remote_overview": ("Read Remote control-plane snapshot", "Return one secret-free snapshot of Connector health, managed hosts, durable jobs, pending approvals, credential handles, and recent activity."),
     "list_projects": ("List configured projects", "List the named projects and bounded workspaces configured for this LivingRuntime Remote Connector."),
+    "list_agents": ("List installed agents", "Read installed Claude and other native agent adapters from the paired Connector."),
+    "start_agent": ("Start native agent", "Start a registered agent through its native CLI adapter; options select Claude model, agent, tools, approval mode, and event streaming."),
+    "get_agent_session": ("Read agent session", "Read Claude session status, final result, error, and usage."),
+    "send_agent_message": ("Continue agent session", "Send a follow-up to the same native CLI session."),
+    "resume_agent": ("Resume agent state", "Read an existing native agent session without starting another run."),
+    "cancel_agent": ("Cancel native agent", "Cancel a running Claude Code CLI session."),
+    "watch_agent_events": ("Read native agent events", "Read a bounded batch of Claude CLI text, tool activity and pending approval events."),
+    "decide_agent_permission": ("Decide Claude tool request", "Allow or deny an exact pending native Claude CLI permission request after the operator has reviewed it."),
     "read_file": ("Read remote file", "Read bytes from a file inside an allowed project or configured root. Use this before editing or inspecting source files."),
     "list_dir": ("List remote directory", "List files and directories inside an allowed project or configured root without modifying them."),
     "logs": ("Read service logs", "Read recent journal logs for an allowlisted service, optionally scoped through a configured project."),
@@ -2836,6 +2844,48 @@ def create_mcp(
     @expose("list_projects", True, False, False)
     async def list_projects() -> dict[str, Any]:
         return await relay.call(_principal("remote:read"), "list_projects", {})
+
+    @expose("list_agents", True, False, False)
+    async def list_agents() -> dict[str, Any]:
+        return await relay.call(_principal("remote:read"), "list_agents", {})
+
+    @expose("start_agent", False, False, True)
+    async def start_agent(adapter_id: str, goal: str, project: str,
+                          device: str | None = None, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        return await relay.call(_principal("remote:write"), "start_agent", {
+            "adapter_id": adapter_id, "goal": goal, "project": project,
+            "device": device, "options": options,
+        })
+
+    @expose("get_agent_session", True, False, False)
+    async def get_agent_session(session_id: str) -> dict[str, Any]:
+        return await relay.call(_principal("remote:read"), "get_agent_session", {"session_id": session_id})
+
+    @expose("send_agent_message", False, False, False)
+    async def send_agent_message(session_id: str, message: str) -> dict[str, Any]:
+        return await relay.call(_principal("remote:write"), "send_agent_message", {
+            "session_id": session_id, "message": message,
+        })
+
+    @expose("resume_agent", True, False, False)
+    async def resume_agent(session_id: str) -> dict[str, Any]:
+        return await relay.call(_principal("remote:read"), "resume_agent", {"session_id": session_id})
+
+    @expose("cancel_agent", False, False, True)
+    async def cancel_agent(session_id: str) -> dict[str, Any]:
+        return await relay.call(_principal("remote:write"), "cancel_agent", {"session_id": session_id})
+
+    @expose("watch_agent_events", True, False, False)
+    async def watch_agent_events(session_id: str, after: int = 0) -> dict[str, Any]:
+        return await relay.call(_principal("remote:read"), "watch_agent_events", {
+            "session_id": session_id, "after": after,
+        })
+
+    @expose("decide_agent_permission", False, False, True)
+    async def decide_agent_permission(session_id: str, request_id: str, decision: str) -> dict[str, Any]:
+        return await relay.call(_principal("remote:write"), "decide_agent_permission", {
+            "session_id": session_id, "request_id": request_id, "decision": decision,
+        })
 
     @expose("list_devices", True, False, False)
     async def list_devices(include_resources: bool = False) -> dict[str, Any]:
