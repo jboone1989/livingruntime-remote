@@ -128,4 +128,4 @@ def events(sid,after=0):
     result=adapter.events(record["external_session_id"],after=after)
     if not isinstance(result,list) or len(result)>100:
         raise ValueError("adapter event result exceeds limit")
-    return {"session_id":sid,"events":result,"next_offset":result[-1]["seq"] if result else after}
+    return {"session_id":sid,"events":result,"next_offset":result[-1].get("seq",after+len(result)) if result else after}
