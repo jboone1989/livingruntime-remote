@@ -113,7 +113,8 @@ class ClaudeCodeAdapter:
             raise RuntimeError("Claude session already running")
         record.update({"status": "RUNNING", "prompt": prompt, "continue": continued, "started_at": time.time()})
         self._write(sid, record)
-        for suffix in (".result.json", ".events.jsonl", ".decisions.jsonl"):
+        # Keep event history and monotonic seq across native session follow-ups.
+        for suffix in (".result.json", ".decisions.jsonl"):
             path = self._path(sid).with_suffix(suffix)
             if path.exists():
                 path.unlink()
@@ -200,11 +201,13 @@ class ClaudeCodeAdapter:
                     except ValueError:
                         continue
                     if event.get("kind") == "permission_request":
-                        pending[event.get("request_id")] = event.get("input", {})
+                        pending[event.get("request_id")] = event
                     elif event.get("kind") == "permission_cancelled":
                         pending.pop(event.get("request_id"), None)
         if request_id not in pending:
             raise ValueError("no matching pending permission request")
+        if decision == "allow" and not pending[request_id].get("approvable", True):
+            raise ValueError("oversized permission input cannot be approved")
         decisions = self._path(sid).with_suffix(".decisions.jsonl")
         if decisions.exists():
             with decisions.open(encoding="utf-8") as f:
@@ -217,7 +220,7 @@ class ClaudeCodeAdapter:
         with decisions.open("a", encoding="utf-8") as f:
             os.chmod(decisions, 0o600)
             f.write(json.dumps({"request_id": request_id, "decision": decision,
-                                "input": pending[request_id]}) + "\n")
+                                "input": pending[request_id].get("input", {})}) + "\n")
             f.flush()
             os.fsync(f.fileno())
         return {"request_id": request_id, "decision": decision, "accepted": True}
