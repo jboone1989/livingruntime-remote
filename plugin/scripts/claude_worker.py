@@ -22,8 +22,30 @@ def cli_args(record):
             args += ["--" + key, opts[key]]
     if opts.get("agents"):
         args += ["--agents", json.dumps(opts["agents"], ensure_ascii=False)]
-    if opts.get("append_system_prompt"):
-        args += ["--append-system-prompt", opts["append_system_prompt"]]
+    for key, flag in (
+        ("append_system_prompt", "--append-system-prompt"),
+        ("append_subagent_system_prompt", "--append-subagent-system-prompt"),
+        ("fallback_model", "--fallback-model"),
+        ("autocompact", "--autocompact"),
+    ):
+        if opts.get(key):
+            args += [flag, opts[key]]
+    for key, flag in (
+        ("forward_subagent_text", "--forward-subagent-text"),
+        ("include_hook_events", "--include-hook-events"),
+    ):
+        if opts.get(key):
+            args.append(flag)
+    if opts.get("max_budget_usd"):
+        args += ["--max-budget-usd", str(opts["max_budget_usd"])]
+    if opts.get("json_schema"):
+        args += ["--json-schema", json.dumps(opts["json_schema"])]
+    if opts.get("mcp_configs"):
+        args += ["--mcp-config", *opts["mcp_configs"]]
+    if opts.get("additional_dirs"):
+        args += ["--add-dir", *opts["additional_dirs"]]
+    for directory in opts.get("plugin_dirs", []):
+        args += ["--plugin-dir", directory]
     if opts.get("max_turns"):
         args += ["--max-turns", str(opts["max_turns"])]
     for key, flag in (("allowed_tools", "--allowedTools"), ("disallowed_tools", "--disallowedTools"),
@@ -123,6 +145,13 @@ def main(path):
                 args, cwd=record["cwd"], stdin=subprocess.PIPE if opts.get("duplex") else subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
             )
+            stderr_parts = []
+            def collect_stderr():
+                for chunk in proc.stderr:
+                    if sum(map(len, stderr_parts)) < 4000:
+                        stderr_parts.append(chunk)
+            stderr_thread = threading.Thread(target=collect_stderr, daemon=True)
+            stderr_thread.start()
             if opts.get("duplex"):
                 message = {"type": "user", "message": {"role": "user", "content": record["prompt"]}}
                 with stdin_lock:
@@ -201,8 +230,9 @@ def main(path):
                         with stdin_lock:
                             if not proc.stdin.closed:
                                 proc.stdin.close()
-                stderr = proc.stderr.read()[-1500:]
                 returncode = proc.wait()
+                stderr_thread.join(timeout=1)
+                stderr = "".join(stderr_parts)[-1500:]
             finally:
                 timer.cancel()
                 stop_monitor.set()
