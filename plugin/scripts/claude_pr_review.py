@@ -35,7 +35,10 @@ def run(argv, cwd=None, timeout=120, input_text=None):
 
 
 def api(gh, endpoint):
-    return json.loads(run([gh, "api", endpoint], timeout=40))
+    try:
+        return json.loads(run([gh, "api", endpoint], timeout=40))
+    except ReviewError as exc:
+        raise ReviewError(f"GET {endpoint}: {exc}") from exc
 
 
 def commit_status(gh, repo, sha, state, description):
@@ -45,8 +48,11 @@ def commit_status(gh, repo, sha, state, description):
 
 
 def post_comment(gh, repo, number, body):
-    run([gh, "api", f"repos/{repo}/issues/{number}/comments", "-X", "POST",
-         "-f", f"body={body[:55000]}"], timeout=40)
+    try:
+        run([gh, "api", f"repos/{repo}/issues/{number}/comments", "-X", "POST",
+             "-f", f"body={body[:55000]}"], timeout=40)
+    except ReviewError as exc:
+        raise ReviewError(f"POST issues/{number}/comments: {exc}") from exc
 
 
 def already_commented(gh, repo, number, sha):
