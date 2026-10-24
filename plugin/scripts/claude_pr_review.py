@@ -329,7 +329,8 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout):
 
 def run_once(args):
     args.state.parent.mkdir(parents=True, exist_ok=True)
-    with (args.state.parent / "review.lock").open("a+") as lock:
+    # State is isolated per PR; don't make unrelated PRs compete for one lock.
+    with args.state.with_suffix(".lock").open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         state = load_state(args.state)
         prs = ([api(args.gh, f"repos/{args.repo}/pulls/{args.pr_number}")]
@@ -338,6 +339,11 @@ def run_once(args):
         had_error = False
         for pr in prs:
             if args.pr_number is not None and pr["number"] != args.pr_number:
+                continue
+            # A workflow_run belongs to a specific checked commit. Never let an
+            # older successful Check cause a newer, unchecked HEAD to be reviewed.
+            if getattr(args, "expected_sha", None) and pr.get("head", {}).get("sha") != args.expected_sha:
+                print(f"PR #{pr['number']}: skip:stale-check-head", flush=True)
                 continue
             history = state["prs"].get(str(pr["number"]), {})
             sha = pr.get("head", {}).get("sha", "")
@@ -381,9 +387,12 @@ def main(argv=None):
                         default=Path.home() / ".local/state/claude-review/state.json")
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--pr-number", type=int, default=None)
+    parser.add_argument("--expected-sha", type=str, default=None)
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+", args.repo):
         parser.error("Invalid repository")
+    if args.expected_sha and not re.fullmatch(r"[0-9a-f]{40}", args.expected_sha):
+        parser.error("Invalid expected HEAD SHA")
     args.work.mkdir(parents=True, exist_ok=True)
     try:
         return 1 if run_once(args) else 0
