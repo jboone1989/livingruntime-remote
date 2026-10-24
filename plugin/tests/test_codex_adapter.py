@@ -179,10 +179,10 @@ class CodexAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             fake = Path(td) / "codex"
             fake.write_text(
-                "#!/usr/bin/python3\\nimport json,sys\\n"
-                "print(json.dumps({'type':'thread.started','thread_id':'" + THREAD + "'}),flush=True)\\n"
-                "print(json.dumps({'type':'turn.failed','error':{'message':'quota exhausted'}}),flush=True)\\n"
-                "sys.exit(1)\\n"
+                "#!/usr/bin/python3\nimport json,sys\n"
+                "print(json.dumps({'type':'thread.started','thread_id':'" + THREAD + "'}),flush=True)\n"
+                "print(json.dumps({'type':'turn.failed','error':{'message':'quota exhausted'}}),flush=True)\n"
+                "sys.exit(1)\n"
             )
             fake.chmod(0o700)
             with (patch.dict(os.environ, {"LIVINGRUNTIME_CODEX_JOBS": td}),
