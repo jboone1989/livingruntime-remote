@@ -22,6 +22,7 @@ _ALLOWED_OPTIONS = {
     "duplex", "timeout_seconds", "fallback_model", "forward_subagent_text",
     "include_hook_events", "json_schema", "max_budget_usd", "autocompact",
     "append_subagent_system_prompt", "mcp_configs", "plugin_dirs", "additional_dirs",
+    "approval_timeout_seconds",
 }
 _MODES = {"plan", "default", "acceptEdits", "auto", "dontAsk"}
 _EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultracode"}
@@ -47,6 +48,8 @@ def validate_options(value):
         raise ValueError("invalid max_turns")
     if "timeout_seconds" in opts and (type(opts["timeout_seconds"]) is not int or not 30 <= opts["timeout_seconds"] <= 3600):
         raise ValueError("invalid timeout_seconds")
+    if "approval_timeout_seconds" in opts and (type(opts["approval_timeout_seconds"]) is not int or not 30 <= opts["approval_timeout_seconds"] <= 86400):
+        raise ValueError("invalid approval_timeout_seconds")
     if "duplex" in opts and type(opts["duplex"]) is not bool:
         raise ValueError("duplex must be boolean")
     for key in ("allowed_tools", "disallowed_tools", "tools"):
