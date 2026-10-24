@@ -14,7 +14,7 @@ from livingruntime_adapter_claude import ClaudeCodeAdapter
 from agent_adapters import AgentCapabilities
 
 _MODELS = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,120}$")
-_ALLOWED = {"model", "sandbox", "timeout_seconds", "profile"}
+_ALLOWED = {"model", "sandbox", "timeout_seconds", "profile", "skip_git_repo_check"}
 _SANDBOXES = {"read-only", "workspace-write"}
 
 
@@ -24,6 +24,8 @@ def validate_options(value):
     if not isinstance(value, dict) or set(value) - _ALLOWED:
         raise ValueError("unsupported Codex CLI option")
     result = dict(value)
+    if "skip_git_repo_check" in result and type(result["skip_git_repo_check"]) is not bool:
+        raise ValueError("skip_git_repo_check must be boolean")
     if "sandbox" in result and result["sandbox"] not in _SANDBOXES:
         raise ValueError("Codex full-access sandbox is not supported over Remote")
     for name in ("model", "profile"):
