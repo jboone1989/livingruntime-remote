@@ -3607,6 +3607,9 @@ nav a{{margin-right:18px}}
             # Encode delimiter characters because report content is untrusted
             # PR-derived text, not privileged instructions.
             report_data = report.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            # Native Agent sessions cap the goal at 8000 characters. The
+            # escaped report can expand substantially, so bound it after escape.
+            report_data = report_data[:6000]
             goal = (
                 "You are the FIXER, not the reviewer. Work ONLY in the paired "
                 "/home/ubuntu/workspace on VM13. Use a fresh per-PR Git checkout "
