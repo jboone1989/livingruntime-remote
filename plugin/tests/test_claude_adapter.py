@@ -65,6 +65,56 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertEqual(public_events({"type": "stream_event",
                        "event": {"delta": {"type": "text_delta", "text": "hello"}}})[0]["text"], "hello")
 
+    def test_native_dev_events_preserve_subagent_mcp_and_hook_context(self):
+        init = public_events({"type": "system", "subtype": "init", "model": "sonnet",
+                              "mcp_servers": [{"name": "docs", "status": "connected"},
+                                              {"name": "bad", "status": "failed"}],
+                              "skills": ["thinking-in-systems"], "agents": ["repo-inspector"]})
+        self.assertEqual(init[0]["mcp_servers"][1]["status"], "failed")
+        self.assertEqual(init[0]["skills"], ["thinking-in-systems"])
+        self.assertEqual(public_events({"type": "system", "subtype": "hook_started",
+                                         "hook_name": "PreToolUse"})[0]["kind"], "hook_started")
+        self.assertEqual(public_events({"type": "system", "subtype": "task_started",
+                                         "task_id": "task-one"})[0]["task_id"], "task-one")
+        raw = {"type": "assistant", "parent_tool_use_id": "parent_1", "message": {"content": [
+            {"type": "tool_use", "name": "Agent", "id": "one",
+             "input": {"subagent_type": "repo-inspector", "prompt": "private secret"}},
+            {"type": "tool_use", "name": "Skill", "id": "two",
+             "input": {"skill": "thinking-in-systems", "args": "private secret"}}]}}
+        events = public_events(raw)
+        self.assertEqual(events[0]["subagent_type"], "repo-inspector")
+        self.assertEqual(events[0]["parent_tool_use_id"], "parent_1")
+        self.assertEqual(events[1]["skill"], "thinking-in-systems")
+        self.assertNotIn("private secret", json.dumps(events))
+        tool_result = public_events({"type": "user", "parent_tool_use_id": "parent_1",
+                                    "message": {"content": [{"type": "tool_result",
+                                    "tool_use_id": "one", "content": "secret output"}]}})
+        self.assertEqual(tool_result[0]["parent_tool_use_id"], "parent_1")
+        self.assertNotIn("secret output", json.dumps(tool_result))
+
+    def test_active_streaming_does_not_hit_idle_timeout(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli = Path(td) / "fake-claude"
+            cli.write_text(
+                "#!/usr/bin/python3\nimport json,time\n"
+                "for i in range(5):\n"
+                " print(json.dumps({'type':'stream_event','event':"
+                "{'delta':{'type':'text_delta','text':'tick'}}}),flush=True)\n"
+                " time.sleep(0.35)\n"
+                "print(json.dumps({'type':'result','result':'completed','is_error':False}),flush=True)\n"
+            )
+            cli.chmod(0o700)
+            record = Path(td) / "session.json"
+            record.write_text(json.dumps({
+                "executable": str(cli), "prompt": "review", "cwd": td,
+                "session_id": "00000000-0000-4000-8000-000000000001",
+                "options": {"timeout_seconds": 1},
+            }))
+            run_worker(str(record))
+            result = json.loads(record.with_suffix(".result.json").read_text())
+            self.assertEqual(result["status"], "SUCCEEDED", result)
+            self.assertEqual(result["result"], "completed")
+
     def test_adapter_session_receipt_events_and_restart(self):
         with tempfile.TemporaryDirectory() as td:
             cli = Path(td) / "claude"
