@@ -1368,6 +1368,40 @@ class Relay:
             "partial": any(row["status"] != "ok" for row in rows),
         }
 
+    async def launch_agent(self, user_sub: str, adapter_id: str, goal: str,
+                           project: str, device: str | None = None,
+                           options: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = {"adapter_id": adapter_id, "goal": goal, "project": project,
+                   "device": device, "options": options}
+        if device:
+            # Pin the same Connector for launch and follow-up: the default can
+            # fail over when offline, so guessing a prefix before routing is unsafe.
+            selector, forwarded = self._connector_route(payload)
+            if selector:
+                target = await self._wait_for_online_device(user_sub, selector)
+            else:
+                try:
+                    chosen = self.store.device_for_user(user_sub, device)
+                except RuntimeError as exc:
+                    if not str(exc).startswith("unknown paired connector"):
+                        raise
+                    target = await self._wait_for_online_device(user_sub, None)
+                else:
+                    target = await self._wait_for_online_device(user_sub, chosen["device_id"])
+                    forwarded["device"] = None
+            result = await self.call(user_sub, "start_agent", forwarded,
+                                      connector=target["device_id"])
+            if isinstance(result, dict) and result.get("session_id"):
+                result = {**result, "session_id": target["device_id"] + "::" + result["session_id"]}
+            return result
+        match = await self.resolve_agent(user_sub, adapter_id, project)
+        payload["device"] = match["device"]
+        result = await self.call(user_sub, "start_agent", payload,
+                                  connector=match["connector_id"])
+        if isinstance(result, dict) and result.get("session_id"):
+            result = {**result, "session_id": match["connector_id"] + "::" + result["session_id"]}
+        return result
+
     async def resolve_agent(self, user_sub: str, adapter_id: str, project: str) -> dict[str, Any]:
         inventory = await self.discover_agents(user_sub)
         candidates = [
@@ -3020,37 +3054,8 @@ def create_mcp(
     @expose("start_agent", False, False, True)
     async def start_agent(adapter_id: str, goal: str, project: str,
                           device: str | None = None, options: dict[str, Any] | None = None) -> dict[str, Any]:
-        user_sub = _principal("remote:write")
-        payload = {"adapter_id": adapter_id, "goal": goal, "project": project,
-                   "device": device, "options": options}
-        if device:
-            # Pin the same Connector for launch and follow-up: the default can
-            # fail over when offline, so guessing a prefix before routing is unsafe.
-            selector, forwarded = relay._connector_route(payload)
-            if selector:
-                target = await relay._wait_for_online_device(user_sub, selector)
-            else:
-                try:
-                    chosen = relay.store.device_for_user(user_sub, device)
-                except RuntimeError as exc:
-                    if not str(exc).startswith("unknown paired connector"):
-                        raise
-                    target = await relay._wait_for_online_device(user_sub, None)
-                else:
-                    target = await relay._wait_for_online_device(user_sub, chosen["device_id"])
-                    forwarded["device"] = None
-            result = await relay.call(user_sub, "start_agent", forwarded,
-                                      connector=target["device_id"])
-            if isinstance(result, dict) and result.get("session_id"):
-                result = {**result, "session_id": target["device_id"] + "::" + result["session_id"]}
-            return result
-        match = await relay.resolve_agent(user_sub, adapter_id, project)
-        payload["device"] = match["device"]
-        result = await relay.call(user_sub, "start_agent", payload,
-                                  connector=match["connector_id"])
-        if isinstance(result, dict) and result.get("session_id"):
-            result = {**result, "session_id": match["connector_id"] + "::" + result["session_id"]}
-        return result
+        return await relay.launch_agent(_principal("remote:write"), adapter_id,
+                                        goal, project, device, options)
 
     @expose("get_agent_session", True, False, False)
     async def get_agent_session(session_id: str, connector: str | None = None) -> dict[str, Any]:
