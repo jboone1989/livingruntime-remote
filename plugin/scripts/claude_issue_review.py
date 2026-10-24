@@ -36,13 +36,18 @@ def report_input(issue: dict, comments: list, owner: str):
         and MARKER not in (c.get("body") or "")
         and (c.get("body") or "").strip() != COMMAND
     ]
-    context = original[:16000] + "\n\n# Owner clarification comments\n" + "\n\n".join(owner_comments[-8:])[:8000]
-    digest = hashlib.sha256(context.encode("utf-8")).hexdigest()
+    full_owner_context = "\n\n".join(owner_comments[-8:])
+    # Hash all input text, even when a lengthy proposal must be shortened for Claude.
+    digest = hashlib.sha256((original + "\n\n" + full_owner_context).encode("utf-8")).hexdigest()
+    summary = (original if len(original) <= 16000
+               else original[:12000] + "\n...[middle shortened]...\n" + original[-4000:])
+    context = summary + "\n\n# Owner clarification comments\n" + full_owner_context[-8000:]
     return context, digest
 
 
 def already_reviewed(comments: list, digest: str):
-    return any(f"{MARKER}{digest} -->" in (c.get("body") or "") for c in comments)
+    return any(c.get("user", {}).get("login") == "github-actions[bot]" and
+               f"{MARKER}{digest} -->" in (c.get("body") or "") for c in comments)
 
 
 def invoke_claude(cli: str, cwd: Path, context: str, timeout: int):
@@ -59,8 +64,8 @@ def invoke_claude(cli: str, cwd: Path, context: str, timeout: int):
            if k not in {"GH_TOKEN", "GITHUB_TOKEN", "GIT_ASKPASS", "GH_ENTERPRISE_TOKEN"}}
     argv = [cli, "-p", prompt, "--agent", "devils-advocate",
             "--output-format", "json", "--permission-mode", "plan",
-            "--tools", "Read,Glob,Grep,WebSearch,WebFetch",
-            "--disallowedTools", "Edit,Write,NotebookEdit,Bash,mcp__*",
+            "--tools", "WebSearch,WebFetch",
+            "--disallowedTools", "Read,Glob,Grep,Edit,Write,NotebookEdit,Bash,mcp__*",
             "--strict-mcp-config", "--setting-sources", "project",
             "--settings", '{"disableAllHooks":true}', "--max-turns", "14"]
     proc = subprocess.run(argv, cwd=cwd, env=env, text=True,
