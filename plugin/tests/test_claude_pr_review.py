@@ -84,6 +84,36 @@ rename to tests/new.test.ts
                 self.assertEqual(request.get_header("Authorization"), "Bearer private-credential")
                 self.assertEqual(json.loads(request.data)["sha"], "a" * 40)
 
+    def test_removed_opt_in_label_at_review_completion_stops_codex(self):
+        path = "packages/backend/src/admin/notes.ts"
+        diff = f"""diff --git a/{path} b/{path}
+--- a/{path}
++++ b/{path}
+@@ -1 +1,2 @@
+ original
++problem
+"""
+        pr = {"number": 88, "state": "open", "draft": False,
+              "head": {"sha": "a" * 40, "repo": {"full_name": "jboone1989/EventGraph"}},
+              "base": {"ref": "develop"}, "labels": [{"name": "agent:autofix"}]}
+        fresh = {**pr, "labels": []}
+        finding = {"path": path, "line": 2, "severity": "important",
+                   "confidence": 91, "reason": "problem", "evidence": "evidence",
+                   "fix": "fix it"}
+        state = {"prs": {}}
+        with patch.object(reviewer, "checkout", return_value=(Path("/tmp"), diff, "b" * 40)), \
+             patch.object(reviewer, "native_review", return_value=[finding]), \
+             patch.object(reviewer, "ask_claude", return_value=[finding]), \
+             patch.object(reviewer, "api", return_value=fresh), \
+             patch.object(reviewer, "already_commented", return_value=True), \
+             patch.object(reviewer, "commit_status"), \
+             patch.object(reviewer, "handoff_to_vm13") as handoff, \
+             patch.object(reviewer, "save_state"):
+            self.assertIn("reviewed:", reviewer.review(
+                pr, repo="jboone1989/EventGraph", gh="gh", claude="claude",
+                work=Path("/tmp"), state=state, state_path=Path("/tmp/a"), timeout=5))
+            handoff.assert_not_called()
+
     def test_failed_relay_handoff_never_breaks_claude_review_receipt(self):
         path = "packages/backend/src/admin/notes.ts"
         diff = f"""diff --git a/{path} b/{path}
