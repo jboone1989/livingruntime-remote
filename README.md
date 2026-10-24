@@ -87,13 +87,12 @@ remote.livingruntime.com
         |
         | paired device channel
         v
-Local Connector
+Connectors (one per physical machine)
         |
-        +-- native local executor (Windows/local machine)
-        |
-        +-- existing key-based SSH (remote hosts)
+        +-- machine A: Claude Code, Codex, Pi, ...
+        +-- machine B: its own local Agents
         v
-Your host(s)
+Your machines
   - repositories
   - tests
   - logs
@@ -101,11 +100,11 @@ Your host(s)
   - bounded commands
 ```
 
-LivingRuntime Remote does **not** need your SSH password or private key in the public relay. Native local execution needs no SSH credentials at all; when SSH routing is used, SSH credentials stay in your normal local SSH configuration on the Connector machine.
+Each Connector runs on the machine it manages and executes locally. The public Relay holds no SSH passwords or private keys. Existing SSH-routed configurations remain operational during migration, but new installations do not create remote SSH-managed Hosts.
 
 ## Quick start
 
-Public users install the Connector on the machine they want ChatGPT to control, or on a machine that already has key-based SSH access to another target. Windows can now run as a native local target; localhost SSH is not required.
+Install one Connector **on each machine** you want ChatGPT to control. Every machine can expose multiple registered native Agents (such as Claude Code and Codex). No SSH setup is needed for a new Connector.
 
 ### Linux / macOS
 
@@ -113,7 +112,7 @@ Public users install the Connector on the machine they want ChatGPT to control, 
 curl -fsSL https://remote.livingruntime.com/install.sh | sh
 ```
 
-On an interactive Linux/macOS terminal, the installer now opens the pairing wizard automatically for a new device. Paste the short-lived code from ChatGPT, accept the default local-machine mode, and choose the allowed workspace root (default: `~/workspace`). Re-running the installer on an already-paired device skips pairing. For automation, set `LIVINGRUNTIME_INSTALL_NO_SETUP=1` and configure pairing separately.
+On an interactive Linux/macOS terminal, the installer now opens the pairing wizard automatically for a new device. Paste the short-lived code from ChatGPT and choose the allowed workspace root (default: `~/workspace`). Re-running the installer on an already-paired device skips pairing. For automation, set `LIVINGRUNTIME_INSTALL_NO_SETUP=1` and configure pairing separately.
 
 ### Windows PowerShell
 
@@ -121,7 +120,7 @@ On an interactive Linux/macOS terminal, the installer now opens the pairing wiza
 irm https://remote.livingruntime.com/install.ps1 | iex
 ```
 
-The default Windows flow uses the native local executor. It asks for a one-time pairing code and a bounded Windows workspace such as `D:\\Projects` or `D:\\`; it does not require OpenSSH or `localhost`. Advanced users can still pass an SSH host explicitly when they want the Windows Connector to control a separate Linux machine.
+The default Windows flow uses the native local executor. It asks for a one-time pairing code and a bounded Windows workspace such as `D:\\Projects` or `D:\\`; it does not require OpenSSH or `localhost`. To connect a Linux machine as well, install and pair a separate Connector on that Linux machine.
 
 To obtain the pairing code, connect the LivingRuntime Remote app in ChatGPT, sign in or create an account during OAuth, then ask ChatGPT to **Create pairing code**. The code is short-lived and binds the Connector to that authenticated account.
 
@@ -146,18 +145,11 @@ A durable Goal is not marked complete merely because one child command succeeds.
 
 This keeps "the process exited" separate from "the user's task is actually done."
 
-## Multi-host
+## Multiple machines and Agents
 
-One Connector can route tools to multiple configured SSH hosts.
+Each paired Connector is one machine with a stable Connector ID. `list_devices()` shows one entry per Connector, and `list_agents()` shows the native Agents and projects on each machine. Select a particular machine with `device="<connector_id>"`; if an Agent is unique to one project across your machines, `start_agent` resolves it automatically.
 
-```text
-list_devices()
-connection_status(device="vultr")
-logs(device="vultr", unit="livingruntime-remote-relay.service")
-exec(device="main", argv=["ps"])
-```
-
-Permissions are host-scoped by default. A conflicting project/device selection is rejected instead of silently crossing host boundaries.
+Already-paired legacy Connectors may still contain multiple SSH target definitions. Their old `connector-id::inner-host` routes remain available under `legacy_hosts` with a migration marker, so existing users do not lose access before installing a Connector on each target machine.
 
 ## Human approval for new commands
 
