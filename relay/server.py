@@ -122,8 +122,8 @@ TOOL_TEXT = {
     "open_browser_takeover": ("Open browser takeover", "Create a short-lived Remote URL for an allowlisted Agent Runtime noVNC browser takeover session."),
     "remote_overview": ("Read Remote control-plane snapshot", "Return one secret-free snapshot of Connector health, managed hosts, durable jobs, pending approvals, credential handles, and recent activity."),
     "list_projects": ("List configured projects", "List the named projects and bounded workspaces configured for this LivingRuntime Remote Connector."),
-    "list_agents": ("List installed agents", "Read installed Claude and other native agent adapters from the paired Connector."),
-    "start_agent": ("Start native agent", "Start a registered agent through its native CLI adapter; options select Claude model, agent, tools, approval mode, and event streaming."),
+    "list_agents": ("Find agents across hosts", "Discover Agent adapters on every paired Connector and their authorized host/project placements; report offline and older Connectors explicitly."),
+    "start_agent": ("Start native agent", "Start a registered Agent on its unique discovered host, or supply device=connector-id::host when there are multiple candidates. Uses native CLI execution."),
     "get_agent_session": ("Read agent session", "Read Claude session status, final result, error, and usage."),
     "send_agent_message": ("Continue agent session", "Send a follow-up to the same native CLI session."),
     "resume_agent": ("Resume agent state", "Read an existing native agent session without starting another run."),
@@ -2962,8 +2962,21 @@ def create_mcp(
         payload = {"adapter_id": adapter_id, "goal": goal, "project": project,
                    "device": device, "options": options}
         if device:
-            # Explicit destinations preserve the established Remote routing contract.
-            return await relay.call(user_sub, "start_agent", payload)
+            # Resolve to a stable Connector ID so follow-ups need no model memory.
+            selector, forwarded = relay._connector_route({"device": device})
+            if selector is None:
+                try:
+                    target = relay.store.device_for_user(user_sub, device)
+                except RuntimeError as exc:
+                    if not str(exc).startswith("unknown paired connector"):
+                        raise
+                    target = relay.store.device_for_user(user_sub)
+            else:
+                target = relay.store.device_for_user(user_sub, selector)
+            result = await relay.call(user_sub, "start_agent", payload)
+            if isinstance(result, dict) and result.get("session_id") and target:
+                result = {**result, "session_id": target["device_id"] + "::" + result["session_id"]}
+            return result
         inventory = await relay.discover_agents(user_sub)
         candidates = [
             agent for agent in inventory["agents"]
