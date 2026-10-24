@@ -29,10 +29,39 @@ class IssueReviewTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             review.report_input({"title": "Issue"}, [{}] * 100, "owner")
 
+    def test_truncated_tail_changes_digest_and_newest_comment_is_visible(self):
+        issue = {"title": "Plan", "body": "A" * 18000}
+        older = [{"user": {"login": "owner"}, "body": "OLD" * 4000}]
+        initial_context, initial = review.report_input(issue, older, "owner")
+        later = older + [{"user": {"login": "owner"}, "body": "new-most-recent-correction"}]
+        context, digest = review.report_input(issue, later, "owner")
+        self.assertNotEqual(digest, initial)
+        self.assertIn("new-most-recent-correction", context)
+        edited = dict(issue, body=issue["body"][:17000] + "DIFFERENT" + issue["body"][17009:])
+        self.assertNotEqual(digest, review.report_input(edited, later, "owner")[1])
+
+    def test_untrusted_user_cannot_forge_dedup_marker(self):
+        issue = {"title": "Plan", "body": "Goal"}
+        _, digest = review.report_input(issue, [], "owner")
+        fake = [{"user": {"login": "attacker"}, "body": f"{review.MARKER}{digest} -->"}]
+        self.assertFalse(review.already_reviewed(fake, digest))
+
+    def test_no_local_file_or_shell_tools_exposed_to_issue(self):
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        fake = SimpleNamespace(returncode=0, stdout='{"result":"One useful objection"}', stderr="")
+        with patch.object(review.subprocess, "run", return_value=fake) as run:
+            answer = review.invoke_claude("claude", Path("/tmp"), "Proposal", 60)
+        argv = run.call_args.args[0]
+        self.assertEqual(answer, "One useful objection")
+        self.assertIn("--agent", argv)
+        self.assertEqual(argv[argv.index("--tools") + 1], "WebSearch,WebFetch")
+        self.assertIn("Read", argv[argv.index("--disallowedTools") + 1])
+
     def test_bot_output_not_used_as_new_input(self):
         issue = {"title": "Challenge", "body": "Goal"}
         _, digest = review.report_input(issue, [], "owner")
-        comments = [{"user": {"login": "owner"}, "body": f"{review.MARKER}{digest} -->\nreport"}]
+        comments = [{"user": {"login": "github-actions[bot]"}, "body": f"{review.MARKER}{digest} -->\nreport"}]
         _, digest2 = review.report_input(issue, comments, "owner")
         self.assertEqual(digest, digest2)
         self.assertTrue(review.already_reviewed(comments, digest))
