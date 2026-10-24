@@ -372,6 +372,57 @@ def install(
     }
 
 
+def configure_codex(executable: str, project: str = "workspace") -> dict[str, Any]:
+    """Explicit, local-only registration of an already installed native CLI."""
+    import adapterctl
+    import agent_policy
+
+    binary = Path(executable).expanduser().resolve(strict=True)
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        raise ValueError("Codex executable must be an existing executable file")
+    config = json.loads(remote_config_path().read_text(encoding="utf-8"))
+    projects = config.get("projects", {})
+    target = projects.get(project) if isinstance(projects, dict) else None
+    if not isinstance(target, dict) or target.get("host") != "main":
+        raise ValueError("Codex project must already be configured on the local Connector")
+    hosts = config.get("hosts", {})
+    host = hosts.get("main") if isinstance(hosts, dict) else None
+    if not isinstance(host, dict) or host.get("transport") != "local":
+        raise ValueError("Codex must execute on this Connector's local host")
+    cwd = Path(target["path"]).resolve(strict=True)
+    if not cwd.is_dir():
+        raise ValueError("Codex project workspace must exist")
+
+    policy = agent_policy.load()
+    workspace_map = dict(policy.get("claude_workspaces", {}))
+    workspace_map[f"main:{project}"] = str(cwd)
+    policy["claude_workspaces"] = workspace_map
+    allowlist = list(policy.get("launch_allowlist", []))
+    launch_key = f"main:{project}:codex"
+    if launch_key not in allowlist:
+        allowlist.append(launch_key)
+    policy["launch_allowlist"] = allowlist
+    policy["codex_executable"] = str(binary)
+    adapterctl.save(agent_policy.policy_path(), policy)
+    manifest_path = adapterctl.location()
+    manifest = adapterctl.load(manifest_path)
+    entry = {"module": "livingruntime_adapter_codex", "factory": "make"}
+    if not any(row.get("module") == entry["module"] for row in manifest["adapters"]):
+        manifest["adapters"].append(entry)
+        adapterctl.save(manifest_path, manifest)
+
+    # Reload the already-paired process AFTER this command exits. No re-pairing.
+    restart = None
+    if sys.platform.startswith("linux"):
+        restart = _run(
+            ["systemd-run", "--user", "--quiet", "--collect", "--on-active=3s",
+             "systemctl", "--user", "restart", LINUX_SERVICE], check=False
+        )
+    return {"configured": True, "adapter": "codex", "project": project,
+            "cli": str(binary), "workspace": str(cwd),
+            "restart_scheduled": bool(restart and restart.returncode == 0)}
+
+
 def status(check_ssh: bool = False) -> dict[str, Any]:
     relay_path = relay_config_path()
     remote_path = remote_config_path()
@@ -496,6 +547,10 @@ def main(argv: list[str] | None = None) -> None:
     status_parser = sub.add_parser("status", help="Show connector configuration status")
     status_parser.add_argument("--check-ssh", action="store_true")
 
+    codex_parser = sub.add_parser("configure-codex", help="Enable an installed Codex CLI on this local Connector")
+    codex_parser.add_argument("--executable", required=True, help="Absolute path to existing Codex CLI")
+    codex_parser.add_argument("--project", default="workspace")
+
     uninstall_parser = sub.add_parser("uninstall", help="Remove connector autostart")
     uninstall_parser.add_argument("--purge", action="store_true", help="Also delete local connector configs")
 
@@ -526,6 +581,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "run":
         run_connector(args.config, daemon_log=args.daemon_log)
+        return
+    if args.command == "configure-codex":
+        print(json.dumps(configure_codex(args.executable, args.project), indent=2))
         return
     if args.command == "status":
         print(json.dumps(status(check_ssh=args.check_ssh), indent=2))

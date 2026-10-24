@@ -9,7 +9,7 @@ import re
 import shutil
 from pathlib import Path
 
-from agent_policy import claude_workspace
+from agent_policy import claude_workspace, load as load_agent_policy
 from livingruntime_adapter_claude import ClaudeCodeAdapter
 from agent_adapters import AgentCapabilities
 
@@ -45,7 +45,8 @@ class CodexAdapter(ClaudeCodeAdapter):
     def __init__(self, executable=None):
         # No side effects on import/registration. A missing CLI fails when
         # start() is invoked rather than preventing Claude from registering.
-        candidate = executable or os.environ.get("LIVINGRUNTIME_CODEX_EXECUTABLE") or shutil.which("codex")
+        candidate = (executable or os.environ.get("LIVINGRUNTIME_CODEX_EXECUTABLE")
+                     or load_agent_policy().get("codex_executable") or shutil.which("codex"))
         self.executable = str(Path(candidate).resolve()) if candidate else None
         self.root = Path(os.environ.get(
             "LIVINGRUNTIME_CODEX_JOBS", str(Path.home() / ".livingruntime" / "codex-jobs")

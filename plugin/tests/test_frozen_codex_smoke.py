@@ -47,6 +47,28 @@ def main() -> None:
         assert receipt["result"] == "FROZEN_CODEX_OK", receipt
         events = [json.loads(line) for line in record.with_suffix(".events.jsonl").read_text().splitlines()]
         assert events[-1]["kind"] == "completion" and events[-1]["success"], events
+        # Verify the exact on-host registration command also works in the
+        # published one-file executable, not only in source/unittest.
+        home = root / "home"
+        cfg = home / ".livingruntime" / "remote.json"
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text(json.dumps({
+            "hosts": {"main": {"transport": "local"}},
+            "projects": {"workspace": {"host": "main", "path": str(root)}},
+        }), encoding="utf-8")
+        enabled = subprocess.run(
+            [binary, "configure-codex", "--executable", str(codex),
+             "--project", "workspace"],
+            env={**env, "HOME": str(home)}, capture_output=True, text=True, timeout=30
+        )
+        assert enabled.returncode == 0, enabled.stderr[-1000:]
+        config = json.loads(enabled.stdout)
+        assert config["adapter"] == "codex", config
+        manifest = json.loads((cfg.parent / "agent-adapters.json").read_text())
+        assert any(entry.get("module") == "livingruntime_adapter_codex"
+                   for entry in manifest["adapters"]), manifest
+        policy = json.loads((cfg.parent / "agent-policy.json").read_text())
+        assert policy["codex_executable"] == str(codex), policy
         print("FROZEN_CODEX_OK")
 
 
