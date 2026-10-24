@@ -3366,8 +3366,30 @@ def logs(
     ),
 )
 def list_agents() -> dict[str, Any]:
-    """List explicitly installed adapters; an empty list means direct mode remains available."""
-    return {"agents": agent_registry.list_agents(), "direct_mode": True, "adapter_load_error": _AGENT_ADAPTER_LOAD_ERROR}
+    """Report locally registered adapters and their explicitly permitted host/project bindings."""
+    agents = agent_registry.list_agents()
+    placements = []
+    inventory_error = None
+    try:
+        for project in catalog_projects(_config()):
+            for adapter in agents:
+                if agent_policy.may_launch(project["host"], project["name"], adapter["id"]):
+                    placements.append({
+                        "id": adapter["id"],
+                        "device": project["host"],
+                        "project": project["name"],
+                    })
+    except (OSError, ValueError, RuntimeError, PermissionError) as exc:
+        # Discovery must never turn an unreadable policy into an implicit grant.
+        placements = []
+        inventory_error = type(exc).__name__
+    return {
+        "agents": agents,
+        "placements": placements,
+        "direct_mode": True,
+        "adapter_load_error": _AGENT_ADAPTER_LOAD_ERROR,
+        "inventory_error": inventory_error,
+    }
 
 
 @server.tool(name="start_agent", annotations=ToolAnnotations(title="Start installed agent",readOnlyHint=False,destructiveHint=True,openWorldHint=False))
