@@ -42,6 +42,92 @@ class RelayServerTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_agent_inventory_across_multiple_connectors_and_hosts(self):
+        relay = server.Relay(self.store)
+        connectors = [
+            {"device_id": "vm09", "name": "main", "online": True},
+            {"device_id": "vm13", "name": "VM13", "online": True},
+            {"device_id": "old", "name": "old", "online": True},
+            {"device_id": "offline", "name": "VM13", "online": False},
+        ]
+        calls = []
+
+        async def fake_call(user, tool, args, *, connector=None):
+            calls.append((tool, connector))
+            if connector == "vm09":
+                if tool == "list_agents":
+                    return {"agents": [{"id": "claude-code", "capabilities": {"resume": True}}],
+                            "placements": [{"id": "claude-code", "device": "main", "project": "eventgraph"},
+                                           {"id": "claude-code", "device": "secondary", "project": "docs"}]}
+                return {"hosts": [{"id": "main"}, {"id": "secondary"}],
+                        "projects": [{"host": "main", "name": "eventgraph"},
+                                     {"host": "secondary", "name": "docs"}]}
+            if connector == "vm13":
+                if tool == "list_agents":
+                    return {"agents": [{"id": "codex", "capabilities": {"events": True}}],
+                            "placements": [{"id": "codex", "device": "main", "project": "workspace"}]}
+                return {"hosts": [{"id": "main"}],
+                        "projects": [{"host": "main", "name": "workspace"}]}
+            if tool == "list_agents":
+                return {"ok": False, "error_code": "REMOTE_TOOL_FAILED"}
+            return {"hosts": [], "projects": []}
+
+        with patch.object(relay, "connector_statuses", return_value=connectors), \\
+             patch.object(relay, "call", side_effect=fake_call):
+            snapshot = asyncio.run(relay.discover_agents("owner"))
+            codex = asyncio.run(relay.resolve_agent("owner", "codex", "workspace"))
+            claude = asyncio.run(relay.resolve_agent("owner", "claude-code", "docs"))
+
+        self.assertEqual(codex["connector_id"], "vm13")
+        self.assertEqual(claude["device"], "secondary")
+        self.assertTrue(codex["launch_allowed"])
+        self.assertEqual(len([a for a in snapshot["agents"] if a["id"] == "claude-code"]), 2)
+        self.assertEqual(snapshot["connectors"][-1]["status"], "offline")
+        self.assertEqual(snapshot["connectors"][2]["status"], "discovery_failed")
+        self.assertNotIn(("list_agents", "offline"), calls)
+        self.assertTrue(snapshot["partial"])
+
+    def test_agent_resolution_rejects_ambiguity_and_unauthorized_hosts(self):
+        relay = server.Relay(self.store)
+        agents = [
+            {"id": "codex", "connector_id": "first", "device": "main",
+             "project": "demo", "launch_allowed": True},
+            {"id": "codex", "connector_id": "second", "device": "main",
+             "project": "demo", "launch_allowed": None},
+            {"id": "claude-code", "connector_id": "first", "device": "main",
+             "project": "demo", "launch_allowed": False},
+        ]
+
+        async def inventory(_):
+            return {"agents": agents}
+
+        with patch.object(relay, "discover_agents", side_effect=inventory):
+            with self.assertRaisesRegex(ValueError, "multiple hosts"):
+                asyncio.run(relay.resolve_agent("owner", "codex", "demo"))
+            with self.assertRaisesRegex(ValueError, "No reachable"):
+                asyncio.run(relay.resolve_agent("owner", "claude-code", "demo"))
+        agents.pop(1)
+        with patch.object(relay, "discover_agents", side_effect=inventory):
+            found = asyncio.run(relay.resolve_agent("owner", "codex", "demo"))
+        self.assertEqual(found["connector_id"], "first")
+
+    def test_scoped_agent_session_routes_back_to_its_connector(self):
+        relay = server.Relay(self.store)
+
+        async def online(user, selector):
+            self.assertEqual(selector, "vm13")
+            return {"device_id": "vm13", "name": "VM13"}
+
+        with patch.object(relay, "_wait_for_online_device", side_effect=online), \\
+             patch.object(self.store, "enqueue", return_value="task-1") as queued, \\
+             patch.object(self.store, "result",
+                          return_value={"ok": True, "result": {"session_id": "native"}}):
+            result = asyncio.run(relay.call(
+                "owner", "get_agent_session", {"session_id": "vm13::native"}))
+        queued.assert_called_once_with(
+            "owner", "vm13", "get_agent_session", {"session_id": "native"})
+        self.assertEqual(result["session_id"], "vm13::native")
+
     def test_health_challenge_and_oauth_resource_metadata(self):
         with TestClient(self.app) as client:
             health = client.get("/healthz")
