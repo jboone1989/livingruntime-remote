@@ -24,7 +24,7 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual(validate_options({"sandbox": "workspace-write", "timeout_seconds": 60}),
                          {"sandbox": "workspace-write", "timeout_seconds": 60})
         for value in ({"sandbox": "danger-full-access"}, {"model": "--hack"},
-                      {"timeout_seconds": 1}, {"extra": True}):
+                      {"timeout_seconds": 1}, {"skip_git_repo_check": "yes"}, {"extra": True}):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 validate_options(value)
         base = {"executable": "/usr/bin/codex", "prompt": "--yolo",
@@ -40,6 +40,11 @@ class CodexAdapterTests(unittest.TestCase):
             self.assertIn("resume", resume)
             self.assertIn("--sandbox", resume)
             self.assertIn("read-only", resume)
+            self.assertEqual(resume[-2:], ["--", "--yolo"])
+            self.assertNotIn("--skip-git-repo-check", resume)
+            base["options"] = {"skip_git_repo_check": True}
+            checked = cli_args({**base, "continue": True, "path": str(record)})
+            self.assertIn("--skip-git-repo-check", checked)
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", cmd)
 
     def test_json_events_remove_tool_arguments_and_output(self):
@@ -145,6 +150,30 @@ class CodexAdapterTests(unittest.TestCase):
                         adapter.cancel(sid)
                     except (OSError, RuntimeError):
                         pass
+
+    def test_transient_error_before_turn_completed_is_not_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            fake = Path(td) / "codex"
+            fake.write_text(
+                "#!/usr/bin/python3\nimport json\n"
+                "print(json.dumps({'type':'thread.started','thread_id':'" + THREAD + "'}),flush=True)\n"
+                "print(json.dumps({'type':'error','message':'Reconnecting... 1/5'}),flush=True)\n"
+                "print(json.dumps({'type':'item.completed','item':{'type':'agent_message',"
+                "'id':'msg_1','text':'RECOVERED'}}),flush=True)\n"
+                "print(json.dumps({'type':'turn.completed','usage':{'input_tokens':4}}),flush=True)\n"
+            )
+            fake.chmod(0o700)
+            with (patch.dict(os.environ, {"LIVINGRUNTIME_CODEX_JOBS": td}),
+                  patch("livingruntime_adapter_codex.claude_workspace", return_value=td)):
+                adapter = CodexAdapter(str(fake))
+                sid = adapter.start("handle transient failure", project="test", device="main")
+                for _ in range(120):
+                    result = adapter.status(sid)
+                    if result["status"] != "RUNNING":
+                        break
+                    time.sleep(.05)
+                self.assertEqual(result["status"], "SUCCEEDED", result)
+                self.assertEqual(result["result"], "RECOVERED")
 
     def test_missing_binary_fails_only_at_launch(self):
         missing = CodexAdapter("/no/such/codex")
