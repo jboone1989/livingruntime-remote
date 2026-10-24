@@ -503,6 +503,10 @@ def main(argv: list[str] | None = None) -> None:
     worker_parser.add_argument("receipt_path")
     worker_parser.add_argument("spec_path")
 
+    agent_worker_parser = sub.add_parser("agent-worker", help=argparse.SUPPRESS)
+    agent_worker_parser.add_argument("adapter", choices=("claude-code", "codex"))
+    agent_worker_parser.add_argument("record")
+
     args = parser.parse_args(actual_argv)
     if args.command == "install":
         if not args.local and not args.host:
@@ -536,6 +540,31 @@ def main(argv: list[str] | None = None) -> None:
                     pass
         print("LivingRuntime Remote Connector autostart removed.")
         print("Use disconnect_device in ChatGPT to revoke the paired device.")
+        return
+    if args.command == "agent-worker":
+        # Private entry point for PyInstaller one-file bundles: their embedded
+        # Python modules are not accessible as disk scripts to a subprocess.
+        # Only accept owner-scoped, pre-existing native session records.
+        import uuid
+        kind = "codex" if args.adapter == "codex" else "claude"
+        root = Path(os.environ.get(
+            f"LIVINGRUNTIME_{kind.upper()}_JOBS",
+            str(Path.home() / ".livingruntime" / f"{kind}-jobs"),
+        )).expanduser().resolve()
+        record = Path(args.record).expanduser().resolve(strict=True)
+        try:
+            parsed = uuid.UUID(record.stem)
+        except ValueError:
+            raise ValueError("invalid agent-worker session path") from None
+        if (record.parent != root or record.suffix != ".json"
+                or str(parsed) != record.stem or record.stat().st_uid != os.getuid()):
+            raise PermissionError("agent-worker record must belong to this user and session root")
+        if args.adapter == "codex":
+            import codex_worker
+            codex_worker.main(str(record))
+        else:
+            import claude_worker
+            claude_worker.main(str(record))
         return
     if args.command == "local-worker":
         raise SystemExit(localexec.detached_worker(args.receipt_path, args.spec_path))
