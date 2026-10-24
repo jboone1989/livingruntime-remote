@@ -191,7 +191,7 @@ class CodexAdapterTests(unittest.TestCase):
                 sid = adapter.start("review", project="test", device="main")
                 for _ in range(120):
                     outcome = adapter.status(sid)
-                    if outcome["status"] != "RUNNING":
+                    if outcome["status"] in ("FAILED", "SUCCEEDED", "STALLED", "CANCELLED"):
                         break
                     time.sleep(.05)
                 self.assertEqual(outcome["status"], "FAILED", outcome)
