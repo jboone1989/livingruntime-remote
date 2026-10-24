@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.request
 
 MARKER = "<!-- claude-review-worker:v1 sha="
 CONTEXT = "claude-review"
@@ -278,6 +279,80 @@ def format_report(repo, sha, round_number, findings):
     return "\n".join(lines), bool(blocking)
 
 
+def already_codex_handed_off(gh, repo, number, sha):
+    token = f"<!-- codex-handoff sha={sha} -->"
+    for page in range(1, 11):
+        comments = api(gh, f"repos/{repo}/issues/{number}/comments?per_page=100&page={page}")
+        if any(token in comment.get("body", "") for comment in comments):
+            return True
+        if len(comments) < 100:
+            return False
+    raise ReviewError("Comment pagination exceeded handoff limit")
+
+
+def codex_handoff_eligible(pr, repo, diff, round_number, blocking):
+    # Explicit human opt-in. No forks, release branches, migration/CI/auth changes.
+    if not blocking or round_number >= MAX_ROUNDS or repo != "jboone1989/EventGraph":
+        return False
+    if pr.get("base", {}).get("ref") != "develop":
+        return False
+    if "agent:autofix" not in {
+        label.get("name") for label in pr.get("labels", []) if isinstance(label, dict)
+    }:
+        return False
+    # Parse ALL diff file headers, not just added-line anchors. Deleted,
+    # renamed, binary and mode-only changes must never bypass the allowlist.
+    headers = [line for line in diff.splitlines() if line.startswith("diff --git ")]
+    if not headers or len(headers) > 5:
+        return False
+    paths = set()
+    for header in headers:
+        match = re.fullmatch(
+            r"diff --git a/([A-Za-z0-9_./-]+) b/([A-Za-z0-9_./-]+)",
+            header,
+        )
+        if not match or match.group(1) != match.group(2):
+            return False
+        paths.add(match.group(1))
+    if any(line.startswith(("rename from ", "rename to ", "copy from ",
+                           "copy to ", "GIT binary patch"))
+           for line in diff.splitlines()):
+        return False
+    return all(
+        path == "packages/backend/src/admin/notes.ts"
+        or path.startswith("apps/web/tests/")
+        or (path.startswith("tests/") and path.endswith(".test.ts"))
+        for path in paths
+    )
+
+
+def handoff_to_vm13(number, sha, report):
+    # Use the VM09 Connector's existing owner-scoped Relay identity.
+    # The device token is never exposed to Claude, Codex, PR code or logs.
+    cfg = json.loads((Path.home() / ".livingruntime" / "relay.json").read_text())
+    target = os.environ.get("EVENTGRAPH_CODEX_CONNECTOR_ID", "").strip()
+    if not re.fullmatch(r"[0-9a-f-]{36}", target):
+        raise ReviewError("VM13 Connector ID is not configured")
+    payload = json.dumps({
+        "connector_id": target, "repository": "jboone1989/EventGraph",
+        "pr_number": number, "sha": sha, "review": report[:14000],
+    }).encode()
+    req = urllib.request.Request(
+        cfg["url"].rstrip("/") + "/device/autofix", data=payload, method="POST",
+        headers={"Authorization": "Bearer " + cfg["device_token"],
+                 "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            result = json.loads(response.read(8192))
+    except Exception as exc:
+        # Error text must never include the Bearer header or token.
+        raise ReviewError("VM13 Relay handoff failed: " + type(exc).__name__) from None
+    if not result.get("ok") or not result.get("session_id"):
+        raise ReviewError("VM13 Connector did not return a Codex session")
+    return result["session_id"]
+
+
 def review(pr, *, repo, gh, claude, work, state, state_path, timeout):
     number, sha = pr["number"], pr["head"]["sha"]
     if pr["state"] != "open" or pr.get("draft"):
@@ -320,6 +395,29 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout):
         post_comment(gh, repo, number, body)
     commit_status(gh, repo, sha, "failure" if blocking else "success",
                   f"{len(findings)} verified findings; {int(blocking)} blocking")
+    if codex_handoff_eligible(fresh, repo, diff, round_number, blocking):
+        try:
+            previous = history.setdefault("handoffs", {}).get(sha)
+            if not previous and not already_codex_handed_off(gh, repo, number, sha):
+                codex_session = handoff_to_vm13(number, sha, body)
+                history["handoffs"][sha] = codex_session
+                # Persist the receipt before posting the optional GitHub comment.
+                # If the comment fails, a retry must not spawn a second session.
+                save_state(state_path, state)
+                try:
+                    post_comment(gh, repo, number,
+                                 f"<!-- codex-handoff sha={sha} -->\n"
+                                 "VM13 native Codex repair started in a separate checkout: "
+                                 f"session `{codex_session}`. This handoff only prepares "
+                                 "a patch; it does not push, merge or deploy.")
+                except Exception as exc:
+                    print(f"PR #{number}: Codex session started but handoff comment failed: "
+                          f"{type(exc).__name__}", file=sys.stderr, flush=True)
+        except Exception as exc:
+            # Handoff is separate from the authoritative Claude review verdict.
+            # It must never prevent saving the reviewed SHA or alter its status.
+            print(f"PR #{number}: Codex handoff unavailable: {type(exc).__name__}",
+                  file=sys.stderr, flush=True)
     # Commit status and comment are idempotently retried if local state write fails.
     history["reviewed"].append(sha)
     history["outcomes"][sha] = blocking
