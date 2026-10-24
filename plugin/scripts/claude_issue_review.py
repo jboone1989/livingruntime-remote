@@ -32,7 +32,7 @@ def report_input(issue: dict, comments: list, owner: str):
     owner_comments = [
         c.get("body", "").strip()
         for c in comments
-        if c.get("user", {}).get("login", "").casefold() == owner.casefold()
+        if (c.get("user") or {}).get("login", "").casefold() == owner.casefold()
         and MARKER not in (c.get("body") or "")
         and (c.get("body") or "").strip() != COMMAND
     ]
@@ -46,7 +46,7 @@ def report_input(issue: dict, comments: list, owner: str):
 
 
 def already_reviewed(comments: list, digest: str):
-    return any(c.get("user", {}).get("login") == "github-actions[bot]" and
+    return any((c.get("user") or {}).get("login") == "github-actions[bot]" and
                f"{MARKER}{digest} -->" in (c.get("body") or "") for c in comments)
 
 
