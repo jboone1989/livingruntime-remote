@@ -762,6 +762,294 @@ COGNITION_WIDGET_HTML = r"""<!doctype html>
 </body>
 </html>"""
 
+CONTROL_PLANE_WIDGET_V12_HTML = r"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{
+  color-scheme:light dark;--txt:var(--color-text-primary,#202225);
+  --sub:var(--color-text-secondary,#6c7078);--stroke:var(--color-border-secondary,rgba(128,128,128,.23));
+  --wash:var(--color-background-secondary,rgba(128,128,128,.065));--bg:var(--color-background-primary,transparent);
+  --good:#189663;--warn:#b67a1b;--bad:#cf4449;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:12px;background:transparent;color:var(--txt);font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+.shell{max-width:1120px;margin:auto}
+.mast{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.identity{display:flex;align-items:center;gap:10px}
+.logo{display:grid;place-items:center;width:34px;height:34px;border-radius:11px;background:var(--txt);color:var(--bg);font-weight:800;font-size:12px}
+.heading{font-weight:750;font-size:17px;line-height:1.15;letter-spacing:-.02em}
+.subtitle,.muted{color:var(--sub)}
+.subtitle{font-size:11px;margin-top:4px}
+.toolbar{display:flex;gap:6px;align-items:center}
+.control,.tab{padding:7px 11px;border:1px solid var(--stroke);border-radius:9px;background:transparent}
+.control:hover,.tab:hover{background:var(--wash)}
+.control:disabled,.primary:disabled{opacity:.5;cursor:default}
+.summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-bottom:12px}
+.stat{border:1px solid var(--stroke);border-radius:12px;padding:10px 12px;min-width:0}
+.stat b{display:block;font-size:20px;line-height:1.25;font-variant-numeric:tabular-nums}
+.stat span{font-size:11px;color:var(--sub)}
+.tabs{display:flex;gap:5px;margin-bottom:10px}
+.tab{border-radius:999px;padding:6px 12px}
+.tab[aria-selected=true]{background:var(--wash);font-weight:700;border-color:var(--txt)}
+.workspace{display:grid;grid-template-columns:minmax(220px,320px) minmax(0,1fr);gap:10px;align-items:start}
+.panel{border:1px solid var(--stroke);border-radius:14px;padding:13px;min-width:0}
+.panel-title{font-size:12px;font-weight:700;margin:0 0 10px}
+.search{width:100%;border:1px solid var(--stroke);background:transparent;border-radius:9px;padding:8px 10px;outline-offset:2px;margin-bottom:10px}
+.device-list{display:grid;gap:6px;max-height:600px;overflow:auto}
+.device{display:block;width:100%;text-align:left;border:1px solid transparent;background:var(--wash);padding:10px;border-radius:10px}
+.device[aria-current=true]{border-color:var(--txt);background:transparent}
+.device:hover{border-color:var(--stroke)}
+.dev-top,.title-line{display:flex;gap:7px;align-items:center;justify-content:space-between;min-width:0}
+.dev-name{font-weight:700;min-width:0;overflow-wrap:anywhere}
+.dev-meta{color:var(--sub);font-size:11px;margin-top:3px;overflow-wrap:anywhere}
+.pill{font-size:10px;white-space:nowrap;padding:2px 7px;border-radius:999px;background:var(--wash);border:1px solid var(--stroke);color:var(--sub)}
+.pill.online{color:var(--good)}.pill.offline{color:var(--bad)}.pill.pending{color:var(--warn)}
+.detail-title{font-size:19px;line-height:1.2;margin:0 0 6px;font-weight:730;overflow-wrap:anywhere}
+.tiny{font-size:11px;color:var(--sub);overflow-wrap:anywhere}
+.rule{border:0;border-top:1px solid var(--stroke);margin:13px 0}
+.subhead{font-size:12px;font-weight:750;margin:0 0 8px}
+.agents{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:7px}
+.agent{background:var(--wash);border:1px solid transparent;border-radius:10px;padding:9px}
+.agent strong{display:block;font-size:13px}
+.agent .tiny{margin-top:4px}
+.tags{display:flex;gap:5px;flex-wrap:wrap}
+.tag{font-size:11px;padding:4px 8px;border:1px solid var(--stroke);border-radius:7px;max-width:100%;overflow-wrap:anywhere}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.form-grid label,.task-label{display:grid;gap:5px;font-weight:600;font-size:11px}
+select,textarea{width:100%;border:1px solid var(--stroke);border-radius:9px;padding:8px 10px;background:var(--bg);outline-offset:2px}
+textarea{min-height:72px;resize:vertical}
+.task-label{margin:9px 0}
+.primary{border:0;border-radius:9px;background:var(--txt);color:var(--bg);padding:9px 13px;font-weight:750}
+.task-note{font-size:11px;color:var(--sub);margin-top:6px}
+.notice{font-size:11px;color:var(--sub);padding-top:7px}
+.empty{padding:15px 8px;color:var(--sub);text-align:center;border:1px dashed var(--stroke);border-radius:10px}
+.history{display:grid;gap:7px}
+.event{display:flex;justify-content:space-between;gap:12px;align-items:baseline;border-bottom:1px solid var(--stroke);padding:6px 0;font-size:12px}
+.event:last-child{border-bottom:0}
+.event span:last-child{color:var(--sub);font-size:11px;white-space:nowrap}
+#activity-view{display:none}
+body[data-view=activity] #activity-view{display:block}
+body[data-view=activity] #devices-view{display:none}
+.statusbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:space-between;margin-top:10px;font-size:11px;color:var(--sub)}
+section[hidden],div[hidden]{display:none!important}
+@media(max-width:620px){
+ body{padding:8px;font-size:13px}
+ .workspace{grid-template-columns:1fr}
+ .summary{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .device-list{display:flex;overflow-x:auto;max-height:none;scroll-snap-type:x proximity}
+ .device{min-width:190px;max-width:240px;flex-shrink:0;scroll-snap-align:start}
+ .panel{padding:11px}
+ .heading{font-size:15px}
+ .toolbar .control{padding:6px 8px}
+ .agents{grid-template-columns:1fr}
+ .form-grid{grid-template-columns:1fr 1fr}
+}
+body[data-mode=pip] .workspace{grid-template-columns:1fr}
+body[data-mode=pip] .device-list{display:flex;overflow-x:auto;max-height:none}
+body[data-mode=pip] .device{min-width:180px;flex-shrink:0}
+body[data-mode=pip] .summary{grid-template-columns:repeat(2,1fr)}
+body[data-mode=pip] .agents{grid-template-columns:1fr}
+</style>
+</head>
+<body data-view="devices">
+<div class="shell">
+ <header class="mast">
+  <div class="identity"><div class="logo">LR</div><div><div class="heading">LivingRuntime Remote</div><div class="subtitle">你的设备、Agent 和任务，一处管理</div></div></div>
+  <div class="toolbar"><button class="control" id="refresh">刷新</button><button class="control" id="expand">展开</button></div>
+ </header>
+ <div class="summary" aria-label="总览">
+  <div class="stat"><b id="sum-machines">—</b><span>在线设备 / 总数</span></div>
+  <div class="stat"><b id="sum-agents">—</b><span>已注册 Agent</span></div>
+  <div class="stat"><b id="sum-projects">—</b><span>项目</span></div>
+  <div class="stat"><b id="sum-attention">—</b><span>默认设备待处理</span></div>
+ </div>
+ <nav class="tabs" aria-label="查看方式"><button class="tab" type="button" id="tab-devices" aria-selected="true">设备与 Agent</button><button class="tab" type="button" id="tab-activity" aria-selected="false">运行与审批</button></nav>
+ <div id="devices-view" class="workspace">
+  <aside class="panel"><h2 class="panel-title">我的设备</h2><input class="search" id="search" type="search" placeholder="搜索主机、Agent 或项目" aria-label="搜索设备"><div id="device-list" class="device-list"></div></aside>
+  <main class="panel">
+   <div id="machine-info"><div class="empty">请选择设备</div></div>
+   <hr class="rule"><h3 class="subhead">这台设备上的 Agent</h3><div id="agent-list" class="agents"></div>
+   <hr class="rule"><h3 class="subhead">项目</h3><div id="project-list" class="tags"></div>
+   <div id="task-area">
+    <hr class="rule"><h3 class="subhead">创建任务</h3>
+    <form id="task-form">
+     <div class="form-grid"><label>Agent<select id="agent-select" required></select></label><label>项目<select id="project-select" required></select></label></div>
+     <label class="task-label">交代要做什么<textarea id="task-goal" required maxlength="5000" placeholder="例如：只读检查最新 PR 的逻辑问题，不要修改代码"></textarea></label>
+     <button class="primary" id="task-submit" type="submit">交给 ChatGPT 执行</button>
+     <div class="task-note">会将选定的设备、Agent 和项目交给 ChatGPT，由 ChatGPT 发起受权限控制的任务。</div>
+     <div class="notice" id="task-feedback" role="status"></div>
+    </form>
+   </div>
+  </main>
+ </div>
+ <div id="activity-view" class="panel">
+  <div class="title-line"><h2 class="panel-title">运行与审批</h2><span class="pill">默认设备的任务记录</span></div>
+  <div id="execution" class="notice"></div>
+  <hr class="rule"><h3 class="subhead">正在进行的工作</h3><div id="active-jobs" class="history"></div>
+  <hr class="rule"><h3 class="subhead">待处理审批与完成回执</h3><div id="attention" class="history"></div>
+  <details><summary class="subhead">最近历史和诊断</summary><div id="recent-activity" class="history"></div></details>
+ </div>
+ <footer class="statusbar"><span id="footer-note">读取设备清单中…</span><span id="updated"></span></footer>
+</div>
+<script>
+(() => {
+ const $ = id => document.getElementById(id);
+ const pending = new Map(); let id = 1; let connected = false; let latest = {};
+ let selected = null; let search = ""; let scheduled = null; let busy = false;
+ const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+ const txt = v => String(v ?? "");
+ const array = value => Array.isArray(value) ? value : [];
+ const unique = items => [...new Set(items.filter(x=>typeof x==="string"&&x))];
+ function request(method, params) {
+   const requestId=id++;
+   window.parent.postMessage({jsonrpc:"2.0",id:requestId,method,params},"*");
+   return new Promise((resolve,reject)=>pending.set(requestId,{resolve,reject}));
+ }
+ const notify = (method,params={})=>window.parent.postMessage({jsonrpc:"2.0",method,params},"*");
+ const value = result => result?.structuredContent || result?.structured_content || result || {};
+ const machines = () => array(latest.machines);
+ function label(machine) {return machine.hostname || machine.connector_name || machine.name || "Unknown device";}
+ function agentList(machine) {return array(machine?.agents);}
+ function renderStats(){
+   const m=machines(); $("sum-machines").textContent=m.filter(x=>x.online).length+" / "+m.length;
+   $("sum-agents").textContent=unique(m.flatMap(x=>agentList(x).map(a=>a.id))).length;
+   $("sum-projects").textContent=unique(m.flatMap(x=>array(x.projects))).length;
+   const o=latest.overview||{},p=o.permissions||{};
+   $("sum-attention").textContent=String(array(p.pending).length+array(o.completion_events).length);
+   $("footer-note").textContent=latest.device_inventory_partial||latest.agent_inventory_partial
+     ?"部分设备离线或尚不支持发现 · 数据可能不完整":"已连接设备清单";
+ }
+ function renderDevices(){
+   const m=machines();
+   const filtered=m.filter(x=>(label(x)+" "+(x.connector_name||"")+" "+array(x.projects).join(" ")+" "+agentList(x).map(a=>a.id).join(" ")).toLowerCase().includes(search.toLowerCase()));
+   if(!selected||!m.some(x=>x.connector_id===selected))selected=(m.find(x=>x.online)||m[0]||{}).connector_id||null;
+   $("device-list").innerHTML=filtered.map(x=>'<button type="button" class="device" data-device="'+esc(x.connector_id)+'" aria-current="'+(x.connector_id===selected)+'"><span class="dev-top"><span class="dev-name">'+esc(label(x))+'</span><span class="pill '+(x.online?'online':'offline')+'">'+(x.online?'在线':'离线')+'</span></span><span class="dev-meta">'+esc(x.connector_name||"Connector")+' · '+agentList(x).filter(a=>a.project).length+' 个 Agent/项目绑定</span></button>').join("")||'<div class="empty">没有匹配的设备</div>';
+   renderSelected();
+ }
+ function renderSelected(){
+   const x=machines().find(m=>m.connector_id===selected);
+   if(!x){
+     $("machine-info").innerHTML='<div class="empty">没有已连接设备。请先安装并配对 Connector。</div>';
+     $("agent-list").innerHTML="";$("project-list").innerHTML="";$("task-area").hidden=true;return;
+   }
+   const agents=agentList(x);
+   const ids=unique(agents.map(a=>a.id));
+   const projects=unique(array(x.projects));
+   const duplicate=machines().filter(m=>m.hostname&&m.hostname===x.hostname).length>1;
+   $("machine-info").innerHTML=
+     '<div class="title-line"><h2 class="detail-title">'+esc(label(x))+'</h2><span class="pill '+(x.online?'online':'offline')+'">'+(x.online?'在线':'离线')+'</span></div>'+
+     '<div class="tiny">'+esc(x.connector_name||"Connector")+' · ID '+esc(x.connector_id||"—")+'</div>'+
+     (duplicate?'<div class="notice">这台物理主机有多个不同权限的 Connector，因此在设备清单中分别显示。</div>':"")+
+     (x.migration_required?'<div class="notice">此连接包含旧式 SSH 管理配置，正在保留兼容。</div>':"");
+   $("agent-list").innerHTML=ids.length?ids.map(a=>{
+     const bindings=agents.filter(x=>x.id===a);
+     const allowed=bindings.some(b=>b.launch_allowed===true);
+     const unknown=bindings.some(b=>b.launch_allowed===null);
+     const names=unique(bindings.map(b=>b.project));
+     return '<div class="agent"><div class="title-line"><strong>'+esc(a)+'</strong><span class="pill '+(allowed?'online':unknown?'pending':'offline')+'">'+(allowed?'已授权':unknown?'需启动时验证':'未授权')+'</span></div><div class="tiny">'+esc(names.join(" · ")||"暂无可用项目")+'</div></div>';
+   }).join(""):'<div class="empty">这台设备没有已注册 Agent，仍可使用基础远程工具。</div>';
+   $("project-list").innerHTML=projects.length?projects.map(p=>'<span class="tag">'+esc(p)+'</span>').join(""):'<span class="muted">尚未发现项目</span>';
+   $("task-area").hidden=!x.online||!agents.some(a=>a.project&&a.launch_allowed!==false);
+   const aselect=$("agent-select"),pselect=$("project-select");
+   const prevAgent=aselect.value,prevProject=pselect.value;
+   const available=unique(agents.filter(a=>a.project&&a.launch_allowed!==false).map(a=>a.id));
+   aselect.innerHTML=available.map(a=>'<option value="'+esc(a)+'">'+esc(a)+'</option>').join("");
+   if(available.includes(prevAgent))aselect.value=prevAgent;
+   const agentId=aselect.value;
+   const candidates=unique(agents.filter(a=>a.id===agentId&&a.launch_allowed!==false).map(a=>a.project));
+   pselect.innerHTML=candidates.map(p=>'<option value="'+esc(p)+'">'+esc(p)+'</option>').join("");
+   if(candidates.includes(prevProject))pselect.value=prevProject;
+ }
+ function renderActivity(){
+   const o=latest.overview||{},ex=o.execution||{},jobs=array(o.jobs);
+   $("execution").textContent=ex.message||"默认设备没有活动回执。其他设备的任务仍由各自 Connector 管理。";
+   const active=jobs.filter(j=>!j.terminal&&!["SUCCEEDED","FAILED","CANCELLED","CANCELED"].includes(txt(j.status).toUpperCase()));
+   $("active-jobs").innerHTML=active.length?active.slice(0,8).map(j=>'<div class="event"><span>'+esc(j.goal||"任务")+'</span><span>'+esc(j.status||"待处理")+'</span></div>').join(""):'<div class="empty">默认设备当前无运行中的任务</div>';
+   const approvals=array(o.permissions?.pending),events=array(o.completion_events);
+   $("attention").innerHTML='<div class="event"><span>待审批命令</span><span>'+approvals.length+'</span></div><div class="event"><span>未确认完成回执</span><span>'+events.length+'</span></div>';
+   const history=array(o.activity).slice(-8).reverse();
+   $("recent-activity").innerHTML=history.length?history.map(a=>'<div class="event"><span>'+esc(a.tool||"远程操作")+'</span><span>'+esc(a.ok?"成功":"失败")+'</span></div>').join(""):'<div class="empty">暂无最近活动</div>';
+ }
+ function render(snapshot) {
+   if(!snapshot||typeof snapshot!=="object")return;
+   latest=snapshot;
+   renderStats();renderDevices();renderActivity();
+   $("updated").textContent="更新于 "+new Date().toLocaleTimeString();
+ }
+ async function refresh(){
+   if(!connected||busy)return;busy=true;$("refresh").disabled=true;
+   try {
+     const result=window.openai?.callTool
+       ?await window.openai.callTool("remote_overview",{include_resources:false})
+       :await request("tools/call",{name:"remote_overview",arguments:{include_resources:false}});
+     render(value(result));
+   } catch(e){$("footer-note").textContent="刷新失败："+txt(e?.message||e);}
+   finally{$("refresh").disabled=false;busy=false;}
+ }
+ function selectTab(name){
+   document.body.dataset.view=name;
+   $("tab-devices").setAttribute("aria-selected",name==="devices"?"true":"false");
+   $("tab-activity").setAttribute("aria-selected",name==="activity"?"true":"false");
+ }
+ $("device-list").addEventListener("click",e=>{
+   const el=e.target.closest("button[data-device]");if(!el)return;
+   selected=el.dataset.device;renderDevices();
+ });
+ $("search").addEventListener("input",e=>{search=e.target.value;renderDevices();});
+ $("agent-select").addEventListener("change",()=>{
+   const x=machines().find(m=>m.connector_id===selected), agentId=$("agent-select").value;
+   const p=unique(agentList(x).filter(a=>a.id===agentId&&a.launch_allowed!==false).map(a=>a.project));
+   $("project-select").innerHTML=p.map(id=>'<option value="'+esc(id)+'">'+esc(id)+'</option>').join("");
+ });
+ $("task-form").addEventListener("submit",async e=>{
+   e.preventDefault();
+   const x=machines().find(m=>m.connector_id===selected),aid=$("agent-select").value,proj=$("project-select").value,goal=$("task-goal").value.trim();
+   if(!x?.online||!goal||!agentList(x).some(a=>a.id===aid&&a.project===proj&&a.launch_allowed!==false))return;
+   const prompt="请通过 LivingRuntime Remote 的 start_agent 在 Connector ID "+x.connector_id+"（"+label(x)+"）上启动 "+aid+"，项目 "+proj+"。用户任务："+goal+"。遵守现有 Agent 授权和执行审批；请报告真实启动结果。";
+   try{
+     if(window.openai?.sendFollowUpMessage){
+       await window.openai.sendFollowUpMessage({prompt,scrollToBottom:true});
+     }else{
+       await request("ui/message",{role:"user",content:[{type:"text",text:prompt}]});
+     }
+     $("task-feedback").textContent="请求已发送给 ChatGPT；请查看对话中的启动结果。";
+   }catch(err){$("task-feedback").textContent="未能发送请求："+txt(err?.message||err);}
+ });
+ $("tab-devices").addEventListener("click",()=>selectTab("devices"));
+ $("tab-activity").addEventListener("click",()=>selectTab("activity"));
+ $("refresh").addEventListener("click",refresh);
+ $("expand").addEventListener("click",()=>{
+   if(window.openai?.requestDisplayMode)void window.openai.requestDisplayMode({mode:"fullscreen"});
+ });
+ window.addEventListener("message",ev=>{
+   if(ev.source!==window.parent||ev.data?.jsonrpc!=="2.0")return;
+   const m=ev.data;
+   if(m.id!==undefined&&pending.has(m.id)){
+     const p=pending.get(m.id);pending.delete(m.id);
+     m.error?p.reject(m.error):p.resolve(m.result);return;
+   }
+   if(m.method==="ui/notifications/tool-result")render(m.params?.structuredContent||null);
+   if(m.method==="ui/notifications/request-teardown"){connected=false;if(scheduled)clearInterval(scheduled);}
+ },{passive:true});
+ window.addEventListener("pagehide",()=>{connected=false;if(scheduled)clearInterval(scheduled);},{once:true});
+ (async()=>{
+   try{
+     await request("ui/initialize",{appInfo:{name:"livingruntime-remote-control-plane",version:"1.5.0"},appCapabilities:{availableDisplayModes:["inline","pip","fullscreen"]},protocolVersion:"2026-01-26"});
+     notify("ui/notifications/initialized");connected=true;
+     if(window.openai?.toolOutput)render(value(window.openai.toolOutput));
+     await refresh();
+     scheduled=setInterval(()=>{if(!document.hidden)void refresh();},60000);
+   }catch(e){$("footer-note").textContent="组件连接失败："+txt(e?.message||e);}
+ })();
+})();
+</script>
+</body>
+</html>"""
+
 CONTROL_PLANE_WIDGET_HTML = r"""<!doctype html>
 <html>
 <head>
