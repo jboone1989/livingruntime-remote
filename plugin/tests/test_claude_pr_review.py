@@ -84,6 +84,73 @@ rename to tests/new.test.ts
                 self.assertEqual(request.get_header("Authorization"), "Bearer private-credential")
                 self.assertEqual(json.loads(request.data)["sha"], "a" * 40)
 
+    def test_failed_relay_handoff_never_breaks_claude_review_receipt(self):
+        path = "packages/backend/src/admin/notes.ts"
+        diff = f"""diff --git a/{path} b/{path}
+--- a/{path}
++++ b/{path}
+@@ -1 +1,2 @@
+ old
++broken
+"""
+        pr = {"number": 84, "state": "open", "draft": False,
+              "head": {"sha": "a" * 40, "repo": {"full_name": "jboone1989/EventGraph"}},
+              "base": {"ref": "develop"},
+              "labels": [{"name": "agent:autofix"}]}
+        finding = {"path": path, "line": 2, "severity": "important",
+                   "confidence": 99, "reason": "broken", "evidence": "error",
+                   "fix": "repair"}
+        state = {"prs": {}}
+        with patch.object(reviewer, "checkout", return_value=(Path("/tmp"), diff, "b" * 40)), \
+             patch.object(reviewer, "native_review", return_value=[finding]), \
+             patch.object(reviewer, "ask_claude", return_value=[finding]), \
+             patch.object(reviewer, "api", return_value=pr), \
+             patch.object(reviewer, "already_commented", return_value=True), \
+             patch.object(reviewer, "already_codex_handed_off", return_value=False), \
+             patch.object(reviewer, "commit_status"), \
+             patch.object(reviewer, "handoff_to_vm13", side_effect=FileNotFoundError()), \
+             patch.object(reviewer, "save_state") as saved:
+            result = reviewer.review(
+                pr, repo="jboone1989/EventGraph", gh="gh", claude="claude",
+                work=Path("/tmp"), state=state, state_path=Path("/tmp/a"), timeout=5)
+            self.assertIn("reviewed:", result)
+            self.assertTrue(state["prs"]["84"]["outcomes"]["a" * 40])
+            saved.assert_called()
+
+    def test_codex_handoff_receipt_survives_github_comment_failure(self):
+        path = "packages/backend/src/admin/notes.ts"
+        diff = f"""diff --git a/{path} b/{path}
+--- a/{path}
++++ b/{path}
+@@ -1 +1,2 @@
+ old
++broken
+"""
+        pr = {"number": 85, "state": "open", "draft": False,
+              "head": {"sha": "a" * 40, "repo": {"full_name": "jboone1989/EventGraph"}},
+              "base": {"ref": "develop"}, "labels": [{"name": "agent:autofix"}]}
+        finding = {"path": path, "line": 2, "severity": "important",
+                   "confidence": 90, "reason": "broken", "evidence": "failure",
+                   "fix": "correct"}
+        state = {"prs": {}}
+        with patch.object(reviewer, "checkout", return_value=(Path("/tmp"), diff, "b" * 40)), \
+             patch.object(reviewer, "native_review", return_value=[finding]), \
+             patch.object(reviewer, "ask_claude", return_value=[finding]), \
+             patch.object(reviewer, "api", return_value=pr), \
+             patch.object(reviewer, "already_commented", return_value=True), \
+             patch.object(reviewer, "already_codex_handed_off", return_value=False), \
+             patch.object(reviewer, "commit_status"), \
+             patch.object(reviewer, "handoff_to_vm13", return_value="lra_" + "b" * 32) as handoff, \
+             patch.object(reviewer, "post_comment", side_effect=RuntimeError("comments blocked")), \
+             patch.object(reviewer, "save_state") as saved:
+            result = reviewer.review(
+                pr, repo="jboone1989/EventGraph", gh="gh", claude="claude",
+                work=Path("/tmp"), state=state, state_path=Path("/tmp/a"), timeout=5)
+            self.assertIn("reviewed:", result)
+            self.assertEqual(state["prs"]["85"]["handoffs"]["a" * 40], "lra_" + "b" * 32)
+            handoff.assert_called_once()
+            self.assertEqual(saved.call_count, 2)
+
     def test_anchors_only_added_lines(self):
         self.assertEqual(reviewer.changed_lines(DIFF), {"src/a.mjs": {4}})
 
