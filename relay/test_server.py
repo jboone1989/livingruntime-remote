@@ -151,7 +151,7 @@ class RelayServerTests(unittest.TestCase):
             return {"agents": agents}
 
         with patch.object(relay, "discover_agents", side_effect=inventory):
-            with self.assertRaisesRegex(ValueError, "multiple hosts"):
+            with self.assertRaisesRegex(ValueError, "multiple machines"):
                 asyncio.run(relay.resolve_agent("owner", "codex", "demo"))
             with self.assertRaisesRegex(ValueError, "No reachable"):
                 asyncio.run(relay.resolve_agent("owner", "claude-code", "demo"))
