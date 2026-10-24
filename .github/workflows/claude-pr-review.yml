@@ -44,3 +44,30 @@ jobs:
             --gh /home/ubuntu/.local/bin/gh \
             --claude /home/ubuntu/.local/bin/claude \
             --state "$state" --work "$work" --timeout 180
+
+  dispatched-review:
+    if: github.event_name == 'repository_dispatch' && github.event.client_payload.repository == 'jboone1989/EventGraph'
+    runs-on: [self-hosted, Linux, X64, claude-review]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Review EventGraph PR
+        env:
+          REPO: ${{ github.event.client_payload.repository }}
+          PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: "credential.helper"
+          GIT_CONFIG_VALUE_0: "!/home/ubuntu/.local/bin/gh auth git-credential"
+        run: |
+          set -eu
+          [[ "$REPO" == 'jboone1989/EventGraph' ]]
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          state="$HOME/.local/state/claude-review/jboone1989_EventGraph-pr-$PR_NUMBER.json"
+          work="$HOME/.local/share/claude-review/jboone1989_EventGraph/$PR_NUMBER"
+          python3 plugin/scripts/claude_pr_review.py \
+            --repo "$REPO" --pr-number "$PR_NUMBER" \
+            --gh /home/ubuntu/.local/bin/gh \
+            --claude /home/ubuntu/.local/bin/claude \
+            --state "$state" --work "$work" --timeout 180
