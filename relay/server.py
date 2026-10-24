@@ -1383,6 +1383,17 @@ class Relay:
         *,
         connector: str | None = None,
     ) -> dict[str, Any]:
+        original_session_id = args.get("session_id")
+        session_tools = {"get_agent_session", "send_agent_message", "resume_agent",
+                         "cancel_agent", "watch_agent_events", "decide_agent_permission"}
+        if tool in session_tools and isinstance(original_session_id, str) and "::" in original_session_id:
+            owner, inner_session = original_session_id.split("::", 1)
+            if not owner or not inner_session or (connector is not None and connector != owner):
+                raise ValueError("invalid or conflicting connector-scoped Agent session")
+            connector = owner
+            args = {**args, "session_id": inner_session}
+        else:
+            original_session_id = None
         selector, forwarded_args = self._connector_route(args, connector)
         if selector is None:
             raw_device = forwarded_args.get("device")
@@ -1440,6 +1451,8 @@ class Relay:
                             "connector_id": device["device_id"],
                             "request": request,
                         }
+                    if original_session_id and value.get("session_id") == forwarded_args["session_id"]:
+                        return {**value, "session_id": original_session_id}
                     return value
                 return {"result": value}
             if self.store.cancel_if_queued(user_sub, task_id):
@@ -2937,15 +2950,43 @@ def create_mcp(
 
     @expose("list_agents", True, False, False)
     async def list_agents(connector: str | None = None) -> dict[str, Any]:
-        return await relay.call(_principal("remote:read"), "list_agents", {}, connector=connector)
+        user_sub = _principal("remote:read")
+        if connector:
+            return await relay.call(user_sub, "list_agents", {}, connector=connector)
+        return await relay.discover_agents(user_sub)
 
     @expose("start_agent", False, False, True)
     async def start_agent(adapter_id: str, goal: str, project: str,
                           device: str | None = None, options: dict[str, Any] | None = None) -> dict[str, Any]:
-        return await relay.call(_principal("remote:write"), "start_agent", {
-            "adapter_id": adapter_id, "goal": goal, "project": project,
-            "device": device, "options": options,
-        })
+        user_sub = _principal("remote:write")
+        payload = {"adapter_id": adapter_id, "goal": goal, "project": project,
+                   "device": device, "options": options}
+        if device:
+            # Explicit destinations preserve the established Remote routing contract.
+            return await relay.call(user_sub, "start_agent", payload)
+        inventory = await relay.discover_agents(user_sub)
+        candidates = [
+            agent for agent in inventory["agents"]
+            if agent["id"] == adapter_id and agent["project"] == project
+            and agent["launch_allowed"] is not False
+        ]
+        if not candidates:
+            raise ValueError(
+                "No reachable registered Agent for this project; call list_agents "
+                "and select a Connector/Host or configure an Agent placement."
+            )
+        if len(candidates) != 1:
+            raise ValueError(
+                "Agent is available on multiple hosts; specify device using "
+                "the exact connector ID and inner host (connector-id::host)."
+            )
+        match = candidates[0]
+        payload["device"] = match["device"]
+        result = await relay.call(user_sub, "start_agent", payload,
+                                  connector=match["connector_id"])
+        if isinstance(result, dict) and result.get("session_id"):
+            result = {**result, "session_id": match["connector_id"] + "::" + result["session_id"]}
+        return result
 
     @expose("get_agent_session", True, False, False)
     async def get_agent_session(session_id: str, connector: str | None = None) -> dict[str, Any]:
