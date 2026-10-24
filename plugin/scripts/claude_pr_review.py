@@ -373,9 +373,9 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout):
         try:
             codex_session = handoff_to_vm13(number, sha, body)
             post_comment(gh, repo, number,
-                         f"<!-- codex-handoff sha={sha} -->\\n"
+                         f"<!-- codex-handoff sha={sha} -->\n"
                          "VM13 native Codex repair started in a separate checkout: "
-                         f"session \`{codex_session}\`. This handoff only prepares "
+                         f"session `{codex_session}`. This handoff only prepares "
                          "a patch; it does not push, merge or deploy.")
         except ReviewError as exc:
             print(f"PR #{number}: Codex handoff blocked: {exc}", file=sys.stderr, flush=True)
