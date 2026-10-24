@@ -3393,9 +3393,10 @@ def send_agent_message(session_id: str, message: str) -> dict[str, Any]:
 
 
 @server.tool(name="decide_agent_permission", annotations=ToolAnnotations(title="Decide Claude tool permission",readOnlyHint=False,destructiveHint=True,openWorldHint=False))
-def decide_agent_permission(session_id: str, request_id: str, decision: str) -> dict[str, Any]:
+def decide_agent_permission(session_id: str, request_id: str, decision: str,
+                            answers: dict[str, Any] | None = None) -> dict[str, Any]:
     """Respond to one pending native Claude CLI tool request; not a host exec grant."""
-    return agent_sessions.decide(session_id,request_id,decision)
+    return agent_sessions.decide(session_id,request_id,decision,answers=answers)
 
 
 @server.tool(name="cancel_agent", annotations=ToolAnnotations(title="Cancel agent session",readOnlyHint=False,destructiveHint=True,openWorldHint=False))

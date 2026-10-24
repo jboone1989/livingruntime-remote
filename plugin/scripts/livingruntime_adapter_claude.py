@@ -22,6 +22,7 @@ _ALLOWED_OPTIONS = {
     "duplex", "timeout_seconds", "fallback_model", "forward_subagent_text",
     "include_hook_events", "json_schema", "max_budget_usd", "autocompact",
     "append_subagent_system_prompt", "mcp_configs", "plugin_dirs", "additional_dirs",
+    "approval_timeout_seconds",
 }
 _MODES = {"plan", "default", "acceptEdits", "auto", "dontAsk"}
 _EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultracode"}
@@ -47,6 +48,8 @@ def validate_options(value):
         raise ValueError("invalid max_turns")
     if "timeout_seconds" in opts and (type(opts["timeout_seconds"]) is not int or not 30 <= opts["timeout_seconds"] <= 3600):
         raise ValueError("invalid timeout_seconds")
+    if "approval_timeout_seconds" in opts and (type(opts["approval_timeout_seconds"]) is not int or not 30 <= opts["approval_timeout_seconds"] <= 86400):
+        raise ValueError("invalid approval_timeout_seconds")
     if "duplex" in opts and type(opts["duplex"]) is not bool:
         raise ValueError("duplex must be boolean")
     for key in ("allowed_tools", "disallowed_tools", "tools"):
@@ -235,7 +238,7 @@ class ClaudeCodeAdapter:
                             break
         return events
 
-    def decide(self, sid, request_id, decision):
+    def decide(self, sid, request_id, decision, answers=None):
         if decision not in {"allow", "deny"} or not isinstance(request_id, str) or len(request_id) > 128:
             raise ValueError("invalid Claude permission decision")
         if self.status(sid)["status"] != "RUNNING":
@@ -255,8 +258,27 @@ class ClaudeCodeAdapter:
                         pending.pop(event.get("request_id"), None)
         if request_id not in pending:
             raise ValueError("no matching pending permission request")
-        if decision == "allow" and not pending[request_id].get("approvable", True):
+        request = pending[request_id]
+        if decision == "allow" and not request.get("approvable", True):
             raise ValueError("oversized permission input cannot be approved")
+        tool_input = request.get("input", {})
+        is_question = request.get("tool_name") == "AskUserQuestion"
+        if answers is not None and (not is_question or decision != "allow"):
+            raise ValueError("answers only apply to an allowed AskUserQuestion")
+        if is_question and decision == "allow":
+            questions = tool_input.get("questions") if isinstance(tool_input, dict) else None
+            if not isinstance(questions, list) or not questions or len(questions) > 4 or not isinstance(answers, dict):
+                raise ValueError("AskUserQuestion requires structured answers")
+            required = {q.get("question") for q in questions if isinstance(q, dict)}
+            if None in required or set(answers) != required:
+                raise ValueError("answers must match Claude's questions")
+            for q in questions:
+                answer = answers[q["question"]]
+                if not isinstance(answer, (str, list)) or (isinstance(answer, list) and
+                    (not q.get("multiSelect") or not answer or not all(isinstance(v, str) and 0 < len(v) <= 1000 for v in answer))) or (
+                    isinstance(answer, str) and not 0 < len(answer) <= 1000):
+                    raise ValueError("invalid question answer")
+            tool_input = {**tool_input, "answers": answers}
         decisions = self._path(sid).with_suffix(".decisions.jsonl")
         if decisions.exists():
             with decisions.open(encoding="utf-8") as f:
@@ -269,7 +291,7 @@ class ClaudeCodeAdapter:
         with decisions.open("a", encoding="utf-8") as f:
             os.chmod(decisions, 0o600)
             f.write(json.dumps({"request_id": request_id, "decision": decision,
-                                "input": pending[request_id].get("input", {})}) + "\n")
+                                "input": tool_input}) + "\n")
             f.flush()
             os.fsync(f.fileno())
         return {"request_id": request_id, "decision": decision, "accepted": True}

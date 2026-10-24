@@ -225,6 +225,82 @@ class ClaudeAdapterTests(unittest.TestCase):
             events = [json.loads(x) for x in record.with_suffix(".events.jsonl").read_text().splitlines()]
             self.assertEqual([e["seq"] for e in events], [1, 2])
 
+    def test_native_ask_user_question_answers(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli = Path(td) / "fake-claude"
+            cli.write_text(
+                "#!/usr/bin/python3\nimport json,sys\n"
+                "first=json.loads(sys.stdin.readline())\n"
+                "assert first['type']=='user'\n"
+                "request={'type':'control_request','request_id':'ask_1',"
+                "'request':{'tool_name':'AskUserQuestion','input':{'questions':["
+                "{'question':'Which approach?','multiSelect':False,'options':[{'label':'Reuse'},{'label':'Rewrite'}]}]}}}\n"
+                "print(json.dumps(request),flush=True)\n"
+                "response=json.loads(sys.stdin.readline())['response']['response']\n"
+                "assert response['behavior']=='allow'\n"
+                "assert response['updatedInput']['answers']=={'Which approach?':'Reuse'}\n"
+                "print(json.dumps({'type':'result','result':'Reuse selected','is_error':False}),flush=True)\n"
+                "sys.stdin.read()\n"
+            )
+            cli.chmod(0o700)
+            sid = "00000000-0000-4000-8000-000000000001"
+            with patch.dict(os.environ, {"LIVINGRUNTIME_CLAUDE_JOBS": td}):
+                adapter = ClaudeCodeAdapter(str(cli))
+                record = adapter._path(sid)
+                adapter._write(sid, {
+                    "executable": str(cli), "prompt": "Choose", "cwd": td,
+                    "session_id": sid, "status": "RUNNING", "started_at": time.time(),
+                    "options": {"duplex": True, "timeout_seconds": 2},
+                })
+                worker = threading.Thread(target=run_worker, args=(str(record),), daemon=True)
+                worker.start()
+                event_path = record.with_suffix(".events.jsonl")
+                for _ in range(100):
+                    if event_path.exists() and '"request_id": "ask_1"' in event_path.read_text():
+                        break
+                    time.sleep(0.04)
+                else:
+                    self.fail("CLI did not produce native question")
+                with patch.object(adapter, "_worker_alive", return_value=True):
+                    with self.assertRaisesRegex(ValueError, "requires structured answers"):
+                        adapter.decide(sid, "ask_1", "allow")
+                    with self.assertRaisesRegex(ValueError, "match Claude"):
+                        adapter.decide(sid, "ask_1", "allow", answers={"Wrong question": "Reuse"})
+                    time.sleep(2.2)  # beyond the 2-second active task budget
+                    self.assertTrue(worker.is_alive(), "human approval incorrectly timed out")
+                    adapter.decide(sid, "ask_1", "allow", answers={"Which approach?": "Reuse"})
+                worker.join(8)
+                self.assertFalse(worker.is_alive())
+                receipt = json.loads(record.with_suffix(".result.json").read_text())
+                self.assertEqual(receipt["status"], "SUCCEEDED", receipt)
+                self.assertEqual(receipt["result"], "Reuse selected")
+
+    def test_unanswered_native_permission_has_independent_wait_limit(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli = Path(td) / "fake-claude"
+            cli.write_text(
+                "#!/usr/bin/python3\nimport json,sys\n"
+                "sys.stdin.readline()\n"  # consume the first user message; then wait for approval
+                "print(json.dumps({'type':'control_request','request_id':'no-answer',"
+                "'request':{'tool_name':'Bash','input':{'command':'git status'}}}),flush=True)\n"
+                "sys.stdin.readline()\n"
+            )
+            cli.chmod(0o700)
+            record = Path(td) / "session.json"
+            record.write_text(json.dumps({
+                "executable": str(cli), "prompt": "review", "cwd": td,
+                "session_id": "00000000-0000-4000-8000-000000000001",
+                "options": {"duplex": True, "timeout_seconds": 2,
+                            "approval_timeout_seconds": 1},
+            }))
+            worker = threading.Thread(target=run_worker, args=(str(record),), daemon=True)
+            worker.start()
+            worker.join(6)
+            self.assertFalse(worker.is_alive(), "unanswered approval must have a bounded lifetime")
+            receipt = json.loads(record.with_suffix(".result.json").read_text())
+            self.assertEqual(receipt["status"], "STALLED", receipt)
+
+
     def test_decisions_require_live_matching_permission(self):
         with tempfile.TemporaryDirectory() as td:
             cli = Path(td) / "claude"

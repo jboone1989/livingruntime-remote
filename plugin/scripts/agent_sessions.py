@@ -113,11 +113,11 @@ def resume(sid):
         raise ValueError("adapter resume must return an object")
     return {"session_id":sid,"agent_status":result}
 
-def decide(sid,request_id,decision):
+def decide(sid,request_id,decision,answers=None):
     record,adapter=_resolve(sid,"claude-code")
     if record.get("state")=="CANCELLED":
         raise RuntimeError("cancelled session")
-    return adapter.decide(record["external_session_id"],request_id,decision)
+    return adapter.decide(record["external_session_id"],request_id,decision,answers=answers)
 
 def events(sid,after=0):
     record,adapter=_resolve(sid)
