@@ -24,7 +24,7 @@ def gh_json(gh: str, endpoint: str):
 
 
 def report_input(issue: dict, comments: list, owner: str):
-    if issue.get("pull_request"):
+    if "pull_request" in issue:
         raise ValueError("Refusing to review pull requests as proposal Issues")
     if len(comments) >= 100:
         raise ValueError("Issue has >=100 comments; pagination required before a safe review")
