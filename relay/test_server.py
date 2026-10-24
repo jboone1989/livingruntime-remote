@@ -72,7 +72,7 @@ class RelayServerTests(unittest.TestCase):
                 return {"ok": False, "error_code": "REMOTE_TOOL_FAILED"}
             return {"hosts": [], "projects": []}
 
-        with patch.object(relay, "connector_statuses", return_value=connectors), \\
+        with patch.object(relay, "connector_statuses", return_value=connectors), \
              patch.object(relay, "call", side_effect=fake_call):
             snapshot = asyncio.run(relay.discover_agents("owner"))
             codex = asyncio.run(relay.resolve_agent("owner", "codex", "workspace"))
@@ -118,8 +118,8 @@ class RelayServerTests(unittest.TestCase):
             self.assertEqual(selector, "vm13")
             return {"device_id": "vm13", "name": "VM13"}
 
-        with patch.object(relay, "_wait_for_online_device", side_effect=online), \\
-             patch.object(self.store, "enqueue", return_value="task-1") as queued, \\
+        with patch.object(relay, "_wait_for_online_device", side_effect=online), \
+             patch.object(self.store, "enqueue", return_value="task-1") as queued, \
              patch.object(self.store, "result",
                           return_value={"ok": True, "result": {"session_id": "native"}}):
             result = asyncio.run(relay.call(
