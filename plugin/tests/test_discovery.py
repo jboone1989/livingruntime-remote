@@ -130,6 +130,46 @@ class DiscoveryTests(unittest.TestCase):
         tools = {tool.name for tool in asyncio.run(bridge.server.list_tools())}
         self.assertTrue({"list_agents", "exec", "read_file", "git"} <= tools)
 
+    def test_agent_placements_are_scoped_per_host_and_project(self) -> None:
+        from unittest.mock import MagicMock
+        registry = MagicMock()
+        registry.list_agents.return_value = [
+            {"id": "claude-code", "capabilities": {}},
+            {"id": "codex", "capabilities": {}},
+        ]
+        projects = [
+            {"name": "docs", "host": "primary"},
+            {"name": "code", "host": "secondary"},
+        ]
+        def allowed(host, project, agent):
+            return (host, project, agent) in {
+                ("primary", "docs", "claude-code"),
+                ("secondary", "code", "codex"),
+            }
+        with patch.object(bridge, "agent_registry", registry), \
+             patch.object(bridge, "_config", return_value={"hosts": {}}), \
+             patch.object(bridge, "catalog_projects", return_value=projects), \
+             patch.object(bridge.agent_policy, "may_launch", side_effect=allowed):
+            result = bridge.list_agents()
+        self.assertEqual(result["placements"], [
+            {"id": "claude-code", "device": "primary", "project": "docs"},
+            {"id": "codex", "device": "secondary", "project": "code"},
+        ])
+        self.assertIsNone(result["inventory_error"])
+
+    def test_agent_inventory_never_assumes_invalid_policy_is_allowed(self) -> None:
+        from unittest.mock import MagicMock
+        registry = MagicMock()
+        registry.list_agents.return_value = [{"id": "codex", "capabilities": {}}]
+        with patch.object(bridge, "agent_registry", registry), \
+             patch.object(bridge, "_config", return_value={}), \
+             patch.object(bridge, "catalog_projects",
+                          return_value=[{"name": "demo", "host": "main"}]), \
+             patch.object(bridge.agent_policy, "may_launch", side_effect=PermissionError):
+            result = bridge.list_agents()
+        self.assertEqual(result["placements"], [])
+        self.assertEqual(result["inventory_error"], "PermissionError")
+
     def test_public_contract_has_no_pi_runtime_tools(self) -> None:
         names = {tool.name for tool in asyncio.run(bridge.server.list_tools())}
         retired = {"start_pi_agent", "start_pi_step", "watch_pi_job",

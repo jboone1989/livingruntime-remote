@@ -122,8 +122,8 @@ TOOL_TEXT = {
     "open_browser_takeover": ("Open browser takeover", "Create a short-lived Remote URL for an allowlisted Agent Runtime noVNC browser takeover session."),
     "remote_overview": ("Read Remote control-plane snapshot", "Return one secret-free snapshot of Connector health, managed hosts, durable jobs, pending approvals, credential handles, and recent activity."),
     "list_projects": ("List configured projects", "List the named projects and bounded workspaces configured for this LivingRuntime Remote Connector."),
-    "list_agents": ("List installed agents", "Read installed Claude and other native agent adapters from the paired Connector."),
-    "start_agent": ("Start native agent", "Start a registered agent through its native CLI adapter; options select Claude model, agent, tools, approval mode, and event streaming."),
+    "list_agents": ("Find agents across hosts", "Discover Agent adapters on every paired Connector and their authorized host/project placements; report offline and older Connectors explicitly."),
+    "start_agent": ("Start native agent", "Start a registered Agent on its unique discovered host, or supply device=connector-id::host when there are multiple candidates. Uses native CLI execution."),
     "get_agent_session": ("Read agent session", "Read Claude session status, final result, error, and usage."),
     "send_agent_message": ("Continue agent session", "Send a follow-up to the same native CLI session."),
     "resume_agent": ("Resume agent state", "Read an existing native agent session without starting another run."),
@@ -1235,6 +1235,195 @@ class Relay:
             })
         return rows
 
+    async def discover_agents(self, user_sub: str) -> dict[str, Any]:
+        """Find agents across this user's Connectors, not just the default one.
+
+        Install/registration is separate from permission to launch on a host.
+        Older Connectors without placements are reported as unverified.
+        """
+        connectors = self.connector_statuses(user_sub)
+
+        async def inspect(connector: dict[str, Any]) -> dict[str, Any]:
+            cid = connector["device_id"]
+            row = {
+                "connector_id": cid, "connector_name": connector["name"],
+                "online": bool(connector["online"]), "agents": [],
+                "hosts": [], "status": "offline" if not connector["online"] else "ok",
+            }
+            if not connector["online"]:
+                return row
+            results = await asyncio.gather(
+                asyncio.wait_for(self.call(user_sub, "list_agents", {},
+                                           connector=cid), timeout=15),
+                asyncio.wait_for(self.call(user_sub, "list_projects", {},
+                                           connector=cid), timeout=15),
+                return_exceptions=True,
+            )
+            adapter_data, project_data = results
+            if not isinstance(project_data, dict) or project_data.get("ok") is False:
+                project_data = {}
+            projects = project_data.get("projects", [])
+            if not isinstance(projects, list):
+                projects = []
+            hosts = project_data.get("hosts", [])
+            if isinstance(hosts, list):
+                row["hosts"] = [
+                    {"id": h.get("id"), "projects": [
+                        p.get("name") for p in projects if isinstance(p, dict)
+                        and p.get("host") == h.get("id")
+                    ]}
+                    for h in hosts if isinstance(h, dict) and isinstance(h.get("id"), str)
+                ]
+            if isinstance(adapter_data, Exception) or not isinstance(adapter_data, dict) or adapter_data.get("ok") is False:
+                row["status"] = "discovery_failed"
+                return row
+            adapters = adapter_data.get("agents", [])
+            if not isinstance(adapters, list):
+                row["status"] = "discovery_failed"
+                return row
+            placements = adapter_data.get("placements")
+            for agent in adapters:
+                if not isinstance(agent, dict) or not isinstance(agent.get("id"), str):
+                    continue
+                identity = {
+                    "id": agent["id"], "capabilities": agent.get("capabilities", {}),
+                    "connector_id": cid, "connector_name": connector["name"],
+                }
+                if isinstance(placements, list):
+                    locations = [
+                        (p.get("device"), p.get("project"), True)
+                        for p in placements if isinstance(p, dict)
+                        and p.get("id") == agent["id"]
+                    ]
+                else:
+                    # Previous Connector versions know projects but cannot attest
+                    # their launch allowlists. Never mark these as authorized.
+                    locations = [
+                        (p.get("host"), p.get("name"), None)
+                        for p in projects if isinstance(p, dict)
+                    ]
+                row["agents"].extend([
+                    {**identity, "device": device, "project": project,
+                     "launch_allowed": allowed}
+                    for device, project, allowed in locations
+                    if isinstance(device, str) and isinstance(project, str)
+                ])
+                if not locations:
+                    row["agents"].append({
+                        **identity, "device": None, "project": None,
+                        "launch_allowed": False if isinstance(placements, list) else None,
+                    })
+            if adapter_data.get("inventory_error"):
+                row["status"] = "policy_unavailable"
+            elif not project_data:
+                row["status"] = "projects_unavailable"
+            return row
+
+        results = await asyncio.gather(*(inspect(item) for item in connectors))
+        return {
+            "connectors": results,
+            "agents": [a for row in results for a in row["agents"]],
+            "partial": any(row["status"] != "ok" for row in results),
+            "direct_mode": True,
+        }
+
+    async def discover_devices(self, user_sub: str, include_resources: bool = False) -> dict[str, Any]:
+        """Inventory physical Hosts across the owner's paired Connectors."""
+        connectors = self.connector_statuses(user_sub)
+
+        async def inspect(connector: dict[str, Any]) -> dict[str, Any]:
+            cid = connector["device_id"]
+            row = {"connector_id": cid, "connector_name": connector["name"],
+                   "online": bool(connector["online"]), "devices": [],
+                   "status": "offline" if not connector["online"] else "ok"}
+            if not connector["online"]:
+                return row
+            try:
+                inventory = await asyncio.wait_for(
+                    self.call(user_sub, "list_devices",
+                              {"include_resources": include_resources}, connector=cid),
+                    timeout=25 if include_resources else 15,
+                )
+            except Exception:
+                inventory = None
+            if not isinstance(inventory, dict) or not isinstance(inventory.get("devices"), list):
+                row["status"] = "discovery_failed"
+                return row
+            for host in inventory["devices"]:
+                if isinstance(host, dict) and isinstance(host.get("device_id"), str):
+                    row["devices"].append({
+                        **host, "connector_id": cid,
+                        "connector_name": connector["name"],
+                        "route": cid + "::" + host["device_id"],
+                    })
+            return row
+
+        rows = await asyncio.gather(*(inspect(item) for item in connectors))
+        devices = [host for row in rows for host in row["devices"]]
+        default = next((host for host in devices
+                        if any(c["device_id"] == host["connector_id"] and
+                               c.get("default") for c in connectors)
+                        and host.get("default")), None)
+        return {
+            "devices": devices, "connectors": rows,
+            "default_device": default["device_id"] if default else None,
+            "default_route": default["route"] if default else None,
+            "partial": any(row["status"] != "ok" for row in rows),
+        }
+
+    async def launch_agent(self, user_sub: str, adapter_id: str, goal: str,
+                           project: str, device: str | None = None,
+                           options: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = {"adapter_id": adapter_id, "goal": goal, "project": project,
+                   "device": device, "options": options}
+        if device:
+            # Pin the same Connector for launch and follow-up: the default can
+            # fail over when offline, so guessing a prefix before routing is unsafe.
+            selector, forwarded = self._connector_route(payload)
+            if selector:
+                target = await self._wait_for_online_device(user_sub, selector)
+            else:
+                try:
+                    chosen = self.store.device_for_user(user_sub, device)
+                except RuntimeError as exc:
+                    if not str(exc).startswith("unknown paired connector"):
+                        raise
+                    target = await self._wait_for_online_device(user_sub, None)
+                else:
+                    target = await self._wait_for_online_device(user_sub, chosen["device_id"])
+                    forwarded["device"] = None
+            result = await self.call(user_sub, "start_agent", forwarded,
+                                      connector=target["device_id"])
+            if isinstance(result, dict) and result.get("session_id"):
+                result = {**result, "session_id": target["device_id"] + "::" + result["session_id"]}
+            return result
+        match = await self.resolve_agent(user_sub, adapter_id, project)
+        payload["device"] = match["device"]
+        result = await self.call(user_sub, "start_agent", payload,
+                                  connector=match["connector_id"])
+        if isinstance(result, dict) and result.get("session_id"):
+            result = {**result, "session_id": match["connector_id"] + "::" + result["session_id"]}
+        return result
+
+    async def resolve_agent(self, user_sub: str, adapter_id: str, project: str) -> dict[str, Any]:
+        inventory = await self.discover_agents(user_sub)
+        candidates = [
+            agent for agent in inventory["agents"]
+            if agent["id"] == adapter_id and agent["project"] == project
+            and agent["launch_allowed"] is not False
+        ]
+        if not candidates:
+            raise ValueError(
+                "No reachable registered Agent for this project; call list_agents "
+                "and select a Connector/Host or configure an Agent placement."
+            )
+        if len(candidates) != 1:
+            raise ValueError(
+                "Agent is available on multiple hosts; specify device using "
+                "the exact connector ID and inner host (connector-id::host)."
+            )
+        return candidates[0]
+
     @staticmethod
     def _connector_route(
         args: dict[str, Any],
@@ -1293,6 +1482,17 @@ class Relay:
         *,
         connector: str | None = None,
     ) -> dict[str, Any]:
+        original_session_id = args.get("session_id")
+        session_tools = {"get_agent_session", "send_agent_message", "resume_agent",
+                         "cancel_agent", "watch_agent_events", "decide_agent_permission"}
+        if tool in session_tools and isinstance(original_session_id, str) and "::" in original_session_id:
+            owner, inner_session = original_session_id.split("::", 1)
+            if not owner or not inner_session or (connector is not None and connector != owner):
+                raise ValueError("invalid or conflicting connector-scoped Agent session")
+            connector = owner
+            args = {**args, "session_id": inner_session}
+        else:
+            original_session_id = None
         selector, forwarded_args = self._connector_route(args, connector)
         if selector is None:
             raw_device = forwarded_args.get("device")
@@ -1350,6 +1550,8 @@ class Relay:
                             "connector_id": device["device_id"],
                             "request": request,
                         }
+                    if original_session_id and value.get("session_id") == forwarded_args["session_id"]:
+                        return {**value, "session_id": original_session_id}
                     return value
                 return {"result": value}
             if self.store.cancel_if_queued(user_sub, task_id):
@@ -2847,15 +3049,16 @@ def create_mcp(
 
     @expose("list_agents", True, False, False)
     async def list_agents(connector: str | None = None) -> dict[str, Any]:
-        return await relay.call(_principal("remote:read"), "list_agents", {}, connector=connector)
+        user_sub = _principal("remote:read")
+        if connector:
+            return await relay.call(user_sub, "list_agents", {}, connector=connector)
+        return await relay.discover_agents(user_sub)
 
     @expose("start_agent", False, False, True)
     async def start_agent(adapter_id: str, goal: str, project: str,
                           device: str | None = None, options: dict[str, Any] | None = None) -> dict[str, Any]:
-        return await relay.call(_principal("remote:write"), "start_agent", {
-            "adapter_id": adapter_id, "goal": goal, "project": project,
-            "device": device, "options": options,
-        })
+        return await relay.launch_agent(_principal("remote:write"), adapter_id,
+                                        goal, project, device, options)
 
     @expose("get_agent_session", True, False, False)
     async def get_agent_session(session_id: str, connector: str | None = None) -> dict[str, Any]:
@@ -2897,12 +3100,14 @@ def create_mcp(
                                 payload, connector=connector)
 
     @expose("list_devices", True, False, False)
-    async def list_devices(include_resources: bool = False) -> dict[str, Any]:
-        return await relay.call(
-            _principal("remote:read"),
-            "list_devices",
-            {"include_resources": bool(include_resources)},
-        )
+    async def list_devices(include_resources: bool = False,
+                           connector: str | None = None) -> dict[str, Any]:
+        user_sub = _principal("remote:read")
+        if connector:
+            return await relay.call(
+                user_sub, "list_devices",
+                {"include_resources": bool(include_resources)}, connector=connector)
+        return await relay.discover_devices(user_sub, bool(include_resources))
 
     @expose("read_file", True, False, False)
     async def read_file(path: str, project: str | None = None, device: str | None = None, offset: int = 0,
