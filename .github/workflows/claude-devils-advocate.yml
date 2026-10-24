@@ -16,14 +16,13 @@ concurrency:
 
 jobs:
   challenge:
-    # Only the repository owner can trigger a paid Claude review.
+    # Labels require GitHub triage/write access; slash commands require the repo owner.
     # Limit to Issues (not PR review comments); don't launch on every Issue.
     if: >-
-      github.actor == github.repository_owner &&
       !github.event.issue.pull_request &&
       (
         (github.event_name == 'issues' && github.event.label.name == 'devils-advocate') ||
-        (github.event_name == 'issue_comment' && github.event.comment.body == '/devils-advocate')
+        (github.event_name == 'issue_comment' && github.actor == github.repository_owner && github.event.comment.body == '/devils-advocate')
       )
     runs-on: [self-hosted, Linux, X64, claude-review]
     timeout-minutes: 12
