@@ -1253,8 +1253,10 @@ class Relay:
             if not connector["online"]:
                 return row
             results = await asyncio.gather(
-                self.call(user_sub, "list_agents", {}, connector=cid),
-                self.call(user_sub, "list_projects", {}, connector=cid),
+                asyncio.wait_for(self.call(user_sub, "list_agents", {},
+                                           connector=cid), timeout=15),
+                asyncio.wait_for(self.call(user_sub, "list_projects", {},
+                                           connector=cid), timeout=15),
                 return_exceptions=True,
             )
             adapter_data, project_data = results
@@ -1337,9 +1339,10 @@ class Relay:
             if not connector["online"]:
                 return row
             try:
-                inventory = await self.call(
-                    user_sub, "list_devices", {"include_resources": include_resources},
-                    connector=cid,
+                inventory = await asyncio.wait_for(
+                    self.call(user_sub, "list_devices",
+                              {"include_resources": include_resources}, connector=cid),
+                    timeout=25 if include_resources else 15,
                 )
             except Exception:
                 inventory = None
