@@ -916,11 +916,13 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
  function agentList(machine) {return array(machine?.agents);}
  function renderStats(){
    const m=machines(); $("sum-machines").textContent=m.filter(x=>x.online).length+" / "+m.length;
-   $("sum-agents").textContent=unique(m.flatMap(x=>agentList(x).map(a=>a.id))).length;
+   $("sum-agents").textContent=m.reduce((sum,x)=>sum+unique(agentList(x).map(a=>a.id)).length,0);
    $("sum-projects").textContent=unique(m.flatMap(x=>array(x.projects))).length;
    const o=latest.overview||{},p=o.permissions||{};
-   $("sum-attention").textContent=String(array(p.pending).length+array(o.completion_events).length);
-   $("footer-note").textContent=latest.device_inventory_partial||latest.agent_inventory_partial
+   $("sum-attention").textContent=latest.overview?String(array(p.pending).length+array(o.completion_events).length):"—";
+   $("footer-note").textContent=latest.error
+     ?latest.error
+     :latest.device_inventory_partial||latest.agent_inventory_partial
      ?"部分设备离线或尚不支持发现 · 数据可能不完整":"已连接设备清单";
  }
  function renderDevices(){
@@ -966,11 +968,11 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
  }
  function renderActivity(){
    const o=latest.overview||{},ex=o.execution||{},jobs=array(o.jobs);
-   $("execution").textContent=ex.message||"默认设备没有活动回执。其他设备的任务仍由各自 Connector 管理。";
+   $("execution").textContent=latest.error||ex.message||"默认设备没有活动回执。其他设备的任务仍由各自 Connector 管理。";
    const active=jobs.filter(j=>!j.terminal&&!["SUCCEEDED","FAILED","CANCELLED","CANCELED"].includes(txt(j.status).toUpperCase()));
-   $("active-jobs").innerHTML=active.length?active.slice(0,8).map(j=>'<div class="event"><span>'+esc(j.goal||"任务")+'</span><span>'+esc(j.status||"待处理")+'</span></div>').join(""):'<div class="empty">默认设备当前无运行中的任务</div>';
+   $("active-jobs").innerHTML=active.length?active.slice(0,8).map(j=>'<div class="event"><span>'+esc(j.goal||"任务")+'</span><span>'+esc(j.status||"待处理")+'</span></div>').join(""):'<div class="empty">'+(latest.error?'任务状态不可用，请刷新后再试':'默认设备当前无运行中的任务')+'</div>';
    const approvals=array(o.permissions?.pending),events=array(o.completion_events);
-   $("attention").innerHTML='<div class="event"><span>待审批命令</span><span>'+approvals.length+'</span></div><div class="event"><span>未确认完成回执</span><span>'+events.length+'</span></div>';
+   $("attention").innerHTML='<div class="event"><span>待审批命令</span><span>'+(latest.overview?approvals.length:"未知")+'</span></div><div class="event"><span>未确认完成回执</span><span>'+(latest.overview?events.length:"未知")+'</span></div>';
    const history=array(o.activity).slice(-8).reverse();
    $("recent-activity").innerHTML=history.length?history.map(a=>'<div class="event"><span>'+esc(a.tool||"远程操作")+'</span><span>'+esc(a.ok?"成功":"失败")+'</span></div>').join(""):'<div class="empty">暂无最近活动</div>';
  }
@@ -2619,7 +2621,12 @@ def create_mcp(
         results = await asyncio.gather(*tasks, return_exceptions=True)
         devices_result = results[0] if isinstance(results[0], dict) else {}
         agents_result = results[1] if isinstance(results[1], dict) else {}
-        overview = results[2] if has_default and isinstance(results[2], dict) else None
+        overview = results[2] if has_default and isinstance(results[2], dict) and results[2].get("ok") is not False else None
+        overview_error = None
+        if not has_default:
+            overview_error = "Default Connector offline; task and approval counts are unavailable."
+        elif overview is None:
+            overview_error = "Default Connector overview query failed; task and approval counts are unavailable."
         agents = agents_result.get("agents", [])
         if not isinstance(agents, list):
             agents = []
@@ -2648,7 +2655,7 @@ def create_mcp(
             "agent_inventory_partial": bool(agents_result.get("partial", True)),
             "device_inventory_partial": bool(devices_result.get("partial", True)),
             "cognitionSubscription": cognition_subscription_state(user_sub, "ferro"),
-            "error": None if has_default else "Default Connector offline; other machines remain visible.",
+            "error": overview_error,
         }
 
     @apps.tool(
