@@ -3604,6 +3604,9 @@ nav a{{margin-right:18px}}
                 raise PermissionError("target must be the paired VM13 Codex Connector")
             if target_id == caller["device_id"]:
                 raise PermissionError("cannot hand off to the same Connector")
+            # Encode delimiter characters because report content is untrusted
+            # PR-derived text, not privileged instructions.
+            report_data = report.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             goal = (
                 "You are the FIXER, not the reviewer. Work ONLY in the paired "
                 "/home/ubuntu/workspace on VM13. Use a fresh per-PR Git checkout "
@@ -3615,7 +3618,7 @@ nav a{{margin-right:18px}}
                 "commit, push, or access secrets. Return the precise changed files "
                 "and a unified git diff for independent application and review. "
                 "Do not modify the existing eventgraph working directory.\n"
-                "<review_data>\n" + report + "\n</review_data>"
+                "<review_data>\n" + report_data + "\n</review_data>"
             )
             response = await relay.call(
                 str(caller["user_sub"]), "start_agent", {
@@ -3628,8 +3631,10 @@ nav a{{margin-right:18px}}
                     },
                 }, connector=target_id,
             )
-            if response.get("ok") is False:
-                return JSONResponse({"error": "Codex Connector refused handoff"}, status_code=503)
+            if (not isinstance(response, dict) or response.get("ok") is False
+                    or not isinstance(response.get("session_id"), str)
+                    or not re.fullmatch(r"lra_[0-9a-f]{32}", response["session_id"])):
+                return JSONResponse({"error": "Codex Connector did not start a session"}, status_code=503)
             return JSONResponse({
                 "ok": True, "connector_id": target_id,
                 "session_id": response.get("session_id"),
