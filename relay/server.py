@@ -2846,8 +2846,8 @@ def create_mcp(
         return await relay.call(_principal("remote:read"), "list_projects", {})
 
     @expose("list_agents", True, False, False)
-    async def list_agents() -> dict[str, Any]:
-        return await relay.call(_principal("remote:read"), "list_agents", {})
+    async def list_agents(connector: str | None = None) -> dict[str, Any]:
+        return await relay.call(_principal("remote:read"), "list_agents", {}, connector=connector)
 
     @expose("start_agent", False, False, True)
     async def start_agent(adapter_id: str, goal: str, project: str,
@@ -2858,36 +2858,43 @@ def create_mcp(
         })
 
     @expose("get_agent_session", True, False, False)
-    async def get_agent_session(session_id: str) -> dict[str, Any]:
-        return await relay.call(_principal("remote:read"), "get_agent_session", {"session_id": session_id})
+    async def get_agent_session(session_id: str, connector: str | None = None) -> dict[str, Any]:
+        return await relay.call(_principal("remote:read"), "get_agent_session",
+                                {"session_id": session_id}, connector=connector)
 
     @expose("send_agent_message", False, False, False)
-    async def send_agent_message(session_id: str, message: str) -> dict[str, Any]:
-        return await relay.call(_principal("remote:write"), "send_agent_message", {
-            "session_id": session_id, "message": message,
-        })
+    async def send_agent_message(session_id: str, message: str,
+                                 connector: str | None = None) -> dict[str, Any]:
+        return await relay.call(_principal("remote:write"), "send_agent_message",
+                                {"session_id": session_id, "message": message},
+                                connector=connector)
 
     @expose("resume_agent", True, False, False)
-    async def resume_agent(session_id: str) -> dict[str, Any]:
-        return await relay.call(_principal("remote:read"), "resume_agent", {"session_id": session_id})
+    async def resume_agent(session_id: str, connector: str | None = None) -> dict[str, Any]:
+        return await relay.call(_principal("remote:read"), "resume_agent",
+                                {"session_id": session_id}, connector=connector)
 
     @expose("cancel_agent", False, False, True)
-    async def cancel_agent(session_id: str) -> dict[str, Any]:
-        return await relay.call(_principal("remote:write"), "cancel_agent", {"session_id": session_id})
+    async def cancel_agent(session_id: str, connector: str | None = None) -> dict[str, Any]:
+        return await relay.call(_principal("remote:write"), "cancel_agent",
+                                {"session_id": session_id}, connector=connector)
 
     @expose("watch_agent_events", True, False, False)
-    async def watch_agent_events(session_id: str, after: int = 0) -> dict[str, Any]:
-        return await relay.call(_principal("remote:read"), "watch_agent_events", {
-            "session_id": session_id, "after": after,
-        })
+    async def watch_agent_events(session_id: str, after: int = 0,
+                                 connector: str | None = None) -> dict[str, Any]:
+        return await relay.call(_principal("remote:read"), "watch_agent_events",
+                                {"session_id": session_id, "after": after},
+                                connector=connector)
 
     @expose("decide_agent_permission", False, False, True)
     async def decide_agent_permission(session_id: str, request_id: str, decision: str,
-                                      answers: dict[str, Any] | None = None) -> dict[str, Any]:
+                                      answers: dict[str, Any] | None = None,
+                                      connector: str | None = None) -> dict[str, Any]:
         payload = {"session_id": session_id, "request_id": request_id, "decision": decision}
         if answers is not None:
             payload["answers"] = answers
-        return await relay.call(_principal("remote:write"), "decide_agent_permission", payload)
+        return await relay.call(_principal("remote:write"), "decide_agent_permission",
+                                payload, connector=connector)
 
     @expose("list_devices", True, False, False)
     async def list_devices(include_resources: bool = False) -> dict[str, Any]:

@@ -623,6 +623,21 @@ class RelayServerTests(unittest.TestCase):
                 else:
                     self.assertIsNone(self.store.claim(paired["device_id"]))
 
+    def test_agent_tools_accept_explicit_paired_connector_route(self):
+        mcp = server.create_mcp(server.Relay(self.store))
+        tools = {tool.name: tool for tool in mcp._tool_manager.list_tools()}
+        for name in (
+            "list_agents", "get_agent_session", "send_agent_message",
+            "resume_agent", "cancel_agent", "watch_agent_events",
+            "decide_agent_permission",
+        ):
+            params = tools[name].parameters or {}
+            self.assertIn("connector", params.get("properties", {}), name)
+        routed = server.Relay._connector_route({"session_id": "session-1"},
+                                              "VM-0-13-ubuntu")
+        self.assertEqual(routed[0], "VM-0-13-ubuntu")
+        self.assertEqual(routed[1], {"session_id": "session-1"})
+
     def test_public_tools_do_not_forward_function_locals(self):
         source = inspect.getsource(server.create_mcp)
         self.assertNotIn("locals()", source)
