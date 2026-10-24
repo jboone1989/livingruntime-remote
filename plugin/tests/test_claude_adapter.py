@@ -275,6 +275,31 @@ class ClaudeAdapterTests(unittest.TestCase):
                 self.assertEqual(receipt["status"], "SUCCEEDED", receipt)
                 self.assertEqual(receipt["result"], "Reuse selected")
 
+    def test_unanswered_native_permission_has_independent_wait_limit(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli = Path(td) / "fake-claude"
+            cli.write_text(
+                "#!/usr/bin/python3\nimport json,sys\n"
+                "print(json.dumps({'type':'control_request','request_id':'no-answer',"
+                "'request':{'tool_name':'Bash','input':{'command':'git status'}}}),flush=True)\n"
+                "sys.stdin.readline()\n"
+            )
+            cli.chmod(0o700)
+            record = Path(td) / "session.json"
+            record.write_text(json.dumps({
+                "executable": str(cli), "prompt": "review", "cwd": td,
+                "session_id": "00000000-0000-4000-8000-000000000001",
+                "options": {"duplex": True, "timeout_seconds": 2,
+                            "approval_timeout_seconds": 1},
+            }))
+            worker = threading.Thread(target=run_worker, args=(str(record),), daemon=True)
+            worker.start()
+            worker.join(6)
+            self.assertFalse(worker.is_alive(), "unanswered approval must have a bounded lifetime")
+            receipt = json.loads(record.with_suffix(".result.json").read_text())
+            self.assertEqual(receipt["status"], "STALLED", receipt)
+
+
     def test_decisions_require_live_matching_permission(self):
         with tempfile.TemporaryDirectory() as td:
             cli = Path(td) / "claude"
