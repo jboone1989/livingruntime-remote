@@ -60,6 +60,8 @@ jobs:
           REPO: ${{ github.event.client_payload.repository }}
           PR_NUMBER: ${{ github.event.client_payload.pr_number }}
           EXPECTED_SHA: ${{ github.event.client_payload.sha }}
+          # Stable ID, not the ambiguous duplicated VM13 display name.
+          EVENTGRAPH_CODEX_CONNECTOR_ID: 20501eff-0ef8-42bd-aa5b-283ff5994d52
           GIT_CONFIG_COUNT: "1"
           GIT_CONFIG_KEY_0: "credential.helper"
           GIT_CONFIG_VALUE_0: "!/home/ubuntu/.local/bin/gh auth git-credential"
