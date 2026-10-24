@@ -2882,9 +2882,10 @@ def create_mcp(
         })
 
     @expose("decide_agent_permission", False, False, True)
-    async def decide_agent_permission(session_id: str, request_id: str, decision: str) -> dict[str, Any]:
+    async def decide_agent_permission(session_id: str, request_id: str, decision: str,
+                                      answers: dict[str, Any] | None = None) -> dict[str, Any]:
         return await relay.call(_principal("remote:write"), "decide_agent_permission", {
-            "session_id": session_id, "request_id": request_id, "decision": decision,
+            "session_id": session_id, "request_id": request_id, "decision": decision, "answers": answers,
         })
 
     @expose("list_devices", True, False, False)
