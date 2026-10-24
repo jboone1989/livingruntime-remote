@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.request
 
 MARKER = "<!-- claude-review-worker:v1 sha="
 CONTEXT = "claude-review"
@@ -278,6 +279,54 @@ def format_report(repo, sha, round_number, findings):
     return "\n".join(lines), bool(blocking)
 
 
+def codex_handoff_eligible(pr, repo, diff, round_number, blocking):
+    # Explicit human opt-in. No forks, release branches, migration/CI/auth changes.
+    if not blocking or round_number >= MAX_ROUNDS or repo != "jboone1989/EventGraph":
+        return False
+    if pr.get("base", {}).get("ref") != "develop":
+        return False
+    if "agent:autofix" not in {
+        label.get("name") for label in pr.get("labels", []) if isinstance(label, dict)
+    }:
+        return False
+    paths = set(changed_lines(diff))
+    if not paths or len(paths) > 5:
+        return False
+    return all(
+        path == "packages/backend/src/admin/notes.ts"
+        or path.startswith("apps/web/tests/")
+        or (path.startswith("tests/") and path.endswith(".test.ts"))
+        for path in paths
+    )
+
+
+def handoff_to_vm13(number, sha, report):
+    # Use the VM09 Connector's existing owner-scoped Relay identity.
+    # The device token is never exposed to Claude, Codex, PR code or logs.
+    cfg = json.loads((Path.home() / ".livingruntime" / "relay.json").read_text())
+    target = os.environ.get("EVENTGRAPH_CODEX_CONNECTOR_ID", "").strip()
+    if not re.fullmatch(r"[0-9a-f-]{36}", target):
+        raise ReviewError("VM13 Connector ID is not configured")
+    payload = json.dumps({
+        "connector_id": target, "repository": "jboone1989/EventGraph",
+        "pr_number": number, "sha": sha, "review": report[:14000],
+    }).encode()
+    req = urllib.request.Request(
+        cfg["url"].rstrip("/") + "/device/autofix", data=payload, method="POST",
+        headers={"Authorization": "Bearer " + cfg["device_token"],
+                 "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            result = json.loads(response.read(8192))
+    except Exception as exc:
+        # Error text must never include the Bearer header or token.
+        raise ReviewError("VM13 Relay handoff failed: " + type(exc).__name__) from None
+    if not result.get("ok") or not result.get("session_id"):
+        raise ReviewError("VM13 Connector did not return a Codex session")
+    return result["session_id"]
+
+
 def review(pr, *, repo, gh, claude, work, state, state_path, timeout):
     number, sha = pr["number"], pr["head"]["sha"]
     if pr["state"] != "open" or pr.get("draft"):
@@ -320,6 +369,16 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout):
         post_comment(gh, repo, number, body)
     commit_status(gh, repo, sha, "failure" if blocking else "success",
                   f"{len(findings)} verified findings; {int(blocking)} blocking")
+    if codex_handoff_eligible(pr, repo, diff, round_number, blocking):
+        try:
+            codex_session = handoff_to_vm13(number, sha, body)
+            post_comment(gh, repo, number,
+                         f"<!-- codex-handoff sha={sha} -->\\n"
+                         "VM13 native Codex repair started in a separate checkout: "
+                         f"session \`{codex_session}\`. This handoff only prepares "
+                         "a patch; it does not push, merge or deploy.")
+        except ReviewError as exc:
+            print(f"PR #{number}: Codex handoff blocked: {exc}", file=sys.stderr, flush=True)
     # Commit status and comment are idempotently retried if local state write fails.
     history["reviewed"].append(sha)
     history["outcomes"][sha] = blocking
