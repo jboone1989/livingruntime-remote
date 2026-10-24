@@ -115,6 +115,32 @@ class ClaudeAdapterTests(unittest.TestCase):
             self.assertEqual(result["status"], "SUCCEEDED", result)
             self.assertEqual(result["result"], "completed")
 
+    def test_idle_timeout_reaps_cli_children_holding_stdout(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli = Path(td) / "fake-claude"
+            cli.write_text(
+                "#!/usr/bin/python3\nimport sys,time,signal,subprocess,json\n"
+                "subprocess.Popen([sys.executable,'-c',"
+                "'import time,signal;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)'],"
+                "stdout=sys.stdout,stderr=sys.stderr)\n"
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+                "print(json.dumps({'type':'system','subtype':'init','model':'fake'}),flush=True)\n"
+                "time.sleep(60)\n"
+            )
+            cli.chmod(0o700)
+            record = Path(td) / "session.json"
+            record.write_text(json.dumps({
+                "executable": str(cli), "prompt": "review", "cwd": td,
+                "session_id": "00000000-0000-4000-8000-000000000001",
+                "options": {"timeout_seconds": 1},
+            }))
+            worker = threading.Thread(target=run_worker, args=(str(record),), daemon=True)
+            worker.start()
+            worker.join(8)
+            self.assertFalse(worker.is_alive(), "orphan CLI child kept stdout open after timeout")
+            receipt = json.loads(record.with_suffix(".result.json").read_text())
+            self.assertEqual(receipt["status"], "STALLED", receipt)
+
     def test_adapter_session_receipt_events_and_restart(self):
         with tempfile.TemporaryDirectory() as td:
             cli = Path(td) / "claude"
