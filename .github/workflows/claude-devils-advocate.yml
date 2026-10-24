@@ -1,0 +1,43 @@
+name: Claude Devil's Advocate (proposal review)
+
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  challenge:
+    # Labels require GitHub triage/write access; slash commands require the repo owner.
+    # Limit to Issues (not PR review comments); don't launch on every Issue.
+    if: >-
+      !github.event.issue.pull_request &&
+      (
+        (github.event_name == 'issues' && github.event.label.name == 'devils-advocate') ||
+        (github.event_name == 'issue_comment' && github.actor == github.repository_owner && github.event.comment.body == '/devils-advocate')
+      )
+    concurrency:
+      group: devils-advocate-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    runs-on: [self-hosted, Linux, X64, claude-review]
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Challenge proposal with authenticated Claude Code
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          python3 plugin/scripts/claude_issue_review.py \
+            --repo "$REPO" --issue "$ISSUE_NUMBER" --owner "$OWNER" \
+            --gh /home/ubuntu/.local/bin/gh \
+            --claude /home/ubuntu/.local/bin/claude \
+            --timeout 360
