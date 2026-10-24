@@ -153,10 +153,14 @@ class ClaudeCodeAdapter:
             path = self._path(sid).with_suffix(suffix)
             if path.exists():
                 path.unlink()
+        # PyInstaller one-file bundles have no standalone worker script:
+        # launch a private subcommand of the same executable instead.
+        argv = ([sys.executable, "agent-worker", self.adapter_id, str(self._path(sid))]
+                if getattr(sys, "frozen", False)
+                else [sys.executable, str(self.worker), str(self._path(sid))])
         proc = subprocess.Popen(
-            [sys.executable, str(self.worker), str(self._path(sid))],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True, close_fds=True,
+            argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
         )
         record["pid"] = proc.pid
         self._write(sid, record)
@@ -194,7 +198,8 @@ class ClaudeCodeAdapter:
             return False
         try:
             cmd = (Path("/proc") / str(pid) / "cmdline").read_bytes()
-            return b"claude_worker.py" in cmd and str(self._path(record["session_id"])).encode() in cmd
+            native = b"agent-worker\x00claude-code\x00" in cmd
+            return (b"claude_worker.py" in cmd or native) and str(self._path(record["session_id"])).encode() in cmd
         except OSError:
             return False
 
