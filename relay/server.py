@@ -1325,6 +1325,25 @@ class Relay:
             "direct_mode": True,
         }
 
+    async def resolve_agent(self, user_sub: str, adapter_id: str, project: str) -> dict[str, Any]:
+        inventory = await self.discover_agents(user_sub)
+        candidates = [
+            agent for agent in inventory["agents"]
+            if agent["id"] == adapter_id and agent["project"] == project
+            and agent["launch_allowed"] is not False
+        ]
+        if not candidates:
+            raise ValueError(
+                "No reachable registered Agent for this project; call list_agents "
+                "and select a Connector/Host or configure an Agent placement."
+            )
+        if len(candidates) != 1:
+            raise ValueError(
+                "Agent is available on multiple hosts; specify device using "
+                "the exact connector ID and inner host (connector-id::host)."
+            )
+        return candidates[0]
+
     @staticmethod
     def _connector_route(
         args: dict[str, Any],
@@ -2977,23 +2996,7 @@ def create_mcp(
             if isinstance(result, dict) and result.get("session_id") and target:
                 result = {**result, "session_id": target["device_id"] + "::" + result["session_id"]}
             return result
-        inventory = await relay.discover_agents(user_sub)
-        candidates = [
-            agent for agent in inventory["agents"]
-            if agent["id"] == adapter_id and agent["project"] == project
-            and agent["launch_allowed"] is not False
-        ]
-        if not candidates:
-            raise ValueError(
-                "No reachable registered Agent for this project; call list_agents "
-                "and select a Connector/Host or configure an Agent placement."
-            )
-        if len(candidates) != 1:
-            raise ValueError(
-                "Agent is available on multiple hosts; specify device using "
-                "the exact connector ID and inner host (connector-id::host)."
-            )
-        match = candidates[0]
+        match = await relay.resolve_agent(user_sub, adapter_id, project)
         payload["device"] = match["device"]
         result = await relay.call(user_sub, "start_agent", payload,
                                   connector=match["connector_id"])
