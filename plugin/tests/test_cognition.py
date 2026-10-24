@@ -56,7 +56,8 @@ class CognitionQueueTests(unittest.TestCase):
         self.assertEqual(first["status"], "PENDING")
         path = self.root / "requests" / "llmreq_fixed.json"
         self.assertTrue(path.exists())
-        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        if os.name != "nt":  # Windows does not implement POSIX chmod bits
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         event = first["activation_event"]
         self.assertTrue(event["event_id"].startswith("lrcog_"))
         self.assertIsNone(event["event_forwarded_at"])

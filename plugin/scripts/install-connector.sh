@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 # Install a verified-release executable. Pairing is a separate action.
-VERSION="${LIVINGRUNTIME_VERSION:-v0.4.69}"
+VERSION="${LIVINGRUNTIME_VERSION:-v0.4.70}"
 BASE="${LIVINGRUNTIME_RELEASE_BASE:-https://github.com/jboone1989/livingruntime-remote/releases/download}"
 DEST="${LIVINGRUNTIME_INSTALL_DIR:-$HOME/.local/bin}"
 case "$VERSION" in v[0-9]* ) ;; *) echo "Invalid release version" >&2; exit 2 ;; esac
@@ -32,7 +32,7 @@ if [ -t 1 ] && [ -r /dev/tty ] \
     printf 'No code supplied; run %s to pair later.\n' "$DEST/livingruntime-remote"
     exit 0
   fi
-  # The verified v0.4.69 binary already understands --pair-file. Keep the
+  # The verified v0.4.70 binary understands --pair-file. Keep the
   # one-command installer compatible with an older published binary too.
   PAIR_FILE="$(mktemp "$DEST/.livingruntime-pair.XXXXXXXX")"
   trap 'rm -f "$PAIR_FILE"' EXIT HUP INT TERM

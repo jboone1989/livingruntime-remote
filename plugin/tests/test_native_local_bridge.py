@@ -27,7 +27,7 @@ class NativeLocalBridgeTests(unittest.TestCase):
                             "main": {
                                 "transport": "local",
                                 "ssh_host": "local",
-                                "path_style": "posix",
+                                "path_style": "windows" if os.name == "nt" else "posix",
                                 "roots": [str(root)],
                                 "units": ["demo.service"],
                             }
