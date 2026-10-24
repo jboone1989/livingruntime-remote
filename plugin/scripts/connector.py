@@ -555,7 +555,7 @@ def main(argv: list[str] | None = None) -> None:
     worker_parser.add_argument("spec_path")
 
     agent_worker_parser = sub.add_parser("agent-worker", help=argparse.SUPPRESS)
-    agent_worker_parser.add_argument("adapter", choices=("claude-code", "codex"))
+    agent_worker_parser.add_argument("adapter", choices=("claude-code", "codex", "pi"))
     agent_worker_parser.add_argument("record")
 
     args = parser.parse_args(actual_argv)
@@ -600,7 +600,7 @@ def main(argv: list[str] | None = None) -> None:
         # Python modules are not accessible as disk scripts to a subprocess.
         # Only accept owner-scoped, pre-existing native session records.
         import uuid
-        kind = "codex" if args.adapter == "codex" else "claude"
+        kind = {"codex": "codex", "claude-code": "claude", "pi": "pi"}[args.adapter]
         root = Path(os.environ.get(
             f"LIVINGRUNTIME_{kind.upper()}_JOBS",
             str(Path.home() / ".livingruntime" / f"{kind}-jobs"),
@@ -616,6 +616,9 @@ def main(argv: list[str] | None = None) -> None:
         if args.adapter == "codex":
             import codex_worker
             codex_worker.main(str(record))
+        elif args.adapter == "pi":
+            import pi_worker
+            pi_worker.main(str(record))
         else:
             import claude_worker
             claude_worker.main(str(record))

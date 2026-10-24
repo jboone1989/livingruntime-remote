@@ -192,6 +192,56 @@ Use `python3 plugin/scripts/adapterctl.py install livingruntime_adapter_http mak
 
 Agent launches are disabled unless the connector environment explicitly specifies a matching `LIVINGRUNTIME_AGENT_LAUNCH_ALLOWLIST` entry of `device:project:adapter_id`. Restart after installation or environment changes. Direct file/Git/exec operation remains available if no agent is installed or an adapter fails to load. Durable Job receipts require explicit ACK, and ChatGPT autonomous wake-up still requires an authenticated host-side event subscription.
 
+
+### Pi Harness: GPT-directed tools and GLM sub-agent (optional)
+
+The Pi integration supports two modes without embedding a second general-purpose
+agent in Remote:
+
+- **Direct mode:** `pi_tool(tool, params, project, device)` runs the official
+  Pi SDK `read`, `edit`, `write`, `grep`, `find`, or `ls` tools
+  with **zero Pi LLM calls**. `pi_tool(tool="bash", params={"argv":[...]})`
+  delegates to Remote's existing `exec` authorization (including exact
+  approvals). It does not bypass the Remote shell policy. SDK tool mode requires
+  a **host-local Connector**, not the legacy SSH execution route.
+- **Delegation mode:** the optional `livingruntime_adapter_pi` uses native
+  `pi --mode json --provider zai-coding-cn --model glm-5.3` by default.
+  Native Pi performs its own model/tool loop; Remote only owns Agent Session
+  identity, detached execution, observable events, cancellation, and durable
+  completion receipts. `start_agent(adapter_id="pi", ...)` is the entrypoint.
+  Caller-selected `options.provider` and `options.model` override defaults.
+
+For a source-based Connector with Node.js 22.19+, install the pinned SDK
+dependency in the checked-out plugin directory:
+
+```bash
+npm ci --prefix plugin --ignore-scripts
+python3 plugin/scripts/adapterctl.py install livingruntime_adapter_pi make
+```
+
+Pi CLI is provided by `plugin/node_modules/.bin/pi` after installation, or
+may be specified with `LIVINGRUNTIME_PI_EXECUTABLE`. The Pi provider must
+already be authenticated on the Connector host via native Pi login or an
+appropriate provider environment variable (for example
+`ZAI_CODING_CN_API_KEY`); credentials are not passed in Remote prompts.
+Authorize the Agent with the existing `launch_allowlist`, and set
+`pi_workspaces` as an owner-controlled `device:project` to absolute-path map
+in `~/.livingruntime/agent-policy.json` (mode 0600). For compatible existing
+installations, the previous `claude_workspaces` map is used if there is no
+Pi-specific entry.
+
+Install the plugin Node dependencies on **each host** that will execute direct
+Pi SDK tools. A frozen Connector without this Node sidecar cannot execute
+`pi_tool` until the sidecar is installed. No real GLM request is needed for
+the direct tool path.
+
+Validation:
+
+```bash
+node --test plugin/tests/test_pi_harness.mjs
+python3 -m unittest discover -s plugin/tests -p test_pi_adapter.py
+```
+
 ### Claude Code adapter (optional, 0.4.65)
 
 VM09 has Claude Code installed. The optional `livingruntime_adapter_claude` starts read-only planning tasks in a detached worker with owner-only persisted state and result receipts. It supports fresh sessions, follow-up prompts, explicit cancellation and status retrieval even after a connector restart. Its initial mode is strictly `--permission-mode plan --max-turns 10`, not autonomous edits or bypassPermissions. No native event push or host automatic wake-up is available; consumers should query `get_agent_session` or use the durable Job receipt path.

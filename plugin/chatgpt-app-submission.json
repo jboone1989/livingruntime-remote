@@ -8,6 +8,14 @@
     "category": "DEVELOPER_TOOLS"
   },
   "tools": {
+    "pi_tool": {
+      "annotations": {"readOnlyHint": false, "openWorldHint": false, "destructiveHint": true},
+      "justifications": {
+        "read_only_justification": "Pi native tools can edit project files.",
+        "open_world_justification": "Runs within an authorized Connector workspace; model inference is not performed.",
+        "destructive_justification": "Edit/write can mutate code; shell commands use existing Remote exec approval."
+      }
+    },
     "diagnostics": {
       "annotations": {
         "readOnlyHint": true,
