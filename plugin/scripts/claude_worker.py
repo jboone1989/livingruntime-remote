@@ -6,6 +6,7 @@ No second agent engine is implemented here.
 from __future__ import annotations
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -141,6 +142,27 @@ def public_events(raw):
                  "turns": raw.get("num_turns"), "duration_ms": raw.get("duration_ms")}]
     return []
 
+def terminate_cli_group(proc):
+    """Ask native Claude to stop, then reap any Bash/MCP children in its group."""
+    if proc is None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        pass
+    # Even when Claude exits promptly, a child may still hold stdout open.
+    # Always clear remaining members of the isolated Claude process group.
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait()
+
+
 def main(path):
     record_path = Path(path)
     receipt_path = record_path.with_suffix(".result.json")
@@ -183,6 +205,7 @@ def main(path):
             proc = subprocess.Popen(
                 args, cwd=record["cwd"], stdin=subprocess.PIPE if opts.get("duplex") else subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
+                start_new_session=True,
             )
             stderr_parts = []
             def collect_stderr():
@@ -191,6 +214,13 @@ def main(path):
                         stderr_parts.append(chunk)
             stderr_thread = threading.Thread(target=collect_stderr, daemon=True)
             stderr_thread.start()
+            if threading.current_thread() is threading.main_thread():
+                def on_worker_term(_signum, _frame):
+                    # Native cancel targets the worker's original process group.
+                    # Claude lives in another group so its own children can be reaped.
+                    terminate_cli_group(proc)
+                    raise SystemExit(143)
+                signal.signal(signal.SIGTERM, on_worker_term)
             if opts.get("duplex"):
                 message = {"type": "user", "message": {"role": "user", "content": record["prompt"]}}
                 with stdin_lock:
@@ -243,15 +273,9 @@ def main(path):
                         now = time.monotonic()
                         expired = ((not pending_approvals and now >= deadline[0]) or
                                    (bool(pending_approvals) and now - min(pending_approvals.values()) >= approval_timeout))
-                    if expired and proc.poll() is None:
+                    if expired:
                         killed = True
-                        # Claude handles SIGTERM and terminates active Bash descendants.
-                        # SIGKILL would skip its native process-tree cleanup.
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
+                        terminate_cli_group(proc)
                         return
 
             threading.Thread(target=monitor_timeout, daemon=True).start()
@@ -305,12 +329,7 @@ def main(path):
             finally:
                 stop_monitor.set()
                 if proc.poll() is None:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                        proc.wait()
+                    terminate_cli_group(proc)
             if killed:
                 output.update({"status": "STALLED", "error": "Claude task timed out"})
             elif returncode:
