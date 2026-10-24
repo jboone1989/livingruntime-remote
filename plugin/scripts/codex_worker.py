@@ -5,6 +5,7 @@ Consume official `codex exec --json` events; no custom model API or agent loop.
 from __future__ import annotations
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -25,7 +26,7 @@ def cli_args(record):
         if str(uuid.UUID(thread_id)) != thread_id:
             raise ValueError("invalid native Codex thread id")
         # Noninteractive resume uses the persistent native Codex conversation.
-        return [exe, "exec", "resume", "--json", thread_id, record["prompt"]]
+        return [exe, "exec", "--json", "resume", thread_id, record["prompt"]]
     args = [exe, "exec", "--json", "--cd", record["cwd"],
             "--sandbox", opts.get("sandbox", "read-only")]
     if opts.get("model"):
@@ -83,6 +84,7 @@ def main(path):
     thread_path = record_path.with_suffix(".thread")
     result = {"status": "FAILED", "finished_at": time.time()}
     proc = None
+    old_sigterm_handler = None
     seq = 0
     if event_path.exists():
         for line in event_path.read_text(encoding="utf-8").splitlines():
@@ -114,6 +116,13 @@ def main(path):
             proc = subprocess.Popen(args, cwd=record["cwd"], stdin=subprocess.DEVNULL,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     text=True, bufsize=1, start_new_session=True)
+            if threading.current_thread() is threading.main_thread():
+                old_sigterm_handler = signal.getsignal(signal.SIGTERM)
+                def on_worker_term(_signum, _frame):
+                    result.update({"status": "CANCELLED", "error": "Codex worker cancelled"})
+                    terminate_cli_group(proc)
+                    raise SystemExit(143)
+                signal.signal(signal.SIGTERM, on_worker_term)
 
             def drain_stderr():
                 total = 0
@@ -189,6 +198,8 @@ def main(path):
         result["error"] = type(exc).__name__ + ": " + str(exc)[:500]
     finally:
         done.set()
+        if old_sigterm_handler is not None and threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGTERM, old_sigterm_handler)
         result["finished_at"] = time.time()
         tmp = receipt_path.with_name(receipt_path.name + ".tmp")
         with tmp.open("w", encoding="utf-8") as f:
