@@ -97,7 +97,8 @@ COGNITION_WIDGET_LEGACY_URI = "ui://livingruntime-remote/agent-cognition-watch-v
 COGNITION_WIDGET_V3_URI = "ui://livingruntime-remote/agent-cognition-watch-v3.html"
 COGNITION_WIDGET_URI = "ui://livingruntime-remote/agent-cognition-watch-v5.html"
 CONTROL_PLANE_WIDGET_V10_URI = "ui://livingruntime-remote/control-plane-v10.html"
-CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v11.html"
+CONTROL_PLANE_WIDGET_V11_URI = "ui://livingruntime-remote/control-plane-v11.html"
+CONTROL_PLANE_WIDGET_URI = "ui://livingruntime-remote/control-plane-v12.html"
 CONTROL_PLANE_WIDGET_V8_URI = "ui://livingruntime-remote/control-plane-v8.html"
 CONTROL_PLANE_WIDGET_V7_URI = "ui://livingruntime-remote/control-plane-v7.html"
 CONTROL_PLANE_WIDGET_V6_URI = "ui://livingruntime-remote/control-plane-v6.html"
@@ -2067,11 +2068,18 @@ def create_mcp(
         description="Backward-compatible dashboard for sessions using the v10 resource URI.",
     )
     add_widget_resource(
-        CONTROL_PLANE_WIDGET_URI,
+        CONTROL_PLANE_WIDGET_V11_URI,
         CONTROL_PLANE_WIDGET_HTML,
+        name="remote-control-plane-v11",
+        title="LivingRuntime Remote control plane (legacy)",
+        description="Backward-compatible v11 dashboard for existing ChatGPT conversations.",
+    )
+    add_widget_resource(
+        CONTROL_PLANE_WIDGET_URI,
+        CONTROL_PLANE_WIDGET_V12_HTML,
         name="remote-control-plane",
-        title="LivingRuntime Remote control plane",
-        description="Read-only execution-truth snapshot of connector health, real server activity, durable jobs, approvals, credential handles, and recent activity.",
+        title="LivingRuntime Remote · Machines & Agents",
+        description="Explore your connected machines, native Agent adapters, projects and live work in one responsive dashboard.",
         display_modes=["inline", "pip", "fullscreen"],
     )
     add_widget_resource(
@@ -2300,38 +2308,59 @@ def create_mcp(
         return list(hosts.values())
 
     async def remote_overview(include_resources: bool = False) -> dict[str, Any]:
+        """One owner-scoped UI snapshot; machines and Agents are not default-Connector data."""
         user_sub = _principal("remote:read")
         device = relay.device_status(user_sub)
-        connector = None
-        if device is not None:
-            connector = {
-                "name": device.get("name"),
-                "online": bool(device.get("online")),
-                "last_seen": device.get("last_seen"),
-                "stale_for_seconds": device.get("stale_for_seconds"),
-            }
-        if device is None or not device.get("online"):
-            return {
-                "version": VERSION,
-                "generated_at": time.time(),
-                "connector": connector or {"online": False},
-                "overview": None,
-                "hosts": enrolled_hosts(user_sub),
-                "error": "paired connector is offline or unavailable",
-            }
-        overview = await relay.call(
-            user_sub,
-            "remote_overview",
-            {"include_resources": bool(include_resources)},
+        connectors = relay.connector_statuses(user_sub)
+        connector = (
+            {"name": device.get("name"), "online": bool(device.get("online")),
+             "last_seen": device.get("last_seen"),
+             "stale_for_seconds": device.get("stale_for_seconds")}
+            if device is not None else {"online": False}
         )
+        tasks = [
+            relay.discover_devices(user_sub, include_resources=False),
+            relay.discover_agents(user_sub),
+        ]
+        has_default = bool(device and device.get("online"))
+        if has_default:
+            tasks.append(relay.call(
+                user_sub, "remote_overview",
+                {"include_resources": bool(include_resources)},
+            ))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        devices_result = results[0] if isinstance(results[0], dict) else {}
+        agents_result = results[1] if isinstance(results[1], dict) else {}
+        overview = results[2] if has_default and isinstance(results[2], dict) else None
+        agents = agents_result.get("agents", [])
+        if not isinstance(agents, list):
+            agents = []
+        machines = devices_result.get("devices", [])
+        if not isinstance(machines, list):
+            machines = []
+        machines = [
+            {**machine, "agents": [
+                a for a in agents
+                if isinstance(a, dict) and a.get("connector_id") == machine.get("connector_id")
+            ]}
+            for machine in machines if isinstance(machine, dict)
+        ]
         return {
             "version": VERSION,
             "generated_at": time.time(),
             "connector": connector,
-            "connectors": [{"name": c.get("name"), "online": c.get("online"), "default": c.get("default")} for c in relay.connector_statuses(user_sub)],
+            "connectors": [
+                {"device_id": c.get("device_id"), "name": c.get("name"),
+                 "online": bool(c.get("online")), "default": bool(c.get("default"))}
+                for c in connectors
+            ],
             "overview": overview,
-            "hosts": enrolled_hosts(user_sub),
+            "hosts": enrolled_hosts(user_sub),  # Compatibility with v11 snapshots.
+            "machines": machines,
+            "agent_inventory_partial": bool(agents_result.get("partial", True)),
+            "device_inventory_partial": bool(devices_result.get("partial", True)),
             "cognitionSubscription": cognition_subscription_state(user_sub, "ferro"),
+            "error": None if has_default else "Default Connector offline; other machines remain visible.",
         }
 
     @apps.tool(
