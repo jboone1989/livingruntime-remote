@@ -79,7 +79,7 @@ class RelayServerTests(unittest.TestCase):
             claude = asyncio.run(relay.resolve_agent("owner", "claude-code", "docs"))
 
         self.assertEqual(codex["connector_id"], "vm13")
-        self.assertEqual(claude["device"], "secondary")
+        self.assertEqual(claude["device"], "vm09")
         self.assertTrue(codex["launch_allowed"])
         self.assertEqual(len([a for a in snapshot["agents"] if a["id"] == "claude-code"]), 2)
         self.assertEqual(snapshot["connectors"][-1]["status"], "offline")
@@ -105,10 +105,34 @@ class RelayServerTests(unittest.TestCase):
              patch.object(relay, "call", side_effect=fake_call):
             result = asyncio.run(relay.discover_devices("owner"))
         self.assertEqual([d["route"] for d in result["devices"]],
-                         ["first::main", "second::main"])
-        self.assertEqual(result["default_route"], "first::main")
+                         ["first", "second", "old"])
+        self.assertEqual(result["default_route"], "first")
         self.assertEqual(result["connectors"][-1]["status"], "offline")
         self.assertTrue(result["partial"])
+
+    def test_one_connector_with_multiple_legacy_hosts_is_one_device(self):
+        relay = server.Relay(self.store)
+        connectors = [{"device_id": "cid", "name": "gateway",
+                       "online": True, "default": True}]
+
+        async def legacy(user, tool, args, *, connector=None):
+            return {"devices": [
+                {"device_id": "main", "default": True, "hostname": "vm-a",
+                 "transport": "ssh", "ssh_host": "vm-a", "projects": ["a"]},
+                {"device_id": "other", "default": False, "hostname": "vm-b",
+                 "transport": "ssh", "ssh_host": "vm-b", "projects": ["b"]}]}
+
+        with patch.object(relay, "connector_statuses", return_value=connectors), \
+             patch.object(relay, "call", side_effect=legacy):
+            result = asyncio.run(relay.discover_devices("owner"))
+        self.assertEqual(len(result["devices"]), 1)
+        device = result["devices"][0]
+        self.assertEqual(device["device_id"], "cid")
+        self.assertIsNone(device["hostname"])  # SSH targets are not this machine
+        self.assertEqual(device["route"], "cid")
+        self.assertEqual(device["legacy_managed_hosts"], 2)
+        self.assertTrue(device["migration_required"])
+        self.assertEqual(result["connectors"][0]["status"], "legacy_configuration")
 
     def test_agent_resolution_rejects_ambiguity_and_unauthorized_hosts(self):
         relay = server.Relay(self.store)
@@ -165,7 +189,7 @@ class RelayServerTests(unittest.TestCase):
 
         async def launched(user, tool, args, *, connector=None):
             self.assertEqual(connector, "vm13")
-            self.assertEqual(args["device"], "second")
+            self.assertIsNone(args["device"])
             return {"session_id": "real"}
 
         with patch.object(relay, "resolve_agent", side_effect=resolved), \
