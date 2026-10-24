@@ -3,6 +3,8 @@ name: Claude PR review (subscription CLI)
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
+  repository_dispatch:
+    types: [claude-pr-review]
 
 permissions:
   contents: read
@@ -11,7 +13,7 @@ permissions:
   statuses: write
 
 concurrency:
-  group: claude-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+  group: claude-review-${{ github.event.client_payload.repository || github.repository }}-${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
