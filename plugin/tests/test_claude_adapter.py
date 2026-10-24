@@ -243,16 +243,15 @@ class ClaudeAdapterTests(unittest.TestCase):
                 "sys.stdin.read()\n"
             )
             cli.chmod(0o700)
-            record = Path(td) / "session.json"
-            record.write_text(json.dumps({
-                "executable": str(cli), "prompt": "Choose", "cwd": td,
-                "session_id": "00000000-0000-4000-8000-000000000001",
-                "options": {"duplex": True, "timeout_seconds": 2},
-            }))
+            sid = "00000000-0000-4000-8000-000000000001"
             with patch.dict(os.environ, {"LIVINGRUNTIME_CLAUDE_JOBS": td}):
                 adapter = ClaudeCodeAdapter(str(cli))
-                sid = "00000000-0000-4000-8000-000000000001"
-                adapter._write(sid, {"session_id": sid, "status": "RUNNING", "started_at": time.time()})
+                record = adapter._path(sid)
+                adapter._write(sid, {
+                    "executable": str(cli), "prompt": "Choose", "cwd": td,
+                    "session_id": sid, "status": "RUNNING", "started_at": time.time(),
+                    "options": {"duplex": True, "timeout_seconds": 2},
+                })
                 worker = threading.Thread(target=run_worker, args=(str(record),), daemon=True)
                 worker.start()
                 event_path = record.with_suffix(".events.jsonl")
