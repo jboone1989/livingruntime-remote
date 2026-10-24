@@ -190,12 +190,67 @@ class ClaudeAdapterTests(unittest.TestCase):
             self.assertEqual(receipt["usage"]["num_turns"], 15)
             events = [json.loads(x) for x in record.with_suffix(".events.jsonl").read_text().splitlines()]
             self.assertEqual(events[1]["kind"], "tool_call")
-            self.assertEqual([e["seq"] for e in events], [1, 2, 3])
+            self.assertEqual([e["seq"] for e in events], [1, 2, 3, 4])
             cli.write_text("#!/usr/bin/python3\nprint('bad result')\n")
             run_worker(str(record))
             fail = json.loads(record.with_suffix(".result.json").read_text())
             self.assertEqual(fail["status"], "FAILED")
             self.assertIn("no result", fail["error"])
+
+    def test_background_turn_result_is_not_session_completion(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli = Path(td) / "fake-claude"
+            cli.write_text(
+                "#!/usr/bin/python3\nimport json,time,sys\n"
+                "sys.stdin.readline()\n"
+                "print(json.dumps({'type':'result','result':'foreground done','is_error':False}),flush=True)\n"
+                "time.sleep(0.4)\n"
+                "print(json.dumps({'type':'system','subtype':'task_notification','task_id':'bg1'}),flush=True)\n"
+                "print(json.dumps({'type':'result','result':'background done','is_error':False}),flush=True)\n"
+                "sys.stdin.read()\n"
+            )
+            cli.chmod(0o700)
+            record = Path(td) / "session.json"
+            record.write_text(json.dumps({
+                "executable": str(cli), "prompt": "review", "cwd": td,
+                "session_id": "00000000-0000-4000-8000-000000000001",
+                "options": {"duplex": True, "timeout_seconds": 2},
+            }))
+            run_worker(str(record))
+            result = json.loads(record.with_suffix(".result.json").read_text())
+            self.assertEqual(result["status"], "SUCCEEDED", result)
+            self.assertEqual(result["result"], "background done")
+            events = [json.loads(x) for x in record.with_suffix(".events.jsonl").read_text().splitlines()]
+            self.assertEqual([e["kind"] for e in events],
+                             ["turn_result", "task_notification", "turn_result", "completion"])
+            self.assertEqual(events[-1]["status"], "SUCCEEDED")
+
+    def test_duplex_background_result_keeps_idle_monitor_running(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli = Path(td) / "fake-claude"
+            cli.write_text(
+                "#!/usr/bin/python3\nimport json,time,sys\n"
+                "sys.stdin.readline()\n"
+                "print(json.dumps({'type':'result','result':'foreground done','is_error':False}),flush=True)\n"
+                "time.sleep(8)\n"
+            )
+            cli.chmod(0o700)
+            record = Path(td) / "session.json"
+            record.write_text(json.dumps({
+                "executable": str(cli), "prompt": "review", "cwd": td,
+                "session_id": "00000000-0000-4000-8000-000000000001",
+                "options": {"duplex": True, "timeout_seconds": 1},
+            }))
+            worker = threading.Thread(target=run_worker, args=(str(record),), daemon=True)
+            worker.start()
+            worker.join(6)
+            self.assertFalse(worker.is_alive(), "worker lost idle timeout after early result")
+            receipt = json.loads(record.with_suffix(".result.json").read_text())
+            self.assertEqual(receipt["status"], "STALLED", receipt)
+            events = [json.loads(x) for x in record.with_suffix(".events.jsonl").read_text().splitlines()]
+            self.assertEqual(events[0]["kind"], "turn_result")
+            self.assertEqual(events[-1]["kind"], "completion")
+            self.assertEqual(events[-1]["status"], "STALLED")
 
     def test_native_structured_output_without_text(self):
         with tempfile.TemporaryDirectory() as td:
@@ -299,7 +354,7 @@ class ClaudeAdapterTests(unittest.TestCase):
             record.write_text(json.dumps({**json.loads(record.read_text()), "continue": True}))
             run_worker(str(record))
             events = [json.loads(x) for x in record.with_suffix(".events.jsonl").read_text().splitlines()]
-            self.assertEqual([e["seq"] for e in events], [1, 2])
+            self.assertEqual([e["seq"] for e in events], [1, 2, 3, 4])
 
     def test_native_ask_user_question_answers(self):
         with tempfile.TemporaryDirectory() as td:

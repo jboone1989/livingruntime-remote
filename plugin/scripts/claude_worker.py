@@ -138,7 +138,9 @@ def public_events(raw):
     if kind == "control_cancel_request":
         return [{"kind": "permission_cancelled", "request_id": str(raw.get("request_id", ""))[:128]}]
     if kind == "result":
-        return [{"kind": "completion", "success": not bool(raw.get("is_error")),
+        # Claude may emit a per-turn result while native background tasks
+        # continue to run. Only process exit completes the Remote session.
+        return [{"kind": "turn_result", "success": not bool(raw.get("is_error")),
                  "turns": raw.get("num_turns"), "duration_ms": raw.get("duration_ms")}]
     return []
 
@@ -322,8 +324,8 @@ def main(path):
                                 proc.stdin.write(json.dumps(deny) + "\n")
                                 proc.stdin.flush()
                     if raw.get("type") == "result" and opts.get("duplex"):
-                        # Claude waits for EOF in stream-json input mode.
-                        stop_monitor.set()
+                        # Signal no more input, but keep timeout supervision active
+                        # until stdout EOF: print mode can wait for background tasks.
                         with stdin_lock:
                             if not proc.stdin.closed:
                                 proc.stdin.close()
@@ -368,6 +370,15 @@ def main(path):
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, receipt_path)
+        # A completion event means the CLI process has ACTUALLY exited,
+        # not merely emitted the last foreground turn's result.
+        with events_path.open("a", encoding="utf-8") as f:
+            os.chmod(events_path, 0o600)
+            f.write(json.dumps({"seq": seq + 1, "kind": "completion",
+                                "status": output["status"],
+                                "success": output["status"] == "SUCCEEDED"},
+                               ensure_ascii=False) + "\n")
+            f.flush()
 
 
 if __name__ == "__main__":
