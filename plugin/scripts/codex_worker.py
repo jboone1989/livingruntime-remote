@@ -26,7 +26,8 @@ def cli_args(record):
         if str(uuid.UUID(thread_id)) != thread_id:
             raise ValueError("invalid native Codex thread id")
         # Noninteractive resume uses the persistent native Codex conversation.
-        return [exe, "exec", "--json", "resume", thread_id, record["prompt"]]
+        return [exe, "exec", "--json", "--sandbox", opts.get("sandbox", "read-only"),
+                "resume", thread_id, record["prompt"]]
     args = [exe, "exec", "--json", "--cd", record["cwd"],
             "--sandbox", opts.get("sandbox", "read-only")]
     if opts.get("model"):
