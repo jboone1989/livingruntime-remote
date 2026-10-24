@@ -771,7 +771,7 @@ CONTROL_PLANE_WIDGET_V12_HTML = r"""<!doctype html>
   color-scheme:light dark;--txt:var(--color-text-primary,#202225);
   --sub:var(--color-text-secondary,#6c7078);--stroke:var(--color-border-secondary,rgba(128,128,128,.23));
   --wash:var(--color-background-secondary,rgba(128,128,128,.065));--bg:var(--color-background-primary,transparent);
-  --good:#189663;--warn:#b67a1b;--bad:#cf4449;
+  --good:#189663;--warn:#b67a1b;--bad:#cf4449;--action:#242424;--action-text:#fff;
 }
 *{box-sizing:border-box}
 body{margin:0;padding:12px;background:transparent;color:var(--txt);font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
@@ -780,7 +780,7 @@ button{cursor:pointer}
 .shell{max-width:1120px;margin:auto}
 .mast{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap}
 .identity{display:flex;align-items:center;gap:10px}
-.logo{display:grid;place-items:center;width:34px;height:34px;border-radius:11px;background:var(--txt);color:var(--bg);font-weight:800;font-size:12px}
+.logo{display:grid;place-items:center;width:34px;height:34px;border-radius:11px;background:var(--action);color:var(--action-text);font-weight:800;font-size:12px}
 .heading{font-weight:750;font-size:17px;line-height:1.15;letter-spacing:-.02em}
 .subtitle,.muted{color:var(--sub)}
 .subtitle{font-size:11px;margin-top:4px}
@@ -823,7 +823,7 @@ button{cursor:pointer}
 select,textarea{width:100%;border:1px solid var(--stroke);border-radius:9px;padding:8px 10px;background:var(--bg);outline-offset:2px}
 textarea{min-height:72px;resize:vertical}
 .task-label{margin:9px 0}
-.primary{border:0;border-radius:9px;background:var(--txt);color:var(--bg);padding:9px 13px;font-weight:750}
+.primary{border:0;border-radius:9px;background:var(--action);color:var(--action-text);padding:9px 13px;font-weight:750}
 .task-note{font-size:11px;color:var(--sub);margin-top:6px}
 .notice{font-size:11px;color:var(--sub);padding-top:7px}
 .empty{padding:15px 8px;color:var(--sub);text-align:center;border:1px dashed var(--stroke);border-radius:10px}
@@ -836,6 +836,7 @@ body[data-view=activity] #activity-view{display:block}
 body[data-view=activity] #devices-view{display:none}
 .statusbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:space-between;margin-top:10px;font-size:11px;color:var(--sub)}
 section[hidden],div[hidden]{display:none!important}
+@media(prefers-color-scheme:dark){:root{--txt:var(--color-text-primary,#f1f2f5);--sub:var(--color-text-secondary,#b7bbc4);--action:#f1f2f5;--action-text:#181818}}
 @media(max-width:620px){
  body{padding:8px;font-size:13px}
  .workspace{grid-template-columns:1fr}
@@ -1024,6 +1025,8 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
  $("tab-devices").addEventListener("click",()=>selectTab("devices"));
  $("tab-activity").addEventListener("click",()=>selectTab("activity"));
  $("refresh").addEventListener("click",refresh);
+ const syncMode=()=>{document.body.dataset.mode=window.openai?.displayMode||"inline";};
+ window.addEventListener("openai:set_globals",syncMode,{passive:true});
  $("expand").addEventListener("click",()=>{
    if(window.openai?.requestDisplayMode)void window.openai.requestDisplayMode({mode:"fullscreen"});
  });
@@ -1041,7 +1044,7 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
  (async()=>{
    try{
      await request("ui/initialize",{appInfo:{name:"livingruntime-remote-control-plane",version:"1.5.0"},appCapabilities:{availableDisplayModes:["inline","pip","fullscreen"]},protocolVersion:"2026-01-26"});
-     notify("ui/notifications/initialized");connected=true;
+     notify("ui/notifications/initialized");connected=true;syncMode();
      if(window.openai?.toolOutput)render(value(window.openai.toolOutput));
      await refresh();
      scheduled=setInterval(()=>{if(!document.hidden)void refresh();},60000);
