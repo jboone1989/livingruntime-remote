@@ -123,7 +123,7 @@ TOOL_TEXT = {
     "remote_overview": ("Read Remote control-plane snapshot", "Return one secret-free snapshot of Connector health, managed hosts, durable jobs, pending approvals, credential handles, and recent activity."),
     "list_projects": ("List configured projects", "List the named projects and bounded workspaces configured for this LivingRuntime Remote Connector."),
     "list_agents": ("Find agents across hosts", "Discover Agent adapters on every paired Connector and their authorized host/project placements; report offline and older Connectors explicitly."),
-    "start_agent": ("Start native agent", "Start a registered Agent on its unique discovered host, or supply device=connector-id::host when there are multiple candidates. Uses native CLI execution."),
+    "start_agent": ("Start native agent", "Start an Agent on its unique discovered Connector, or supply device=connector-id to select the machine. Legacy connector-id::host routes remain supported."),
     "get_agent_session": ("Read agent session", "Read Claude session status, final result, error, and usage."),
     "send_agent_message": ("Continue agent session", "Send a follow-up to the same native CLI session."),
     "resume_agent": ("Resume agent state", "Read an existing native agent session without starting another run."),
@@ -1236,45 +1236,31 @@ class Relay:
         return rows
 
     async def discover_agents(self, user_sub: str) -> dict[str, Any]:
-        """Find agents across this user's Connectors, not just the default one.
-
-        Install/registration is separate from permission to launch on a host.
-        Older Connectors without placements are reported as unverified.
-        """
+        """A Connector represents one machine; that machine may host many Agents."""
         connectors = self.connector_statuses(user_sub)
 
         async def inspect(connector: dict[str, Any]) -> dict[str, Any]:
             cid = connector["device_id"]
-            row = {
-                "connector_id": cid, "connector_name": connector["name"],
-                "online": bool(connector["online"]), "agents": [],
-                "hosts": [], "status": "offline" if not connector["online"] else "ok",
-            }
+            row = {"connector_id": cid, "connector_name": connector["name"],
+                   "online": bool(connector["online"]), "agents": [],
+                   "status": "offline" if not connector["online"] else "ok"}
             if not connector["online"]:
                 return row
-            results = await asyncio.gather(
+            adapter_data, project_data = await asyncio.gather(
                 asyncio.wait_for(self.call(user_sub, "list_agents", {},
                                            connector=cid), timeout=15),
                 asyncio.wait_for(self.call(user_sub, "list_projects", {},
                                            connector=cid), timeout=15),
                 return_exceptions=True,
             )
-            adapter_data, project_data = results
             if not isinstance(project_data, dict) or project_data.get("ok") is False:
                 project_data = {}
             projects = project_data.get("projects", [])
             if not isinstance(projects, list):
                 projects = []
-            hosts = project_data.get("hosts", [])
-            if isinstance(hosts, list):
-                row["hosts"] = [
-                    {"id": h.get("id"), "projects": [
-                        p.get("name") for p in projects if isinstance(p, dict)
-                        and p.get("host") == h.get("id")
-                    ]}
-                    for h in hosts if isinstance(h, dict) and isinstance(h.get("id"), str)
-                ]
-            if isinstance(adapter_data, Exception) or not isinstance(adapter_data, dict) or adapter_data.get("ok") is False:
+            row["projects"] = [p.get("name") for p in projects
+                               if isinstance(p, dict) and isinstance(p.get("name"), str)]
+            if isinstance(adapter_data, BaseException) or not isinstance(adapter_data, dict) or adapter_data.get("ok") is False:
                 row["status"] = "discovery_failed"
                 return row
             adapters = adapter_data.get("agents", [])
@@ -1285,91 +1271,98 @@ class Relay:
             for agent in adapters:
                 if not isinstance(agent, dict) or not isinstance(agent.get("id"), str):
                     continue
-                identity = {
-                    "id": agent["id"], "capabilities": agent.get("capabilities", {}),
-                    "connector_id": cid, "connector_name": connector["name"],
-                }
+                identity = {"id": agent["id"], "capabilities": agent.get("capabilities", {}),
+                            "connector_id": cid, "connector_name": connector["name"],
+                            "device": cid, "route": cid}
                 if isinstance(placements, list):
-                    locations = [
-                        (p.get("device"), p.get("project"), True)
-                        for p in placements if isinstance(p, dict)
-                        and p.get("id") == agent["id"]
-                    ]
+                    locations = [(p.get("device"), p.get("project"), True)
+                                 for p in placements if isinstance(p, dict) and p.get("id") == agent["id"]]
                 else:
-                    # Previous Connector versions know projects but cannot attest
-                    # their launch allowlists. Never mark these as authorized.
-                    locations = [
-                        (p.get("host"), p.get("name"), None)
-                        for p in projects if isinstance(p, dict)
-                    ]
-                row["agents"].extend([
-                    {**identity, "device": device, "project": project,
-                     "launch_allowed": allowed}
-                    for device, project, allowed in locations
-                    if isinstance(device, str) and isinstance(project, str)
-                ])
+                    # Older Connectors report registered adapters but cannot attest
+                    # launch permission; the Connector enforces it at start time.
+                    locations = [(p.get("host"), p.get("name"), None)
+                                 for p in projects if isinstance(p, dict)]
+                for legacy_host, project, allowed in locations:
+                    if isinstance(legacy_host, str) and isinstance(project, str):
+                        row["agents"].append({**identity, "project": project,
+                                              "launch_allowed": allowed})
                 if not locations:
-                    row["agents"].append({
-                        **identity, "device": None, "project": None,
-                        "launch_allowed": False if isinstance(placements, list) else None,
-                    })
+                    row["agents"].append({**identity, "project": None,
+                                          "launch_allowed": False if isinstance(placements, list) else None})
             if adapter_data.get("inventory_error"):
                 row["status"] = "policy_unavailable"
             elif not project_data:
                 row["status"] = "projects_unavailable"
             return row
 
-        results = await asyncio.gather(*(inspect(item) for item in connectors))
-        return {
-            "connectors": results,
-            "agents": [a for row in results for a in row["agents"]],
-            "partial": any(row["status"] != "ok" for row in results),
-            "direct_mode": True,
-        }
+        rows = await asyncio.gather(*(inspect(c) for c in connectors))
+        return {"connectors": rows, "agents": [a for c in rows for a in c["agents"]],
+                "partial": any(c["status"] != "ok" for c in rows), "direct_mode": True}
 
     async def discover_devices(self, user_sub: str, include_resources: bool = False) -> dict[str, Any]:
-        """Inventory physical Hosts across the owner's paired Connectors."""
+        """Expose exactly one physical machine per paired Connector."""
         connectors = self.connector_statuses(user_sub)
 
         async def inspect(connector: dict[str, Any]) -> dict[str, Any]:
             cid = connector["device_id"]
+            entry = {"device_id": cid, "connector_id": cid,
+                     "connector_name": connector["name"], "name": connector["name"],
+                     "route": cid, "online": bool(connector["online"]),
+                     "default": bool(connector.get("default")),
+                     "hostname": None, "projects": [],
+                     "migration_required": False}
             row = {"connector_id": cid, "connector_name": connector["name"],
-                   "online": bool(connector["online"]), "devices": [],
-                   "status": "offline" if not connector["online"] else "ok"}
-            if not connector["online"]:
+                   "online": entry["online"], "devices": [entry],
+                   "status": "offline" if not entry["online"] else "ok"}
+            if not entry["online"]:
                 return row
             try:
                 inventory = await asyncio.wait_for(
                     self.call(user_sub, "list_devices",
                               {"include_resources": include_resources}, connector=cid),
-                    timeout=25 if include_resources else 15,
-                )
+                    timeout=25 if include_resources else 15)
             except Exception:
                 inventory = None
             if not isinstance(inventory, dict) or not isinstance(inventory.get("devices"), list):
                 row["status"] = "discovery_failed"
                 return row
-            for host in inventory["devices"]:
-                if isinstance(host, dict) and isinstance(host.get("device_id"), str):
-                    row["devices"].append({
-                        **host, "connector_id": cid,
-                        "connector_name": connector["name"],
-                        "route": cid + "::" + host["device_id"],
-                    })
+            managed = [h for h in inventory["devices"] if isinstance(h, dict)
+                       and isinstance(h.get("device_id"), str)]
+            default = next((h for h in managed if h.get("default")), managed[0] if managed else {})
+            entry["legacy_managed_hosts"] = len(managed)
+            entry["migration_required"] = bool(inventory.get("migration_required")) or len(managed) > 1
+            entry["hostname"] = inventory.get("connector_hostname") or (
+                default.get("hostname") if len(managed) == 1 and
+                (default.get("transport") == "local" or
+                 default.get("ssh_host") in ("localhost", "127.0.0.1", "::1"))
+                else None)
+            entry["projects"] = sorted(set(
+                p for host in managed for p in host.get("projects", [])
+                if isinstance(p, str)))
+            entry["capabilities"] = default.get("capabilities", [])
+            if len(managed) == 1 and default.get("transport") == "local":
+                entry["user"] = default.get("user")
+                entry["latency_ms"] = default.get("latency_ms")
+                if include_resources and "inventory" in default:
+                    entry["inventory"] = default["inventory"]
+            if entry["migration_required"]:
+                entry["legacy_hosts"] = [
+                    {"host_id": h["device_id"],
+                     "route": cid + "::" + h["device_id"],
+                     "transport": h.get("transport"),
+                     "online": bool(h.get("online"))}
+                    for h in managed
+                ]
+                row["status"] = "legacy_configuration"
             return row
 
-        rows = await asyncio.gather(*(inspect(item) for item in connectors))
-        devices = [host for row in rows for host in row["devices"]]
-        default = next((host for host in devices
-                        if any(c["device_id"] == host["connector_id"] and
-                               c.get("default") for c in connectors)
-                        and host.get("default")), None)
-        return {
-            "devices": devices, "connectors": rows,
-            "default_device": default["device_id"] if default else None,
-            "default_route": default["route"] if default else None,
-            "partial": any(row["status"] != "ok" for row in rows),
-        }
+        rows = await asyncio.gather(*(inspect(c) for c in connectors))
+        devices = [r["devices"][0] for r in rows]
+        default = next((d for d in devices if d["default"]), None)
+        return {"devices": devices, "connectors": rows,
+                "default_device": default["device_id"] if default else None,
+                "default_route": default["route"] if default else None,
+                "partial": any(r["status"] != "ok" for r in rows)}
 
     async def launch_agent(self, user_sub: str, adapter_id: str, goal: str,
                            project: str, device: str | None = None,
@@ -1390,6 +1383,8 @@ class Relay:
                         raise
                     target = await self._wait_for_online_device(user_sub, None)
                 else:
+                    if chosen is None:
+                        raise RuntimeError("No paired Connector; pair a machine before starting an Agent")
                     target = await self._wait_for_online_device(user_sub, chosen["device_id"])
                     forwarded["device"] = None
             result = await self.call(user_sub, "start_agent", forwarded,
@@ -1398,7 +1393,7 @@ class Relay:
                 result = {**result, "session_id": target["device_id"] + "::" + result["session_id"]}
             return result
         match = await self.resolve_agent(user_sub, adapter_id, project)
-        payload["device"] = match["device"]
+        payload["device"] = None  # Project selects the Connector-local workspace.
         result = await self.call(user_sub, "start_agent", payload,
                                   connector=match["connector_id"])
         if isinstance(result, dict) and result.get("session_id"):
@@ -1419,8 +1414,7 @@ class Relay:
             )
         if len(candidates) != 1:
             raise ValueError(
-                "Agent is available on multiple hosts; specify device using "
-                "the exact connector ID and inner host (connector-id::host)."
+                "Agent is available on multiple machines; specify device=<connector_id>."
             )
         return candidates[0]
 
@@ -1487,8 +1481,12 @@ class Relay:
                          "cancel_agent", "watch_agent_events", "decide_agent_permission"}
         if tool in session_tools and isinstance(original_session_id, str) and "::" in original_session_id:
             owner, inner_session = original_session_id.split("::", 1)
-            if not owner or not inner_session or (connector is not None and connector != owner):
-                raise ValueError("invalid or conflicting connector-scoped Agent session")
+            if not owner or not inner_session:
+                raise ValueError("invalid connector-scoped Agent session")
+            if connector is not None:
+                chosen = self.store.device_for_user(user_sub, connector)
+                if not chosen or chosen["device_id"] != owner:
+                    raise ValueError("conflicting connector-scoped Agent session")
             connector = owner
             args = {**args, "session_id": inner_session}
         else:

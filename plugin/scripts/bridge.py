@@ -1345,7 +1345,19 @@ def list_devices(include_resources: bool = False) -> dict[str, Any]:
                 else {"ok": False, "error": "device is offline"}
             )
         rows.append(row)
-    result = {"default_device": cfg["default_host"], "devices": rows}
+    # The Connector itself is one physical machine. The old hosts list is
+    # retained only for legacy SSH clients until each machine is paired locally.
+    import socket
+    result = {
+        "default_device": cfg["default_host"],
+        "devices": rows,
+        "connector_hostname": socket.gethostname(),
+        "legacy_managed_hosts": len(rows),
+        "migration_required": len(rows) > 1 or any(
+            row["transport"] != "local" and row["ssh_host"] not in
+            ("localhost", "127.0.0.1", "::1") for row in rows
+        ),
+    }
     if _contains_secret(result):
         raise RuntimeError("list_devices refused to return secret-bearing fields")
     _audit("list_devices", True, {

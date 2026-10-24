@@ -79,7 +79,7 @@ class RelayServerTests(unittest.TestCase):
             claude = asyncio.run(relay.resolve_agent("owner", "claude-code", "docs"))
 
         self.assertEqual(codex["connector_id"], "vm13")
-        self.assertEqual(claude["device"], "secondary")
+        self.assertEqual(claude["device"], "vm09")
         self.assertTrue(codex["launch_allowed"])
         self.assertEqual(len([a for a in snapshot["agents"] if a["id"] == "claude-code"]), 2)
         self.assertEqual(snapshot["connectors"][-1]["status"], "offline")
@@ -105,10 +105,36 @@ class RelayServerTests(unittest.TestCase):
              patch.object(relay, "call", side_effect=fake_call):
             result = asyncio.run(relay.discover_devices("owner"))
         self.assertEqual([d["route"] for d in result["devices"]],
-                         ["first::main", "second::main"])
-        self.assertEqual(result["default_route"], "first::main")
+                         ["first", "second", "old"])
+        self.assertEqual(result["default_route"], "first")
         self.assertEqual(result["connectors"][-1]["status"], "offline")
         self.assertTrue(result["partial"])
+
+    def test_one_connector_with_multiple_legacy_hosts_is_one_device(self):
+        relay = server.Relay(self.store)
+        connectors = [{"device_id": "cid", "name": "gateway",
+                       "online": True, "default": True}]
+
+        async def legacy(user, tool, args, *, connector=None):
+            return {"devices": [
+                {"device_id": "main", "default": True, "hostname": "vm-a",
+                 "transport": "ssh", "ssh_host": "vm-a", "projects": ["a"]},
+                {"device_id": "other", "default": False, "hostname": "vm-b",
+                 "transport": "ssh", "ssh_host": "vm-b", "projects": ["b"]}]}
+
+        with patch.object(relay, "connector_statuses", return_value=connectors), \
+             patch.object(relay, "call", side_effect=legacy):
+            result = asyncio.run(relay.discover_devices("owner"))
+        self.assertEqual(len(result["devices"]), 1)
+        device = result["devices"][0]
+        self.assertEqual(device["device_id"], "cid")
+        self.assertIsNone(device["hostname"])  # SSH targets are not this machine
+        self.assertEqual(device["route"], "cid")
+        self.assertEqual(device["legacy_managed_hosts"], 2)
+        self.assertTrue(device["migration_required"])
+        self.assertEqual([h["route"] for h in device["legacy_hosts"]],
+                         ["cid::main", "cid::other"])
+        self.assertEqual(result["connectors"][0]["status"], "legacy_configuration")
 
     def test_agent_resolution_rejects_ambiguity_and_unauthorized_hosts(self):
         relay = server.Relay(self.store)
@@ -125,7 +151,7 @@ class RelayServerTests(unittest.TestCase):
             return {"agents": agents}
 
         with patch.object(relay, "discover_agents", side_effect=inventory):
-            with self.assertRaisesRegex(ValueError, "multiple hosts"):
+            with self.assertRaisesRegex(ValueError, "multiple machines"):
                 asyncio.run(relay.resolve_agent("owner", "codex", "demo"))
             with self.assertRaisesRegex(ValueError, "No reachable"):
                 asyncio.run(relay.resolve_agent("owner", "claude-code", "demo"))
@@ -165,7 +191,7 @@ class RelayServerTests(unittest.TestCase):
 
         async def launched(user, tool, args, *, connector=None):
             self.assertEqual(connector, "vm13")
-            self.assertEqual(args["device"], "second")
+            self.assertIsNone(args["device"])
             return {"session_id": "real"}
 
         with patch.object(relay, "resolve_agent", side_effect=resolved), \
@@ -173,6 +199,27 @@ class RelayServerTests(unittest.TestCase):
             result = asyncio.run(relay.launch_agent(
                 "owner", "codex", "Review", "workspace"))
         self.assertEqual(result["session_id"], "vm13::real")
+
+    def test_named_connector_session_alias_is_not_a_conflict(self):
+        relay = server.Relay(self.store)
+
+        async def online(user, selector):
+            self.assertEqual(selector, "vm13")
+            return {"device_id": "vm13", "name": "VM13"}
+
+        with patch.object(self.store, "device_for_user",
+                          return_value={"device_id": "vm13"}) as lookup, \
+             patch.object(relay, "_wait_for_online_device", side_effect=online), \
+             patch.object(self.store, "enqueue", return_value="task-1") as queued, \
+             patch.object(self.store, "result",
+                          return_value={"ok": True, "result": {"session_id": "native"}}):
+            result = asyncio.run(relay.call(
+                "owner", "get_agent_session",
+                {"session_id": "vm13::native"}, connector="VM13"))
+        lookup.assert_called_once_with("owner", "VM13")
+        queued.assert_called_once_with(
+            "owner", "vm13", "get_agent_session", {"session_id": "native"})
+        self.assertEqual(result["session_id"], "vm13::native")
 
     def test_scoped_agent_session_routes_back_to_its_connector(self):
         relay = server.Relay(self.store)
