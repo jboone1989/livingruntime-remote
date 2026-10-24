@@ -21,6 +21,7 @@ import localexec
 from agent_adapters import registry as agent_registry, load_installed
 import agent_sessions
 import agent_policy
+import pi_tool_runtime
 import filesystem_delete
 from contract import (
     DEFAULT_HTTP_PORT,
@@ -1527,6 +1528,35 @@ def list_projects() -> dict[str, Any]:
         "projects": rows,
     }
     _audit("list_projects", True, {"count": len(rows)})
+    return result
+
+
+@server.tool(
+    name="pi_tool",
+    annotations=ToolAnnotations(
+        title="Execute native Pi SDK tool",
+        readOnlyHint=False,
+        destructiveHint=True,
+        openWorldHint=False,
+    ),
+)
+def pi_tool(tool: str, params: dict[str, Any], project: str,
+            device: str | None = None, timeout_seconds: int = 30) -> dict[str, Any]:
+    """Run Pi SDK tools with GPT as controller, or use Remote exec for bash."""
+    cfg = _config()
+    cwd = resolve_path(cfg, None, project=project, host_id=device)
+    if tool == "bash":
+        # Reuse existing dynamic command approvals instead of granting Pi a
+        # second, unreviewed shell execution path.
+        argv = params.get("argv") if isinstance(params, dict) else None
+        if not isinstance(argv, list) or not argv or not all(isinstance(v, str) for v in argv):
+            raise ValueError("Pi bash requires params.argv as an explicit command array")
+        return exec(argv, cwd=cwd, project=project, device=device,
+                    timeout_seconds=timeout_seconds)
+    if _transport(project, device) != "local":
+        raise RuntimeError("Pi SDK tools require a host-local Connector")
+    result = pi_tool_runtime.execute(tool, params, cwd=cwd, timeout_seconds=timeout_seconds)
+    _audit("pi_tool", bool(result.get("ok")), {"tool": tool, "project": project, "device": device})
     return result
 
 

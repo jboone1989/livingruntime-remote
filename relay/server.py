@@ -137,6 +137,7 @@ TOOL_TEXT = {
     "delete_path": ("Delete remote file or directory", "Delete one literal POSIX path inside configured roots. Directories require recursive=true. Never follows symlinks; protects configured/project roots and credential state. Limited to 10,000 entries and 512 MiB. Optional dry_run and file SHA-256 guard."),
     "write_file": ("Write remote file", "Create or replace a file inside an allowed project or configured root, optionally guarded by an expected SHA-256."),
     "git": ("Run Git command", "Run a bounded Git command inside an allowed repository using explicit arguments."),
+    "pi_tool": ("Execute native Pi SDK tool", "Use Pi read, edit, write, grep, find or ls under a configured project without a model call. Bash uses Remote command approval."),
     "exec": ("Execute bounded command", "Run a built-in development command or an exact command previously approved by the operator. Unapproved commands return a durable approval request."),
     "list_credentials": ("List credential handles", "List local credential handles and scopes without returning secret values."),
     "lease_credential": ("Lease credential handle", "Issue a short-lived opaque credential lease scoped to one capability, project, and device."),
@@ -3433,6 +3434,14 @@ def create_mcp(
                 user_sub, "list_devices",
                 {"include_resources": bool(include_resources)}, connector=connector)
         return await relay.discover_devices(user_sub, bool(include_resources))
+
+    @expose("pi_tool", False, False, True)
+    async def pi_tool(tool: str, params: dict[str, Any], project: str,
+                      device: str | None = None, timeout_seconds: int = 30) -> dict[str, Any]:
+        return await relay.call(_principal("remote:write"), "pi_tool", {
+            "tool": tool, "params": params, "project": project,
+            "device": device, "timeout_seconds": timeout_seconds,
+        })
 
     @expose("read_file", True, False, False)
     async def read_file(path: str, project: str | None = None, device: str | None = None, offset: int = 0,
