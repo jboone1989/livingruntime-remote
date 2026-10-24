@@ -33,6 +33,13 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual(cmd[:3], ["/usr/bin/codex", "exec", "--json"])
         self.assertIn("read-only", cmd)
         self.assertEqual(cmd[-2:], ["--", "--yolo"])
+        with tempfile.TemporaryDirectory() as td:
+            record = Path(td) / "session.json"
+            record.with_suffix(".thread").write_text(THREAD)
+            resume = cli_args({**base, "continue": True, "path": str(record)})
+            self.assertIn("resume", resume)
+            self.assertIn("--sandbox", resume)
+            self.assertIn("read-only", resume)
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", cmd)
 
     def test_json_events_remove_tool_arguments_and_output(self):
@@ -101,6 +108,43 @@ class CodexAdapterTests(unittest.TestCase):
                 self.assertTrue(len(events) > len(first_events))
                 self.assertEqual([x["seq"] for x in events], list(range(1, len(events) + 1)))
                 self.assertEqual(len([x for x in events if x["kind"] == "completion"]), 2)
+
+    def test_remote_cancel_reaps_native_codex_worker(self):
+        with tempfile.TemporaryDirectory() as td:
+            fake = Path(td) / "codex"
+            fake.write_text(
+                "#!/usr/bin/python3\nimport json,time\n"
+                "print(json.dumps({'type':'thread.started','thread_id':'" + THREAD + "'}),flush=True)\n"
+                "time.sleep(60)\n"
+            )
+            fake.chmod(0o700)
+            with (patch.dict(os.environ, {"LIVINGRUNTIME_CODEX_JOBS": td}),
+                  patch("livingruntime_adapter_codex.claude_workspace", return_value=td)):
+                adapter = CodexAdapter(str(fake))
+                sid = adapter.start("test cancel", project="test", device="main")
+                events_path = Path(td) / (sid + ".events.jsonl")
+                try:
+                    for _ in range(100):
+                        if events_path.exists() and '"kind": "session"' in events_path.read_text():
+                            break
+                        time.sleep(.05)
+                    else:
+                        self.fail("Codex worker did not reach native thread init")
+                    adapter.cancel(sid)
+                    receipt = Path(td) / (sid + ".result.json")
+                    for _ in range(100):
+                        if receipt.exists():
+                            break
+                        time.sleep(.05)
+                    self.assertTrue(receipt.exists(), "cancel must leave a native worker receipt")
+                    value = json.loads(receipt.read_text())
+                    self.assertEqual(value["status"], "CANCELLED", value)
+                    self.assertEqual(adapter.events(sid)[-1]["kind"], "completion")
+                finally:
+                    try:
+                        adapter.cancel(sid)
+                    except (OSError, RuntimeError):
+                        pass
 
     def test_missing_binary_fails_only_at_launch(self):
         missing = CodexAdapter("/no/such/codex")
