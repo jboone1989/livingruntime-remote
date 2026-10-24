@@ -87,6 +87,29 @@ class RelayServerTests(unittest.TestCase):
         self.assertNotIn(("list_agents", "offline"), calls)
         self.assertTrue(snapshot["partial"])
 
+    def test_all_host_inventory_preserves_duplicate_names_and_stable_routes(self):
+        relay = server.Relay(self.store)
+        connectors = [
+            {"device_id": "first", "name": "shared-name", "online": True, "default": True},
+            {"device_id": "second", "name": "shared-name", "online": True, "default": False},
+            {"device_id": "old", "name": "shared-name", "online": False, "default": False},
+        ]
+
+        async def fake_call(user, tool, args, *, connector=None):
+            self.assertEqual(tool, "list_devices")
+            return {"default_device": "main",
+                    "devices": [{"device_id": "main", "online": True,
+                                 "default": True, "hostname": connector}]}
+
+        with patch.object(relay, "connector_statuses", return_value=connectors), \
+             patch.object(relay, "call", side_effect=fake_call):
+            result = asyncio.run(relay.discover_devices("owner"))
+        self.assertEqual([d["route"] for d in result["devices"]],
+                         ["first::main", "second::main"])
+        self.assertEqual(result["default_route"], "first::main")
+        self.assertEqual(result["connectors"][-1]["status"], "offline")
+        self.assertTrue(result["partial"])
+
     def test_agent_resolution_rejects_ambiguity_and_unauthorized_hosts(self):
         relay = server.Relay(self.store)
         agents = [
