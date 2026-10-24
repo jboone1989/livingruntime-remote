@@ -1235,6 +1235,96 @@ class Relay:
             })
         return rows
 
+    async def discover_agents(self, user_sub: str) -> dict[str, Any]:
+        """Find agents across this user's Connectors, not just the default one.
+
+        Install/registration is separate from permission to launch on a host.
+        Older Connectors without placements are reported as unverified.
+        """
+        connectors = self.connector_statuses(user_sub)
+
+        async def inspect(connector: dict[str, Any]) -> dict[str, Any]:
+            cid = connector["device_id"]
+            row = {
+                "connector_id": cid, "connector_name": connector["name"],
+                "online": bool(connector["online"]), "agents": [],
+                "hosts": [], "status": "offline" if not connector["online"] else "ok",
+            }
+            if not connector["online"]:
+                return row
+            results = await asyncio.gather(
+                self.call(user_sub, "list_agents", {}, connector=cid),
+                self.call(user_sub, "list_projects", {}, connector=cid),
+                return_exceptions=True,
+            )
+            adapter_data, project_data = results
+            if not isinstance(project_data, dict) or project_data.get("ok") is False:
+                project_data = {}
+            projects = project_data.get("projects", [])
+            if not isinstance(projects, list):
+                projects = []
+            hosts = project_data.get("hosts", [])
+            if isinstance(hosts, list):
+                row["hosts"] = [
+                    {"id": h.get("id"), "projects": [
+                        p.get("name") for p in projects if isinstance(p, dict)
+                        and p.get("host") == h.get("id")
+                    ]}
+                    for h in hosts if isinstance(h, dict) and isinstance(h.get("id"), str)
+                ]
+            if isinstance(adapter_data, Exception) or not isinstance(adapter_data, dict) or adapter_data.get("ok") is False:
+                row["status"] = "discovery_failed"
+                return row
+            adapters = adapter_data.get("agents", [])
+            if not isinstance(adapters, list):
+                row["status"] = "discovery_failed"
+                return row
+            placements = adapter_data.get("placements")
+            for agent in adapters:
+                if not isinstance(agent, dict) or not isinstance(agent.get("id"), str):
+                    continue
+                identity = {
+                    "id": agent["id"], "capabilities": agent.get("capabilities", {}),
+                    "connector_id": cid, "connector_name": connector["name"],
+                }
+                if isinstance(placements, list):
+                    locations = [
+                        (p.get("device"), p.get("project"), True)
+                        for p in placements if isinstance(p, dict)
+                        and p.get("id") == agent["id"]
+                    ]
+                else:
+                    # Previous Connector versions know projects but cannot attest
+                    # their launch allowlists. Never mark these as authorized.
+                    locations = [
+                        (p.get("host"), p.get("name"), None)
+                        for p in projects if isinstance(p, dict)
+                    ]
+                row["agents"].extend([
+                    {**identity, "device": device, "project": project,
+                     "launch_allowed": allowed}
+                    for device, project, allowed in locations
+                    if isinstance(device, str) and isinstance(project, str)
+                ])
+                if not locations:
+                    row["agents"].append({
+                        **identity, "device": None, "project": None,
+                        "launch_allowed": False if isinstance(placements, list) else None,
+                    })
+            if adapter_data.get("inventory_error"):
+                row["status"] = "policy_unavailable"
+            elif not project_data:
+                row["status"] = "projects_unavailable"
+            return row
+
+        results = await asyncio.gather(*(inspect(item) for item in connectors))
+        return {
+            "connectors": results,
+            "agents": [a for row in results for a in row["agents"]],
+            "partial": any(row["status"] != "ok" for row in results),
+            "direct_mode": True,
+        }
+
     @staticmethod
     def _connector_route(
         args: dict[str, Any],
