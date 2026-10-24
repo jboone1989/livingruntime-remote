@@ -26,14 +26,18 @@ def cli_args(record):
         if str(uuid.UUID(thread_id)) != thread_id:
             raise ValueError("invalid native Codex thread id")
         # Noninteractive resume uses the persistent native Codex conversation.
-        return [exe, "exec", "--json", "--sandbox", opts.get("sandbox", "read-only"),
-                "resume", thread_id, record["prompt"]]
+        args = [exe, "exec", "--json", "--sandbox", opts.get("sandbox", "read-only")]
+        if opts.get("skip_git_repo_check"):
+            args.append("--skip-git-repo-check")
+        return args + ["resume", thread_id, "--", record["prompt"]]
     args = [exe, "exec", "--json", "--cd", record["cwd"],
             "--sandbox", opts.get("sandbox", "read-only")]
     if opts.get("model"):
         args += ["--model", opts["model"]]
     if opts.get("profile"):
         args += ["--profile", opts["profile"]]
+    if opts.get("skip_git_repo_check"):
+        args.append("--skip-git-repo-check")
     return args + ["--", record["prompt"]]
 
 
@@ -99,6 +103,7 @@ def main(path):
     timed_out = [False]
     last_text = ""
     turn_failed = False
+    last_error = ""
     turn_completed = False
     usage = {}
     stderr_parts = []
@@ -171,10 +176,11 @@ def main(path):
                         if isinstance(raw.get("usage"), dict):
                             usage = raw["usage"]
                     elif raw.get("type") in ("turn.failed", "error"):
-                        turn_failed = True
+                        if raw.get("type") == "turn.failed":
+                            turn_failed = True
                         problem = raw.get("error")
-                        result["error"] = str(problem.get("message", "") if isinstance(problem, dict)
-                                              else raw.get("message", "Codex turn failed"))[:900]
+                        last_error = str(problem.get("message", "") if isinstance(problem, dict)
+                                         else raw.get("message", "Codex turn failed"))[:900]
                     elif raw.get("type") == "item.completed":
                         item = raw.get("item")
                         if isinstance(item, dict) and item.get("type") == "agent_message" and isinstance(item.get("text"), str):
@@ -191,7 +197,7 @@ def main(path):
             elif returncode:
                 result["error"] = "Codex exit=%s: %s" % (returncode, "".join(stderr_parts)[-1200:])
             elif turn_failed or not turn_completed:
-                result.setdefault("error", "Codex did not finish a successful turn")
+                result["error"] = last_error or "Codex did not finish a successful turn"
             else:
                 result.update({"status": "SUCCEEDED", "result": last_text,
                                "usage": usage})
