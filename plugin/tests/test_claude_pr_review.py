@@ -42,6 +42,23 @@ class ReviewerUnitTests(unittest.TestCase):
             pr, "jboone1989/EventGraph",
             diff.replace("packages/backend/src/admin/notes.ts", ".github/workflows/check.yml"),
             1, True))
+        deleted_ci = """diff --git a/.github/workflows/check.yml b/.github/workflows/check.yml
+deleted file mode 100644
+--- a/.github/workflows/check.yml
++++ /dev/null
+@@ -1 +0,0 @@
+-name: Check
+"""
+        self.assertFalse(reviewer.codex_handoff_eligible(
+            pr, "jboone1989/EventGraph", diff + deleted_ci, 1, True),
+            "A deleted CI file may not be invisible in the risk allowlist")
+        renamed = """diff --git a/tests/old.test.ts b/tests/new.test.ts
+similarity index 100%
+rename from tests/old.test.ts
+rename to tests/new.test.ts
+"""
+        self.assertFalse(reviewer.codex_handoff_eligible(
+            pr, "jboone1989/EventGraph", diff + renamed, 1, True))
 
     def test_codex_handoff_calls_relay_with_existing_device_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
