@@ -387,7 +387,14 @@ def configure_codex(executable: str, project: str = "workspace") -> dict[str, An
         raise ValueError("Codex project must already be configured on the local Connector")
     hosts = config.get("hosts", {})
     host = hosts.get("main") if isinstance(hosts, dict) else None
-    if not isinstance(host, dict) or host.get("transport") != "local":
+    # Existing single-host installations route SSH to loopback on the same
+    # Connector machine. Native adapters still run here, not on remote SSH hosts.
+    same_host = isinstance(host, dict) and (
+        host.get("transport") == "local" or
+        (host.get("transport") in (None, "ssh") and
+         host.get("ssh_host") in ("localhost", "127.0.0.1", "::1"))
+    )
+    if not same_host:
         raise ValueError("Codex must execute on this Connector's local host")
     cwd = Path(target["path"]).resolve(strict=True)
     if not cwd.is_dir():
