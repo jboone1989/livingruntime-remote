@@ -11,7 +11,7 @@ import subprocess
 import sys
 from urllib.parse import urlencode, urlparse
 
-from claude_issue_review import COMMAND, MARKER, gh_json
+from claude_issue_review import COMMAND, MARKER, already_reviewed, gh_json, report_input
 
 
 def search_issues(gh: str, owner: str) -> list[tuple[str, int]]:
@@ -68,6 +68,8 @@ def scan(owner: str, gh: str, claude: str, max_reviews: int, dry_run: bool) -> i
         raise RuntimeError("Local gh identity unavailable; no cross-repo access assumed")
     print(f"Authenticated GitHub identity: {reporter}", flush=True)
     count = 0
+    attempts = 0
+    had_failure = False
     for repo, number in search_issues(gh, owner):
         issue = gh_json(gh, f"repos/{repo}/issues/{number}")
         comments = gh_json(gh, f"repos/{repo}/issues/{number}/comments?per_page=100")
@@ -76,26 +78,41 @@ def scan(owner: str, gh: str, claude: str, max_reviews: int, dry_run: bool) -> i
             continue
         if not has_new_request(issue, comments, owner, reporter):
             continue
+        _, digest = report_input(issue, comments, owner)
+        if already_reviewed(comments, digest, reporter):
+            continue
         print(f"candidate {repo}#{number}", flush=True)
         if dry_run:
             count += 1
             continue
+        if attempts >= max_reviews + 1:
+            print("review attempt budget reached", flush=True)
+            break
+        attempts += 1
         args = [
             sys.executable, "plugin/scripts/claude_issue_review.py",
             "--repo", repo, "--issue", str(number), "--owner", owner,
             "--reporter", reporter, "--gh", gh, "--claude", claude,
-            "--timeout", "360",
+            "--timeout", "330",
         ]
-        result = subprocess.run(args, text=True, capture_output=True, timeout=420)
+        try:
+            result = subprocess.run(args, text=True, capture_output=True, timeout=410)
+        except subprocess.TimeoutExpired:
+            print(f"review timed out for {repo}#{number}", file=sys.stderr)
+            had_failure = True
+            continue
         if result.returncode:
             print(f"review failed for {repo}#{number}: {result.stderr[-1200:]}", file=sys.stderr)
-            return 1
+            had_failure = True
+            continue
         print(result.stdout.strip(), flush=True)
+        if not result.stdout.strip().startswith("reviewed Issue #"):
+            continue
         count += 1
         if count >= max_reviews:
             break
-    print(f"scan complete: {count} eligible (dry_run={dry_run})", flush=True)
-    return 0
+    print(f"scan complete: {count} posted (dry_run={dry_run})", flush=True)
+    return 1 if had_failure else 0
 
 
 def main() -> None:
