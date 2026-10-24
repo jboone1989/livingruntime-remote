@@ -175,6 +175,30 @@ class CodexAdapterTests(unittest.TestCase):
                 self.assertEqual(result["status"], "SUCCEEDED", result)
                 self.assertEqual(result["result"], "RECOVERED")
 
+    def test_nonzero_cli_exit_keeps_native_quota_failure_reason(self):
+        with tempfile.TemporaryDirectory() as td:
+            fake = Path(td) / "codex"
+            fake.write_text(
+                "#!/usr/bin/python3\nimport json,sys\n"
+                "print(json.dumps({'type':'thread.started','thread_id':'" + THREAD + "'}),flush=True)\n"
+                "print(json.dumps({'type':'turn.failed','error':{'message':'quota exhausted'}}),flush=True)\n"
+                "sys.exit(1)\n"
+            )
+            fake.chmod(0o700)
+            with (patch.dict(os.environ, {"LIVINGRUNTIME_CODEX_JOBS": td}),
+                  patch("livingruntime_adapter_codex.claude_workspace", return_value=td)):
+                adapter = CodexAdapter(str(fake))
+                sid = adapter.start("review", project="test", device="main")
+                for _ in range(120):
+                    outcome = adapter.status(sid)
+                    if outcome["status"] in ("FAILED", "SUCCEEDED", "STALLED", "CANCELLED"):
+                        break
+                    time.sleep(.05)
+                self.assertEqual(outcome["status"], "FAILED", outcome)
+                self.assertIn("quota exhausted", outcome["error"])
+                self.assertTrue(any(e["kind"] == "error" and "quota exhausted" in e["message"]
+                                    for e in adapter.events(sid)))
+
     def test_missing_binary_fails_only_at_launch(self):
         missing = CodexAdapter("/no/such/codex")
         self.assertEqual(missing.adapter_id, "codex")
