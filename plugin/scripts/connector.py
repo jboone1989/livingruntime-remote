@@ -432,9 +432,15 @@ def interactive_setup() -> None:
         root = input(r"Allowed Windows workspace root (for example D:\Projects): ").strip()
         local = True
     else:
-        host = input("SSH host or user@host: ").strip()
-        root = input("Allowed workspace root (for example /home/ubuntu): ").strip()
-        local = False
+        # The common path is to pair this machine, not configure SSH into a
+        # second host. Advanced SSH routing remains available on request.
+        mode = input("Connect this machine directly? [Y/n]: ").strip().lower()
+        local = mode not in {"n", "no"}
+        host = "local" if local else input("SSH host or user@host: ").strip()
+        default_root = str(Path.home() / "workspace")
+        root = input(f"Allowed workspace root [{default_root}]: ").strip() or default_root
+        if local and root == default_root:
+            Path(root).mkdir(parents=True, exist_ok=True)
     result = install(
         pair_code=pair_code,
         host=host,
@@ -536,4 +542,8 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (RuntimeError, ValueError, PermissionError) as exc:
+        print(f"Connector setup failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
