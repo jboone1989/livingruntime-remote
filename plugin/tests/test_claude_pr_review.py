@@ -157,6 +157,32 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertIn("--disallowedTools", argv)
             self.assertNotIn("--bare", argv)
 
+    def test_dispatched_review_rejects_superseded_ci_head(self):
+        with tempfile.TemporaryDirectory() as root:
+            pr = {"number": 47, "head": {"sha": "b" * 40}}
+            args = argparse.Namespace(repo="org/repo", gh="gh", claude="claude",
+                                      pr_number=47, expected_sha="a" * 40,
+                                      work=Path(root), timeout=5,
+                                      state=Path(root) / "pr-47.json")
+            with patch.object(reviewer, "api", return_value=pr), \
+                 patch.object(reviewer, "review") as review, \
+                 patch.object(reviewer, "commit_status") as status:
+                self.assertFalse(reviewer.run_once(args))
+                review.assert_not_called()
+                status.assert_not_called()
+
+    def test_dispatched_review_accepts_exact_check_sha(self):
+        with tempfile.TemporaryDirectory() as root:
+            pr = {"number": 47, "head": {"sha": "b" * 40}}
+            args = argparse.Namespace(repo="org/repo", gh="gh", claude="claude",
+                                      pr_number=47, expected_sha="b" * 40,
+                                      work=Path(root), timeout=5,
+                                      state=Path(root) / "pr-47.json")
+            with patch.object(reviewer, "api", return_value=pr), \
+                 patch.object(reviewer, "review", return_value="reviewed") as review:
+                self.assertFalse(reviewer.run_once(args))
+                review.assert_called_once()
+
     def test_event_reviews_only_requested_pr(self):
         with tempfile.TemporaryDirectory() as root:
             pr = {"number": 47, "head": {"sha": "a" * 40}}
