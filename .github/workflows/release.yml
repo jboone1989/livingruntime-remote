@@ -46,6 +46,10 @@ jobs:
           --onefile
           --name livingruntime-remote-connector
           --paths plugin/scripts
+          --hidden-import livingruntime_adapter_codex
+          --hidden-import livingruntime_adapter_claude
+          --hidden-import codex_worker
+          --hidden-import claude_worker
           plugin/scripts/connector.py
       - name: Build Linux connector on Debian 11 glibc baseline
         if: matrix.linux == true
@@ -58,6 +62,10 @@ jobs:
           python -m PyInstaller --clean --noconfirm --onefile
           --name livingruntime-remote-connector
           --paths plugin/scripts
+          --hidden-import livingruntime_adapter_codex
+          --hidden-import livingruntime_adapter_claude
+          --hidden-import codex_worker
+          --hidden-import claude_worker
           plugin/scripts/connector.py'
           && sudo chown -R "$(id -u):$(id -g)" dist build
       - name: Smoke-test packaged connector
@@ -65,6 +73,9 @@ jobs:
           python -c "from pathlib import Path; import os,subprocess;
           p=Path('dist')/('livingruntime-remote-connector.exe' if os.name=='nt' else 'livingruntime-remote-connector');
           subprocess.check_call([str(p.resolve()),'--version'])"
+      - name: Smoke-test bundled native Codex worker
+        if: matrix.linux == true
+        run: python plugin/tests/test_frozen_codex_smoke.py dist/livingruntime-remote-connector
       - name: Normalize release asset name
         env:
           ASSET_NAME: ${{ matrix.asset }}
