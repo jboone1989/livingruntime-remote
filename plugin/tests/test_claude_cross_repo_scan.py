@@ -65,6 +65,8 @@ class CrossRepoTest(unittest.TestCase):
              patch.object(scan, "search_issues", return_value=[
                  ("owner/Old", 1), ("owner/New", 2)]), \
              patch.object(scan.subprocess, "run") as run:
+            from types import SimpleNamespace
+            run.return_value = SimpleNamespace(returncode=0, stdout="reviewed Issue #2: abc", stderr="")
             self.assertEqual(scan.scan("owner", "gh", "claude", 1, False), 0)
             self.assertEqual(run.call_count, 1)
             self.assertIn("owner/New", run.call_args.args[0])
