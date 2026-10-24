@@ -46,7 +46,7 @@ def validate_options(value):
         raise ValueError("invalid permission mode")
     if "max_turns" in opts and (type(opts["max_turns"]) is not int or not 1 <= opts["max_turns"] <= 300):
         raise ValueError("invalid max_turns")
-    if "timeout_seconds" in opts and (type(opts["timeout_seconds"]) is not int or not 30 <= opts["timeout_seconds"] <= 3600):
+    if "timeout_seconds" in opts and (type(opts["timeout_seconds"]) is not int or not 30 <= opts["timeout_seconds"] <= 21600):
         raise ValueError("invalid timeout_seconds")
     if "approval_timeout_seconds" in opts and (type(opts["approval_timeout_seconds"]) is not int or not 30 <= opts["approval_timeout_seconds"] <= 86400):
         raise ValueError("invalid approval_timeout_seconds")
