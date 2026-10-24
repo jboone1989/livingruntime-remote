@@ -81,15 +81,42 @@ class CrossRepoTest(unittest.TestCase):
                 return []
             return issue
         from types import SimpleNamespace
+        candidates = [("owner/Fail", 1), ("owner/Pass", 2)]
+        with patch.object(scan, "gh_json", side_effect=get), \
+             patch.object(scan, "search_issues", return_value=candidates), \
+             patch.dict(scan.os.environ, {"GITHUB_RUN_NUMBER": "0"}), \
+             patch.object(scan.subprocess, "run", return_value=
+                 SimpleNamespace(returncode=1, stdout="", stderr="failed")) as run:
+            self.assertEqual(scan.scan("owner", "gh", "claude", 1, False), 1)
+            self.assertEqual(run.call_count, 1)
+        with patch.object(scan, "gh_json", side_effect=get), \
+             patch.object(scan, "search_issues", return_value=candidates), \
+             patch.dict(scan.os.environ, {"GITHUB_RUN_NUMBER": "1"}), \
+             patch.object(scan.subprocess, "run", return_value=
+                 SimpleNamespace(returncode=0, stdout="reviewed Issue #2: abc", stderr="")) as run:
+            self.assertEqual(scan.scan("owner", "gh", "claude", 1, False), 0)
+            self.assertIn("owner/Pass", run.call_args.args[0])
+
+    def test_unreachable_issue_does_not_hide_other_candidates(self):
+        issue = {"title": "Plan", "body": "Goal", "state": "open",
+                 "labels": [{"name": "devils-advocate"}]}
+        def get(gh, endpoint):
+            if endpoint == "user":
+                return {"login": "owner"}
+            if "owner/Fail" in endpoint:
+                raise RuntimeError("404")
+            if "/comments?" in endpoint:
+                return []
+            return issue
         with patch.object(scan, "gh_json", side_effect=get), \
              patch.object(scan, "search_issues", return_value=[
                  ("owner/Fail", 1), ("owner/Pass", 2)]), \
-             patch.object(scan.subprocess, "run", side_effect=[
-                 SimpleNamespace(returncode=1, stdout="", stderr="failed"),
-                 SimpleNamespace(returncode=0, stdout="reviewed Issue #2: abc", stderr=""),
-             ]) as run:
+             patch.dict(scan.os.environ, {"GITHUB_RUN_NUMBER": "0"}), \
+             patch.object(scan.subprocess, "run", return_value=
+                 __import__("types").SimpleNamespace(
+                    returncode=0, stdout="reviewed Issue #2: abc", stderr="")) as run:
             self.assertEqual(scan.scan("owner", "gh", "claude", 1, False), 1)
-            self.assertEqual(run.call_count, 2)
+            self.assertIn("owner/Pass", run.call_args.args[0])
 
     def test_scan_dry_run_skips_claude(self):
         issue = {"title": "Proposal", "body": "Test the opt-in", "state": "open", "labels": [{"name": "devils-advocate"}]}
