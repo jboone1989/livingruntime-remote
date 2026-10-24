@@ -289,8 +289,23 @@ def codex_handoff_eligible(pr, repo, diff, round_number, blocking):
         label.get("name") for label in pr.get("labels", []) if isinstance(label, dict)
     }:
         return False
-    paths = set(changed_lines(diff))
-    if not paths or len(paths) > 5:
+    # Parse ALL diff file headers, not just added-line anchors. Deleted,
+    # renamed, binary and mode-only changes must never bypass the allowlist.
+    headers = [line for line in diff.splitlines() if line.startswith("diff --git ")]
+    if not headers or len(headers) > 5:
+        return False
+    paths = set()
+    for header in headers:
+        match = re.fullmatch(
+            r"diff --git a/([A-Za-z0-9_./-]+) b/([A-Za-z0-9_./-]+)",
+            header,
+        )
+        if not match or match.group(1) != match.group(2):
+            return False
+        paths.add(match.group(1))
+    if any(line.startswith(("rename from ", "rename to ", "copy from ",
+                           "copy to ", "GIT binary patch"))
+           for line in diff.splitlines()):
         return False
     return all(
         path == "packages/backend/src/admin/notes.ts"
