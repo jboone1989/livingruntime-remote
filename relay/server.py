@@ -2362,10 +2362,10 @@ def create_mcp(
     )
     add_widget_resource(
         CONTROL_PLANE_WIDGET_V11_URI,
-        CONTROL_PLANE_WIDGET_HTML,
+        CONTROL_PLANE_WIDGET_V12_HTML,
         name="remote-control-plane-v11",
-        title="LivingRuntime Remote control plane (legacy)",
-        description="Backward-compatible v11 dashboard for existing ChatGPT conversations.",
+        title="LivingRuntime Remote · Machines & Agents",
+        description="Fresh machine and Agent dashboard for connections still caching the v11 resource URI.",
     )
     add_widget_resource(
         CONTROL_PLANE_WIDGET_URI,

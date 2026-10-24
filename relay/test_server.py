@@ -1069,6 +1069,13 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn(server.LONG_JOB_WIDGET_V4_URI, resource_uris)
         self.assertTrue(server.CONTROL_PLANE_WIDGET_URI.endswith("control-plane-v12.html"))
         self.assertIn(server.CONTROL_PLANE_WIDGET_V11_URI, resource_uris)
+        # Existing ChatGPT connections may keep the v11 URI in their tool metadata.
+        # Its server-side template must now serve the v12 machines/Agents UI.
+        source = Path(server.__file__).read_text()
+        self.assertIn(
+            'CONTROL_PLANE_WIDGET_V11_URI,\n        CONTROL_PLANE_WIDGET_V12_HTML,',
+            source,
+        )
         self.assertIn(server.CONTROL_PLANE_WIDGET_V8_URI, resource_uris)
         self.assertIn(server.CONTROL_PLANE_WIDGET_V7_URI, resource_uris)
         self.assertIn(server.CONTROL_PLANE_WIDGET_V6_URI, resource_uris)
