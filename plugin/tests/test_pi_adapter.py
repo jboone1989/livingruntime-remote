@@ -23,6 +23,8 @@ class PiAdapterTests(unittest.TestCase):
             validate_options({"shell": "rm -rf /"})
         with self.assertRaises(ValueError):
             validate_options({"tools": ["unknown"]})
+        with self.assertRaises(ValueError):
+            validate_options({"env_file": ""})
         self.assertEqual(PiAdapter().capabilities(), AgentCapabilities(
             resume=True, messaging=True, events=True, cancel=True))
 
@@ -87,6 +89,30 @@ class PiAdapterTests(unittest.TestCase):
                 blocked = bridge.pi_tool("bash", {"argv": ["node", "--version"]}, project="demo")
             self.assertTrue(blocked["approval_required"])
             self.assertEqual(protected.call_args.args[0], ["node", "--version"])
+
+    def test_optional_project_env_file_uses_node_without_embedding_secrets(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            (home / ".env").write_text("NVIDIA_API_KEY=placeholder", encoding="utf8")
+            data = {"executable": "/tmp/pi", "cwd":td, "prompt":"check",
+                    "session_id":str(uuid.uuid4()), "options":{
+                        "provider":"nvidia", "model":"z-ai/glm-5.3",
+                        "env_file":str(home / ".env")}}
+            args = pi_worker.cli_args(data)
+            self.assertEqual(args[1], "--env-file=" + str(home / ".env"))
+            self.assertNotIn("placeholder", " ".join(args))
+            with patch("livingruntime_adapter_pi.pi_workspace", return_value=td), \
+                 patch.object(PiAdapter, "_spawn", return_value="started"):
+                fake = home / "pi"
+                fake.touch()
+                fake.chmod(0o700)
+                adapter = PiAdapter(str(fake))
+                self.assertEqual(adapter.start("test", project="p", device="main",
+                      options={"provider":"nvidia","model":"z-ai/glm-5.3",
+                               "env_file":".env"}), "started")
+                with self.assertRaises(PermissionError):
+                    adapter.start("test", project="p", device="main",
+                                  options={"env_file":"../../etc/passwd"})
 
     def test_direct_tool_rejects_bash(self):
         with self.assertRaisesRegex(ValueError, "bash uses Remote exec"):

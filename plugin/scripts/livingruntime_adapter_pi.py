@@ -16,7 +16,7 @@ from agent_policy import load as load_policy
 from livingruntime_adapter_claude import ClaudeCodeAdapter
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,120}$")
-_OPTIONS = {"model", "provider", "timeout_seconds", "tools"}
+_OPTIONS = {"model", "provider", "timeout_seconds", "tools", "env_file"}
 
 
 def validate_options(value):
@@ -38,6 +38,9 @@ def validate_options(value):
         or not set(result["tools"]) <= {"read", "grep", "find", "ls", "edit", "write", "bash"}
     ):
         raise ValueError("invalid Pi tools")
+    if "env_file" in result and (not isinstance(result["env_file"], str)
+                                  or not result["env_file"] or len(result["env_file"]) > 256):
+        raise ValueError("invalid Pi env_file")
     return result
 
 
@@ -82,6 +85,12 @@ class PiAdapter(ClaudeCodeAdapter):
         provider = options.get("provider", "zai-coding-cn")
         model = options.get("model", "glm-5.3")
         cwd = pi_workspace(device, project)
+        if "env_file" in options:
+            workspace = Path(cwd).resolve(strict=True)
+            target = (workspace / options["env_file"]).resolve(strict=True)
+            if not target.is_relative_to(workspace) or not target.is_file():
+                raise PermissionError("Pi env_file must exist inside the project workspace")
+            options["env_file"] = str(target)
         sid = str(uuid.uuid4())
         self._write(sid, {
             "session_id": sid, "cwd": cwd, "executable": self.executable,

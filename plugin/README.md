@@ -210,6 +210,11 @@ agent in Remote:
   identity, detached execution, observable events, cancellation, and durable
   completion receipts. `start_agent(adapter_id="pi", ...)` is the entrypoint.
   Caller-selected `options.provider` and `options.model` override defaults.
+  To reuse an existing project-local `.env` **without copying credentials**,
+  pass `options={"provider":"nvidia","model":"z-ai/glm-5.3","env_file":".env"}`.
+  The env file must resolve inside that authorized project workspace; only
+  its **path** is stored in the Agent Session. The Pi subprocess loads it
+  using Node.js `--env-file`. No credentials enter the Agent prompt or receipt.
 
 For a source-based Connector with Node.js 22.19+, install the pinned SDK
 dependency in the checked-out plugin directory:

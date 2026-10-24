@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import subprocess
+import shutil
 import sys
 import threading
 import time
@@ -20,6 +21,11 @@ def cli_args(record):
             "--session-id", record["session_id"]]
     if opts.get("tools"):
         args += ["--tools", ",".join(opts["tools"])]
+    if opts.get("env_file"):
+        node = shutil.which("node")
+        if not node:
+            raise RuntimeError("Node.js required for Pi env_file support")
+        return [node, "--env-file=" + opts["env_file"], *args, "--", record["prompt"]]
     return args + ["--", record["prompt"]]
 
 
