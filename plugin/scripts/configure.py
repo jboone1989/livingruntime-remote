@@ -102,8 +102,8 @@ def main() -> None:
 
     if args.host and args.host not in {"local", "localhost", "127.0.0.1", "::1"}:
         parser.error("Install a Connector on each machine instead of configuring remote SSH hosts")
-    if args.host_id != DEFAULT_HOST_ID:
-        parser.error("Each Connector manages only its own host; --host-id must be main")
+    if args.host_id != DEFAULT_HOST_ID and args.host_id not in (existing.get("hosts") or {}):
+        parser.error("Install a Connector on that Host instead of creating another Host")
 
     if existing:
         cfg = normalize(existing)
