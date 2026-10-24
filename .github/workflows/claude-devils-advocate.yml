@@ -10,10 +10,6 @@ permissions:
   contents: read
   issues: write
 
-concurrency:
-  group: devils-advocate-${{ github.repository }}-${{ github.event.issue.number }}
-  cancel-in-progress: false
-
 jobs:
   challenge:
     # Labels require GitHub triage/write access; slash commands require the repo owner.
@@ -24,6 +20,9 @@ jobs:
         (github.event_name == 'issues' && github.event.label.name == 'devils-advocate') ||
         (github.event_name == 'issue_comment' && github.actor == github.repository_owner && github.event.comment.body == '/devils-advocate')
       )
+    concurrency:
+      group: devils-advocate-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
     runs-on: [self-hosted, Linux, X64, claude-review]
     timeout-minutes: 12
     steps:
