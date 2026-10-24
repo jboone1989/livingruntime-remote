@@ -1358,7 +1358,7 @@ class Relay:
         rows = await asyncio.gather(*(inspect(item) for item in connectors))
         devices = [host for row in rows for host in row["devices"]]
         default = next((host for host in devices
-                        if any(c["connector_id"] == host["connector_id"] and
+                        if any(c["device_id"] == host["connector_id"] and
                                c.get("default") for c in connectors)
                         and host.get("default")), None)
         return {
@@ -3024,19 +3024,24 @@ def create_mcp(
         payload = {"adapter_id": adapter_id, "goal": goal, "project": project,
                    "device": device, "options": options}
         if device:
-            # Resolve to a stable Connector ID so follow-ups need no model memory.
-            selector, forwarded = relay._connector_route({"device": device})
-            if selector is None:
+            # Pin the same Connector for launch and follow-up: the default can
+            # fail over when offline, so guessing a prefix before routing is unsafe.
+            selector, forwarded = relay._connector_route(payload)
+            if selector:
+                target = await relay._wait_for_online_device(user_sub, selector)
+            else:
                 try:
-                    target = relay.store.device_for_user(user_sub, device)
+                    chosen = relay.store.device_for_user(user_sub, device)
                 except RuntimeError as exc:
                     if not str(exc).startswith("unknown paired connector"):
                         raise
-                    target = relay.store.device_for_user(user_sub)
-            else:
-                target = relay.store.device_for_user(user_sub, selector)
-            result = await relay.call(user_sub, "start_agent", payload)
-            if isinstance(result, dict) and result.get("session_id") and target:
+                    target = await relay._wait_for_online_device(user_sub, None)
+                else:
+                    target = await relay._wait_for_online_device(user_sub, chosen["device_id"])
+                    forwarded["device"] = None
+            result = await relay.call(user_sub, "start_agent", forwarded,
+                                      connector=target["device_id"])
+            if isinstance(result, dict) and result.get("session_id"):
                 result = {**result, "session_id": target["device_id"] + "::" + result["session_id"]}
             return result
         match = await relay.resolve_agent(user_sub, adapter_id, project)
