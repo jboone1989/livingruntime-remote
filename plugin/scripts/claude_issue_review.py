@@ -45,8 +45,8 @@ def report_input(issue: dict, comments: list, owner: str):
     return context, digest
 
 
-def already_reviewed(comments: list, digest: str):
-    return any((c.get("user") or {}).get("login") == "github-actions[bot]" and
+def already_reviewed(comments: list, digest: str, reporter: str = "github-actions[bot]"):
+    return any((c.get("user") or {}).get("login") in {"github-actions[bot]", reporter} and
                f"{MARKER}{digest} -->" in (c.get("body") or "") for c in comments)
 
 
@@ -96,6 +96,7 @@ def main():
     ap.add_argument("--repo", required=True)
     ap.add_argument("--issue", required=True, type=int)
     ap.add_argument("--owner", required=True)
+    ap.add_argument("--reporter", default="github-actions[bot]")
     ap.add_argument("--gh", default="gh")
     ap.add_argument("--claude", required=True)
     ap.add_argument("--timeout", type=int, default=360)
@@ -106,7 +107,7 @@ def main():
         print("skip: closed Issue")
         return
     context, digest = report_input(issue, comments, args.owner)
-    if already_reviewed(comments, digest):
+    if already_reviewed(comments, digest, args.reporter):
         print("skip: same input previously reviewed")
         return
     report = invoke_claude(args.claude, Path.cwd(), context, args.timeout)
@@ -114,7 +115,7 @@ def main():
     current_issue = gh_json(args.gh, f"repos/{args.repo}/issues/{args.issue}")
     current_comments = gh_json(args.gh, f"repos/{args.repo}/issues/{args.issue}/comments?per_page=100")
     _, current_digest = report_input(current_issue, current_comments, args.owner)
-    if digest != current_digest or already_reviewed(current_comments, digest):
+    if digest != current_digest or already_reviewed(current_comments, digest, args.reporter):
         print("skip: input changed or already reviewed while Claude was running")
         return
     body = f"{MARKER}{digest} -->\n### Claude · 独立反方审查\n\n{report}\n\n---\n只读建议，是否采纳由用户决定。"

@@ -5,6 +5,9 @@ on:
     types: [labeled]
   issue_comment:
     types: [created]
+  schedule:
+    - cron: "3,13,23,33,43,53 * * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -41,3 +44,40 @@ jobs:
             --gh /home/ubuntu/.local/bin/gh \
             --claude /home/ubuntu/.local/bin/claude \
             --timeout 360
+
+  scan:
+    # One existing Runner examines all repos owned by this account.
+    # Each ordinary scan makes zero Claude calls unless an Issue opted in.
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' && github.actor == github.repository_owner &&
+       (github.event.comment.body == '/scan-devils-advocate' ||
+        github.event.comment.body == '/scan-devils-advocate-dry-run'))
+    concurrency:
+      group: claude-cross-repo-scan
+      cancel-in-progress: false
+    runs-on: [self-hosted, Linux, X64, claude-review]
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Review explicitly requested proposals across my repositories
+        env:
+          OWNER: ${{ github.repository_owner }}
+          EVENT: ${{ github.event_name }}
+          COMMENT: ${{ github.event.comment.body }}
+        run: |
+          set -eu
+          flags=()
+          if [ "$COMMENT" = '/scan-devils-advocate-dry-run' ]; then
+            flags+=(--dry-run)
+          fi
+          # Deliberately use the existing local gh login on the VM09 Runner:
+          # the GitHub Actions GITHUB_TOKEN only accesses this source repo.
+          python3 plugin/scripts/claude_cross_repo_scan.py \
+            --owner "$OWNER" \
+            --gh /home/ubuntu/.local/bin/gh \
+            --claude /home/ubuntu/.local/bin/claude \
+            --max-reviews 1 "${flags[@]}"
