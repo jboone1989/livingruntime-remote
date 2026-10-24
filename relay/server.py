@@ -3596,7 +3596,10 @@ nav a{{margin-right:18px}}
             if not isinstance(report, str) or not 1 <= len(report) <= 14000:
                 raise ValueError("invalid review report")
             target_id = str(body["connector_id"])
-            target = store.device_for_user(str(caller["user_sub"]), target_id)
+            try:
+                target = store.device_for_user(str(caller["user_sub"]), target_id)
+            except RuntimeError:
+                raise PermissionError("target Connector is not paired to this owner") from None
             if not target or target["device_id"] != target_id or target["name"] != "VM-0-13-ubuntu":
                 raise PermissionError("target must be the paired VM13 Codex Connector")
             if target_id == caller["device_id"]:
