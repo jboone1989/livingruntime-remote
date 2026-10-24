@@ -76,3 +76,64 @@ jobs:
             --claude /home/ubuntu/.local/bin/claude \
             --state "$state" --work "$work" --timeout 180 \
             --expected-sha "$EXPECTED_SHA"
+
+  low-risk-merge:
+    # GitHub itself enforces check/docker/e2e/claude-review before the merge.
+    # Only this bounded, docs-only slice is eligible for immediate SHA-guarded merge.
+    needs: [dispatched-review]
+    if: >-
+      github.event_name == 'repository_dispatch' &&
+      needs.dispatched-review.result == 'success' &&
+      github.event.client_payload.repository == 'jboone1989/EventGraph'
+    runs-on: [self-hosted, Linux, X64, claude-review]
+    timeout-minutes: 3
+    steps:
+      - name: Merge only verified low-risk documentation PRs
+        env:
+          REPO: ${{ github.event.client_payload.repository }}
+          PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+          REVIEWED_SHA: ${{ github.event.client_payload.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$REPO" == 'jboone1989/EventGraph' ]]
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          gh=/home/ubuntu/.local/bin/gh
+          pr="$("$gh" api "repos/$REPO/pulls/$PR_NUMBER")"
+          # Refuse forks, drafts, other targets, and stale review events.
+          if ! jq -e --arg sha "$REVIEWED_SHA" --arg repo "$REPO" '
+              .state == "open" and (.draft | not) and
+              .base.ref == "develop" and .head.repo.full_name == $repo and
+              .head.sha == $sha and .changed_files >= 1 and .changed_files <= 3
+            ' <<< "$pr" >/dev/null; then
+            echo "Skip: ineligible PR or stale reviewed SHA"
+            exit 0
+          fi
+          # Explicit success is required; a skipped/failed review cannot merge.
+          reviewed="$("$gh" api "repos/$REPO/commits/$REVIEWED_SHA/status" \
+            --jq '[.statuses[] | select(.context == "claude-review")][0].state // "missing"')"
+          if [[ "$reviewed" != success ]]; then
+            echo "Skip: Claude review is $reviewed"
+            exit 0
+          fi
+          files="$("$gh" api "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100")"
+          # Pilot allowlist only: Markdown examples, not application, policy,
+          # release, security, dependencies, migrations, scripts or CI files.
+          if ! jq -e --argjson count "$(jq -r '.changed_files' <<< "$pr")" '
+              length == $count and
+              (map(.additions + .deletions) | add <= 80) and
+              all(.[];
+                (.status == "added" or .status == "modified") and
+                (.filename | test("^docs/examples/([A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+[.]md$"))
+              )
+            ' <<< "$files" >/dev/null; then
+            echo "Skip: not in conservative docs-only allowlist"
+            exit 0
+          fi
+          # Final SHA check is enforced atomically by GitHub. No bypass,
+          # no retained per-PR Auto-merge setting, and no self-written merge engine.
+          echo "Eligible LOW risk: $REPO#$PR_NUMBER at $REVIEWED_SHA"
+          "$gh" api -X PUT "repos/$REPO/pulls/$PR_NUMBER/merge" \
+            -f sha="$REVIEWED_SHA" -f merge_method=squash \
+            -f "commit_title=docs: merge verified examples (#$PR_NUMBER)"
