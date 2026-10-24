@@ -136,10 +136,14 @@ def main(path):
                     continue
     stop_monitor = threading.Event()
     stdin_lock = threading.Lock()
+    timeout_lock = threading.Lock()
+    pending_approvals = set()
+    deadline = [0.0]
 
     try:
         opts = record.get("options") or {}
         timeout = opts.get("timeout_seconds", 900)
+        deadline[0] = time.monotonic() + timeout
         args = cli_args(record)
         with events_path.open("a", encoding="utf-8") as events:
             os.chmod(events_path, 0o600)
@@ -194,6 +198,9 @@ def main(path):
                                         return
                                     proc.stdin.write(json.dumps(control) + "\n")
                                     proc.stdin.flush()
+                                with timeout_lock:
+                                    pending_approvals.discard(item["request_id"])
+                                    deadline[0] = time.monotonic() + timeout
                             offset = f.tell()
                     except (OSError, BrokenPipeError, ValueError):
                         return
@@ -201,15 +208,19 @@ def main(path):
             if opts.get("duplex"):
                 threading.Thread(target=apply_decisions, daemon=True).start()
 
-            def stop_timeout():
+            def monitor_timeout():
                 nonlocal killed
-                if proc.poll() is None:
-                    killed = True
-                    proc.kill()
+                # User approval is not model compute time. Pause the active-work
+                # deadline while any native CLI tool request awaits an answer.
+                while not stop_monitor.wait(0.25):
+                    with timeout_lock:
+                        expired = not pending_approvals and time.monotonic() >= deadline[0]
+                    if expired and proc.poll() is None:
+                        killed = True
+                        proc.kill()
+                        return
 
-            timer = threading.Timer(timeout, stop_timeout)
-            timer.daemon = True
-            timer.start()
+            threading.Thread(target=monitor_timeout, daemon=True).start()
             last_result = None
             try:
                 for line in proc.stdout:
@@ -225,6 +236,13 @@ def main(path):
                         last_result = raw
                     for event in public_events(raw):
                         append(event)
+                        if event["kind"] == "permission_request" and opts.get("duplex") and event["approvable"]:
+                            with timeout_lock:
+                                pending_approvals.add(event["request_id"])
+                        if event["kind"] == "permission_cancelled":
+                            with timeout_lock:
+                                pending_approvals.discard(event["request_id"])
+                                deadline[0] = time.monotonic() + timeout
                         if (event["kind"] == "permission_request" and
                                 not event["approvable"] and opts.get("duplex")):
                             deny = {"type": "control_response", "response": {
@@ -243,7 +261,6 @@ def main(path):
                 stderr_thread.join(timeout=1)
                 stderr = "".join(stderr_parts)[-1500:]
             finally:
-                timer.cancel()
                 stop_monitor.set()
                 if proc.poll() is None:
                     proc.kill()
