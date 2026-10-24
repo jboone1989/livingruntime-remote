@@ -7,6 +7,7 @@ Only explicitly labeled Issues or exact owner /devils-advocate comments qualify.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from urllib.parse import urlencode, urlparse
@@ -25,7 +26,12 @@ def search_issues(gh: str, owner: str) -> list[tuple[str, int]]:
         endpoint = "search/issues?" + urlencode({
             "q": query, "sort": "updated", "order": "desc", "per_page": 50,
         })
-        for item in gh_json(gh, endpoint).get("items", []):
+        try:
+            result = gh_json(gh, endpoint)
+        except (RuntimeError, subprocess.TimeoutExpired, ValueError) as exc:
+            print(f"search unavailable for {query}: {exc}", file=sys.stderr)
+            continue
+        for item in result.get("items", []):
             path = urlparse(item.get("html_url", "")).path.strip("/").split("/")
             if len(path) != 4 or path[0].casefold() != owner.casefold() or path[2] != "issues":
                 continue
@@ -70,9 +76,20 @@ def scan(owner: str, gh: str, claude: str, max_reviews: int, dry_run: bool) -> i
     count = 0
     attempts = 0
     had_failure = False
-    for repo, number in search_issues(gh, owner):
-        issue = gh_json(gh, f"repos/{repo}/issues/{number}")
-        comments = gh_json(gh, f"repos/{repo}/issues/{number}/comments?per_page=100")
+    candidates = search_issues(gh, owner)
+    # One subscription call per poll. Rotate the first candidate between ticks
+    # instead of persisting retries, cooldown tables or another service.
+    if candidates:
+        offset = int(os.environ.get("GITHUB_RUN_NUMBER") or 0) % len(candidates)
+        candidates = candidates[offset:] + candidates[:offset]
+    for repo, number in candidates:
+        try:
+            issue = gh_json(gh, f"repos/{repo}/issues/{number}")
+            comments = gh_json(gh, f"repos/{repo}/issues/{number}/comments?per_page=100")
+        except (RuntimeError, subprocess.TimeoutExpired, ValueError) as exc:
+            print(f"skip {repo}#{number}: GitHub read failed: {exc}", file=sys.stderr)
+            had_failure = True
+            continue
         if len(comments) >= 100:
             print(f"skip {repo}#{number}: comment pagination required")
             continue
@@ -85,7 +102,7 @@ def scan(owner: str, gh: str, claude: str, max_reviews: int, dry_run: bool) -> i
         if dry_run:
             count += 1
             continue
-        if attempts >= max_reviews + 1:
+        if attempts >= max_reviews:
             print("review attempt budget reached", flush=True)
             break
         attempts += 1
@@ -96,7 +113,7 @@ def scan(owner: str, gh: str, claude: str, max_reviews: int, dry_run: bool) -> i
             "--timeout", "330",
         ]
         try:
-            result = subprocess.run(args, text=True, capture_output=True, timeout=410)
+            result = subprocess.run(args, text=True, capture_output=True, timeout=500)
         except subprocess.TimeoutExpired:
             print(f"review timed out for {repo}#{number}", file=sys.stderr)
             had_failure = True
