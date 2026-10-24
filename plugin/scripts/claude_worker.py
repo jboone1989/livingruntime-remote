@@ -6,6 +6,7 @@ No second agent engine is implemented here.
 from __future__ import annotations
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -63,14 +64,34 @@ def cli_args(record):
 
 
 def public_events(raw):
+    """Bounded developer-visible metadata, without raw tool arguments or tool output."""
     kind = raw.get("type")
-    if kind == "system" and raw.get("subtype") == "init":
-        return [{"kind": "session", "model": str(raw.get("model", ""))[:100]}]
+    subtype = raw.get("subtype")
+    parent = raw.get("parent_tool_use_id")
+    context = {"parent_tool_use_id": str(parent)[:128]} if isinstance(parent, str) and parent else {}
+    if kind == "system":
+        if subtype == "init":
+            event = {"kind": "session", "model": str(raw.get("model", ""))[:100]}
+            servers = raw.get("mcp_servers")
+            if isinstance(servers, list):
+                event["mcp_servers"] = [
+                    {"name": str(x.get("name", ""))[:100], "status": str(x.get("status", ""))[:60]}
+                    for x in servers[:30] if isinstance(x, dict)
+                ]
+            for field in ("skills", "agents"):
+                items = raw.get(field)
+                if isinstance(items, list):
+                    event[field] = [str(x)[:100] for x in items[:50] if isinstance(x, str)]
+            return [event]
+        if subtype in ("hook_started", "hook_progress", "hook_response"):
+            return [{"kind": subtype, "hook_name": str(raw.get("hook_name", raw.get("hook_id", "")))[:100], **context}]
+        if subtype in ("task_started", "task_progress", "task_notification", "api_retry", "compact_boundary"):
+            return [{"kind": subtype, "task_id": str(raw.get("task_id", ""))[:128], **context}]
     if kind == "stream_event":
         ev = raw.get("event") or {}
         delta = ev.get("delta") or {}
         if delta.get("type") == "text_delta" and delta.get("text"):
-            return [{"kind": "text_delta", "text": str(delta["text"])[:4000]}]
+            return [{"kind": "text_delta", "text": str(delta["text"])[:4000], **context}]
         return []
     if kind == "assistant":
         result = []
@@ -78,19 +99,27 @@ def public_events(raw):
             if not isinstance(item, dict):
                 continue
             if item.get("type") == "tool_use":
-                result.append({"kind": "tool_call", "name": str(item.get("name", "Tool"))[:100],
-                               "tool_id": str(item.get("id", ""))[:128]})
+                event = {"kind": "tool_call", "name": str(item.get("name", "Tool"))[:100],
+                         "tool_id": str(item.get("id", ""))[:128], **context}
+                detail = item.get("input")
+                if isinstance(detail, dict):
+                    if item.get("name") == "Skill" and isinstance(detail.get("skill"), str):
+                        event["skill"] = detail["skill"][:100]
+                    elif item.get("name") in ("Agent", "Task") and isinstance(detail.get("subagent_type"), str):
+                        event["subagent_type"] = detail["subagent_type"][:100]
+                result.append(event)
             elif item.get("type") == "text" and item.get("text"):
-                result.append({"kind": "assistant_text", "text": str(item["text"])[:4000]})
+                result.append({"kind": "assistant_text", "text": str(item["text"])[:4000], **context})
         return result[:30]
     if kind in ("hook_started", "hook_progress", "hook_response"):
-        return [{"kind": kind, "hook_name": str(raw.get("hook_name", raw.get("hook_id", "")))[:100]}]
+        # Older CLI versions also emitted some hook events as top-level types.
+        return [{"kind": kind, "hook_name": str(raw.get("hook_name", raw.get("hook_id", "")))[:100], **context}]
     if kind == "user":
         results = []
         for item in (raw.get("message") or {}).get("content", []):
             if isinstance(item, dict) and item.get("type") == "tool_result":
                 results.append({"kind": "tool_result", "tool_id": str(item.get("tool_use_id", ""))[:128],
-                                "success": not item.get("is_error", False)})
+                                "success": not item.get("is_error", False), **context})
         return results[:30]
     if kind == "control_request":
         req = raw.get("request") or {}
@@ -99,11 +128,9 @@ def public_events(raw):
         rid = raw.get("request_id")
         if not isinstance(rid, str) or not rid or len(rid) > 128:
             return []
-        # Include the requested input so the human can make an informed decision.
         tool_input = req.get("input") if isinstance(req.get("input"), dict) else {}
         approvable = len(json.dumps(tool_input)) <= 12000
         if not approvable:
-            # Never permit a truncated preview to become the executed tool input.
             tool_input = {"truncated": True}
         return [{"kind": "permission_request", "request_id": rid,
                  "tool_name": str(req.get("tool_name", ""))[:100],
@@ -114,6 +141,26 @@ def public_events(raw):
         return [{"kind": "completion", "success": not bool(raw.get("is_error")),
                  "turns": raw.get("num_turns"), "duration_ms": raw.get("duration_ms")}]
     return []
+
+def terminate_cli_group(proc):
+    """Ask native Claude to stop, then reap any Bash/MCP children in its group."""
+    if proc is None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        pass
+    # Even when Claude exits promptly, a child may still hold stdout open.
+    # Always clear remaining members of the isolated Claude process group.
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait()
 
 
 def main(path):
@@ -139,6 +186,7 @@ def main(path):
     timeout_lock = threading.Lock()
     pending_approvals = {}
     deadline = [0.0]
+    old_sigterm_handler = None
 
     try:
         opts = record.get("options") or {}
@@ -158,6 +206,7 @@ def main(path):
             proc = subprocess.Popen(
                 args, cwd=record["cwd"], stdin=subprocess.PIPE if opts.get("duplex") else subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
+                start_new_session=True,
             )
             stderr_parts = []
             def collect_stderr():
@@ -166,6 +215,16 @@ def main(path):
                         stderr_parts.append(chunk)
             stderr_thread = threading.Thread(target=collect_stderr, daemon=True)
             stderr_thread.start()
+            if threading.current_thread() is threading.main_thread():
+                old_sigterm_handler = signal.getsignal(signal.SIGTERM)
+                def on_worker_term(_signum, _frame):
+                    # Native cancel targets the worker's original process group.
+                    # Claude lives in another group so its own children can be reaped.
+                    output["status"] = "CANCELLED"
+                    output["error"] = "Claude worker cancelled"
+                    terminate_cli_group(proc)
+                    raise SystemExit(143)
+                signal.signal(signal.SIGTERM, on_worker_term)
             if opts.get("duplex"):
                 message = {"type": "user", "message": {"role": "user", "content": record["prompt"]}}
                 with stdin_lock:
@@ -218,9 +277,9 @@ def main(path):
                         now = time.monotonic()
                         expired = ((not pending_approvals and now >= deadline[0]) or
                                    (bool(pending_approvals) and now - min(pending_approvals.values()) >= approval_timeout))
-                    if expired and proc.poll() is None:
+                    if expired:
                         killed = True
-                        proc.kill()
+                        terminate_cli_group(proc)
                         return
 
             threading.Thread(target=monitor_timeout, daemon=True).start()
@@ -235,6 +294,12 @@ def main(path):
                         continue
                     if not isinstance(raw, dict):
                         continue
+                    # Inactivity rather than total wall time: active compilation,
+                    # tool events and model streaming should keep a task alive.
+                    # Do not reset the deadline while waiting for human approval.
+                    with timeout_lock:
+                        if not pending_approvals:
+                            deadline[0] = time.monotonic() + timeout
                     if raw.get("type") == "result":
                         last_result = raw
                     for event in public_events(raw):
@@ -268,8 +333,7 @@ def main(path):
             finally:
                 stop_monitor.set()
                 if proc.poll() is None:
-                    proc.kill()
-                    proc.wait()
+                    terminate_cli_group(proc)
             if killed:
                 output.update({"status": "STALLED", "error": "Claude task timed out"})
             elif returncode:
@@ -294,6 +358,8 @@ def main(path):
         output["error"] = type(exc).__name__ + ": " + str(exc)[:300]
     finally:
         stop_monitor.set()
+        if old_sigterm_handler is not None and threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGTERM, old_sigterm_handler)
         output["finished_at"] = time.time()
         tmp = receipt_path.with_suffix(".tmp")
         with tmp.open("w", encoding="utf-8") as f:
