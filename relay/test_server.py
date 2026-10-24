@@ -1067,7 +1067,8 @@ class RelayServerTests(unittest.TestCase):
         self.assertIn(server.LONG_JOB_WIDGET_LEGACY_URI, resource_uris)
         self.assertIn(server.LONG_JOB_WIDGET_V3_URI, resource_uris)
         self.assertIn(server.LONG_JOB_WIDGET_V4_URI, resource_uris)
-        self.assertTrue(server.CONTROL_PLANE_WIDGET_URI.endswith("control-plane-v11.html"))
+        self.assertTrue(server.CONTROL_PLANE_WIDGET_URI.endswith("control-plane-v12.html"))
+        self.assertIn(server.CONTROL_PLANE_WIDGET_V11_URI, resource_uris)
         self.assertIn(server.CONTROL_PLANE_WIDGET_V8_URI, resource_uris)
         self.assertIn(server.CONTROL_PLANE_WIDGET_V7_URI, resource_uris)
         self.assertIn(server.CONTROL_PLANE_WIDGET_V6_URI, resource_uris)
@@ -1196,6 +1197,22 @@ class RelayServerTests(unittest.TestCase):
             legacy_control_widget.model_dump(by_alias=True)["_meta"]["openai/widgetDomain"],
             server.PI_JOB_WIDGET_DOMAIN,
         )
+
+    def test_control_plane_v12_exposes_real_machine_and_agent_actions(self):
+        widget = server.CONTROL_PLANE_WIDGET_V12_HTML
+        self.assertIn("device-list", widget)
+        self.assertIn("agent-list", widget)
+        self.assertIn("project-list", widget)
+        self.assertIn("agent-select", widget)
+        self.assertIn("project-select", widget)
+        self.assertIn("sendFollowUpMessage", widget)
+        self.assertIn("remote_overview", widget)
+        self.assertIn('"ui/initialize"', widget)
+        self.assertIn('"ui/notifications/tool-result"', widget)
+        self.assertIn("esc(x.connector_id)", widget)
+        self.assertIn("部分设备离线或尚不支持发现", widget)
+        self.assertIn("data-device", widget)
+        self.assertIn("control-plane-v11 script loaded", server.CONTROL_PLANE_WIDGET_HTML)
 
     def test_pi_job_widget_uses_event_wait_without_followup_prompt(self):
         html = server.PI_JOB_WIDGET_HTML
