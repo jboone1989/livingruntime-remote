@@ -7,7 +7,6 @@ on:
     types: [created]
   schedule:
     - cron: "3,13,23,33,43,53 * * * *"
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -50,7 +49,6 @@ jobs:
     # Each ordinary scan makes zero Claude calls unless an Issue opted in.
     if: >-
       github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'issue_comment' && github.actor == github.repository_owner &&
        (github.event.comment.body == '/scan-devils-advocate' ||
         github.event.comment.body == '/scan-devils-advocate-dry-run'))
