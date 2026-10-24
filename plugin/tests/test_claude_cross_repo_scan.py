@@ -44,8 +44,53 @@ class CrossRepoTest(unittest.TestCase):
         comment = {"user": {"login": "stranger"}, "body": "/devils-advocate"}
         self.assertFalse(scan.has_new_request(issue, [comment], "owner", "owner"))
 
+    def test_duplicate_digest_does_not_consume_daily_slot(self):
+        from claude_issue_review import report_input, MARKER
+        issue = {"title": "Plan", "body": "Original", "state": "open",
+                 "labels": [{"name": "devils-advocate"}]}
+        _, digest = report_input(issue, [], "owner")
+        report = {"user": {"login": "owner"}, "created_at": "2026-10-24T05:00:00Z",
+                  "body": f"{MARKER}{digest} -->\nPrevious review"}
+        newer_command = {"user": {"login": "owner"}, "created_at": "2026-10-24T05:01:00Z",
+                         "body": "/devils-advocate"}
+        def get(gh, endpoint):
+            if endpoint == "user":
+                return {"login": "owner"}
+            if "/comments?" in endpoint and endpoint.startswith("repos/owner/Old/"):
+                return [report, newer_command]
+            if "/comments?" in endpoint:
+                return []
+            return issue
+        with patch.object(scan, "gh_json", side_effect=get), \
+             patch.object(scan, "search_issues", return_value=[
+                 ("owner/Old", 1), ("owner/New", 2)]), \
+             patch.object(scan.subprocess, "run") as run:
+            self.assertEqual(scan.scan("owner", "gh", "claude", 1, False), 0)
+            self.assertEqual(run.call_count, 1)
+            self.assertIn("owner/New", run.call_args.args[0])
+
+    def test_failed_candidate_does_not_abort_subsequent_review(self):
+        issue = {"title": "Plan", "body": "Original", "state": "open",
+                 "labels": [{"name": "devils-advocate"}]}
+        def get(gh, endpoint):
+            if endpoint == "user":
+                return {"login": "owner"}
+            if "/comments?" in endpoint:
+                return []
+            return issue
+        from types import SimpleNamespace
+        with patch.object(scan, "gh_json", side_effect=get), \
+             patch.object(scan, "search_issues", return_value=[
+                 ("owner/Fail", 1), ("owner/Pass", 2)]), \
+             patch.object(scan.subprocess, "run", side_effect=[
+                 SimpleNamespace(returncode=1, stdout="", stderr="failed"),
+                 SimpleNamespace(returncode=0, stdout="reviewed Issue #2: abc", stderr=""),
+             ]) as run:
+            self.assertEqual(scan.scan("owner", "gh", "claude", 1, False), 1)
+            self.assertEqual(run.call_count, 2)
+
     def test_scan_dry_run_skips_claude(self):
-        issue = {"state": "open", "labels": [{"name": "devils-advocate"}]}
+        issue = {"title": "Proposal", "body": "Test the opt-in", "state": "open", "labels": [{"name": "devils-advocate"}]}
         def get(gh, endpoint):
             if endpoint == "user":
                 return {"login": "jboone1989"}
