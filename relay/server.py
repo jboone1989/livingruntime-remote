@@ -1346,6 +1346,13 @@ class Relay:
                 if include_resources and "inventory" in default:
                     entry["inventory"] = default["inventory"]
             if entry["migration_required"]:
+                entry["legacy_hosts"] = [
+                    {"host_id": h["device_id"],
+                     "route": cid + "::" + h["device_id"],
+                     "transport": h.get("transport"),
+                     "online": bool(h.get("online"))}
+                    for h in managed
+                ]
                 row["status"] = "legacy_configuration"
             return row
 
@@ -1376,6 +1383,8 @@ class Relay:
                         raise
                     target = await self._wait_for_online_device(user_sub, None)
                 else:
+                    if chosen is None:
+                        raise RuntimeError("No paired Connector; pair a machine before starting an Agent")
                     target = await self._wait_for_online_device(user_sub, chosen["device_id"])
                     forwarded["device"] = None
             result = await self.call(user_sub, "start_agent", forwarded,
@@ -1405,8 +1414,7 @@ class Relay:
             )
         if len(candidates) != 1:
             raise ValueError(
-                "Agent is available on multiple hosts; specify device using "
-                "the exact connector ID and inner host (connector-id::host)."
+                "Agent is available on multiple machines; specify device=<connector_id>."
             )
         return candidates[0]
 
@@ -1473,8 +1481,12 @@ class Relay:
                          "cancel_agent", "watch_agent_events", "decide_agent_permission"}
         if tool in session_tools and isinstance(original_session_id, str) and "::" in original_session_id:
             owner, inner_session = original_session_id.split("::", 1)
-            if not owner or not inner_session or (connector is not None and connector != owner):
-                raise ValueError("invalid or conflicting connector-scoped Agent session")
+            if not owner or not inner_session:
+                raise ValueError("invalid connector-scoped Agent session")
+            if connector is not None:
+                chosen = self.store.device_for_user(user_sub, connector)
+                if not chosen or chosen["device_id"] != owner:
+                    raise ValueError("conflicting connector-scoped Agent session")
             connector = owner
             args = {**args, "session_id": inner_session}
         else:
