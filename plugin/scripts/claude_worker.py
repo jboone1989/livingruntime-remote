@@ -137,12 +137,13 @@ def main(path):
     stop_monitor = threading.Event()
     stdin_lock = threading.Lock()
     timeout_lock = threading.Lock()
-    pending_approvals = set()
+    pending_approvals = {}
     deadline = [0.0]
 
     try:
         opts = record.get("options") or {}
         timeout = opts.get("timeout_seconds", 900)
+        approval_timeout = opts.get("approval_timeout_seconds", 3600)
         deadline[0] = time.monotonic() + timeout
         args = cli_args(record)
         with events_path.open("a", encoding="utf-8") as events:
@@ -199,7 +200,7 @@ def main(path):
                                     proc.stdin.write(json.dumps(control) + "\n")
                                     proc.stdin.flush()
                                 with timeout_lock:
-                                    pending_approvals.discard(item["request_id"])
+                                    pending_approvals.pop(item["request_id"], None)
                                     deadline[0] = time.monotonic() + timeout
                             offset = f.tell()
                     except (OSError, BrokenPipeError, ValueError):
@@ -214,7 +215,9 @@ def main(path):
                 # deadline while any native CLI tool request awaits an answer.
                 while not stop_monitor.wait(0.25):
                     with timeout_lock:
-                        expired = not pending_approvals and time.monotonic() >= deadline[0]
+                        now = time.monotonic()
+                        expired = ((not pending_approvals and now >= deadline[0]) or
+                                   (bool(pending_approvals) and now - min(pending_approvals.values()) >= approval_timeout))
                     if expired and proc.poll() is None:
                         killed = True
                         proc.kill()
@@ -235,13 +238,15 @@ def main(path):
                     if raw.get("type") == "result":
                         last_result = raw
                     for event in public_events(raw):
-                        append(event)
+                        # Register BEFORE publication: an external client may approve
+                        # immediately after seeing the durable event.
                         if event["kind"] == "permission_request" and opts.get("duplex") and event["approvable"]:
                             with timeout_lock:
-                                pending_approvals.add(event["request_id"])
+                                pending_approvals[event["request_id"]] = time.monotonic()
+                        append(event)
                         if event["kind"] == "permission_cancelled":
                             with timeout_lock:
-                                pending_approvals.discard(event["request_id"])
+                                pending_approvals.pop(event["request_id"], None)
                                 deadline[0] = time.monotonic() + timeout
                         if (event["kind"] == "permission_request" and
                                 not event["approvable"] and opts.get("duplex")):
