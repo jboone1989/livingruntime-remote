@@ -134,6 +134,46 @@ class RelayServerTests(unittest.TestCase):
             found = asyncio.run(relay.resolve_agent("owner", "codex", "demo"))
         self.assertEqual(found["connector_id"], "first")
 
+    def test_agent_launch_pins_actual_connector_after_default_failover(self):
+        relay = server.Relay(self.store)
+
+        async def available(user, selector):
+            self.assertIsNone(selector)  # Bare inner Host, default Connector offline.
+            return {"device_id": "online-vm13", "name": "VM13"}
+
+        async def launched(user, tool, args, *, connector=None):
+            self.assertEqual(connector, "online-vm13")
+            self.assertEqual(args["device"], "main")
+            return {"session_id": "native"}
+
+        with patch.object(self.store, "device_for_user",
+                          side_effect=RuntimeError("unknown paired connector")), \
+             patch.object(relay, "_wait_for_online_device", side_effect=available), \
+             patch.object(relay, "call", side_effect=launched):
+            result = asyncio.run(relay.launch_agent(
+                "owner", "codex", "Read code", "workspace", device="main"))
+        self.assertEqual(result["session_id"], "online-vm13::native")
+
+    def test_agent_launch_uses_discovered_connector_and_inner_host(self):
+        relay = server.Relay(self.store)
+        match = {"id": "codex", "connector_id": "vm13",
+                 "device": "second", "project": "workspace", "launch_allowed": True}
+
+        async def resolved(user, adapter, project):
+            self.assertEqual((adapter, project), ("codex", "workspace"))
+            return match
+
+        async def launched(user, tool, args, *, connector=None):
+            self.assertEqual(connector, "vm13")
+            self.assertEqual(args["device"], "second")
+            return {"session_id": "real"}
+
+        with patch.object(relay, "resolve_agent", side_effect=resolved), \
+             patch.object(relay, "call", side_effect=launched):
+            result = asyncio.run(relay.launch_agent(
+                "owner", "codex", "Review", "workspace"))
+        self.assertEqual(result["session_id"], "vm13::real")
+
     def test_scoped_agent_session_routes_back_to_its_connector(self):
         relay = server.Relay(self.store)
 
