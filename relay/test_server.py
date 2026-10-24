@@ -132,6 +132,8 @@ class RelayServerTests(unittest.TestCase):
         self.assertEqual(device["route"], "cid")
         self.assertEqual(device["legacy_managed_hosts"], 2)
         self.assertTrue(device["migration_required"])
+        self.assertEqual([h["route"] for h in device["legacy_hosts"]],
+                         ["cid::main", "cid::other"])
         self.assertEqual(result["connectors"][0]["status"], "legacy_configuration")
 
     def test_agent_resolution_rejects_ambiguity_and_unauthorized_hosts(self):
@@ -197,6 +199,27 @@ class RelayServerTests(unittest.TestCase):
             result = asyncio.run(relay.launch_agent(
                 "owner", "codex", "Review", "workspace"))
         self.assertEqual(result["session_id"], "vm13::real")
+
+    def test_named_connector_session_alias_is_not_a_conflict(self):
+        relay = server.Relay(self.store)
+
+        async def online(user, selector):
+            self.assertEqual(selector, "vm13")
+            return {"device_id": "vm13", "name": "VM13"}
+
+        with patch.object(self.store, "device_for_user",
+                          return_value={"device_id": "vm13"}) as lookup, \
+             patch.object(relay, "_wait_for_online_device", side_effect=online), \
+             patch.object(self.store, "enqueue", return_value="task-1") as queued, \
+             patch.object(self.store, "result",
+                          return_value={"ok": True, "result": {"session_id": "native"}}):
+            result = asyncio.run(relay.call(
+                "owner", "get_agent_session",
+                {"session_id": "vm13::native"}, connector="VM13"))
+        lookup.assert_called_once_with("owner", "VM13")
+        queued.assert_called_once_with(
+            "owner", "vm13", "get_agent_session", {"session_id": "native"})
+        self.assertEqual(result["session_id"], "vm13::native")
 
     def test_scoped_agent_session_routes_back_to_its_connector(self):
         relay = server.Relay(self.store)
