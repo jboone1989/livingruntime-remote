@@ -56,6 +56,30 @@ class CodexRegistrationTests(unittest.TestCase):
                     adapter = CodexAdapter()
                     self.assertEqual(adapter.executable, str(codex))
 
+    def test_loopback_ssh_host_registers_existing_codex(self):
+        # VM09 runs the Connector locally but uses ssh localhost for its host.
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            workspace = home / "workspace"
+            workspace.mkdir()
+            codex = home / "codex"
+            codex.write_text("#!/bin/sh\necho codex\n")
+            codex.chmod(0o700)
+            config = home / ".livingruntime" / "remote.json"
+            config.parent.mkdir()
+            config.write_text(json.dumps({
+                "hosts": {"main": {"ssh_host": "localhost"}},
+                "projects": {"eventgraph": {"host": "main", "path": str(workspace)}},
+            }))
+            with patch.object(connector.Path, "home", return_value=home), \
+                 patch.object(connector, "_run",
+                              return_value=subprocess.CompletedProcess([], 0, "", "")):
+                result = connector.configure_codex(str(codex), "eventgraph")
+                self.assertTrue(result["configured"])
+                self.assertEqual(result["workspace"], str(workspace))
+            policy = json.loads((config.parent / "agent-policy.json").read_text())
+            self.assertIn("main:eventgraph:codex", policy["launch_allowlist"])
+
     def test_rejects_remote_host_project(self):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
