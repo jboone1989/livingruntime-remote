@@ -395,7 +395,7 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout):
         post_comment(gh, repo, number, body)
     commit_status(gh, repo, sha, "failure" if blocking else "success",
                   f"{len(findings)} verified findings; {int(blocking)} blocking")
-    if codex_handoff_eligible(pr, repo, diff, round_number, blocking):
+    if codex_handoff_eligible(fresh, repo, diff, round_number, blocking):
         try:
             previous = history.setdefault("handoffs", {}).get(sha)
             if not previous and not already_codex_handed_off(gh, repo, number, sha):
