@@ -21,6 +21,52 @@ DIFF = """diff --git a/src/a.mjs b/src/a.mjs
 """
 
 class ReviewerUnitTests(unittest.TestCase):
+    def test_codex_handoff_requires_opt_in_and_safe_changed_paths(self):
+        pr = {"base": {"ref": "develop"}, "labels": [{"name": "agent:autofix"}]}
+        diff = """diff --git a/packages/backend/src/admin/notes.ts b/packages/backend/src/admin/notes.ts
+--- a/packages/backend/src/admin/notes.ts
++++ b/packages/backend/src/admin/notes.ts
+@@ -1,1 +1,2 @@
+ original
++changed
+"""
+        self.assertTrue(reviewer.codex_handoff_eligible(
+            pr, "jboone1989/EventGraph", diff, 1, True))
+        self.assertFalse(reviewer.codex_handoff_eligible(
+            pr, "jboone1989/EventGraph", diff, 3, True))
+        self.assertFalse(reviewer.codex_handoff_eligible(
+            pr, "jboone1989/EventGraph", diff, 1, False))
+        self.assertFalse(reviewer.codex_handoff_eligible(
+            {**pr, "labels": []}, "jboone1989/EventGraph", diff, 1, True))
+        self.assertFalse(reviewer.codex_handoff_eligible(
+            pr, "jboone1989/EventGraph",
+            diff.replace("packages/backend/src/admin/notes.ts", ".github/workflows/check.yml"),
+            1, True))
+
+    def test_codex_handoff_calls_relay_with_existing_device_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".livingruntime"
+            path.mkdir()
+            (path / "relay.json").write_text(json.dumps({
+                "url": "https://remote.example.test",
+                "device_token": "private-credential",
+            }))
+            class Response:
+                def __enter__(self): return self
+                def __exit__(self, *_): return None
+                def read(self, _): return b'{"ok":true,"session_id":"lra_test"}'
+            with patch.object(reviewer.Path, "home", return_value=Path(tmp)), \
+                 patch.dict(reviewer.os.environ, {
+                     "EVENTGRAPH_CODEX_CONNECTOR_ID": "20501eff-0ef8-42bd-aa5b-283ff5994d52",
+                 }), \
+                 patch.object(reviewer.urllib.request, "urlopen", return_value=Response()) as send:
+                session = reviewer.handoff_to_vm13(11, "a" * 40, "verified review")
+                self.assertEqual(session, "lra_test")
+                request = send.call_args.args[0]
+                self.assertEqual(request.full_url, "https://remote.example.test/device/autofix")
+                self.assertEqual(request.get_header("Authorization"), "Bearer private-credential")
+                self.assertEqual(json.loads(request.data)["sha"], "a" * 40)
+
     def test_anchors_only_added_lines(self):
         self.assertEqual(reviewer.changed_lines(DIFF), {"src/a.mjs": {4}})
 
