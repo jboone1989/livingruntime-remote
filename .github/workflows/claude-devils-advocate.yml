@@ -58,7 +58,7 @@ jobs:
       group: claude-cross-repo-scan
       cancel-in-progress: false
     runs-on: [self-hosted, Linux, X64, claude-review]
-    timeout-minutes: 9
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
