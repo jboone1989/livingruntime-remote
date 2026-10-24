@@ -51,7 +51,8 @@ jobs:
       github.event_name == 'schedule' ||
       (github.event_name == 'issue_comment' && github.actor == github.repository_owner &&
        (github.event.comment.body == '/scan-devils-advocate' ||
-        github.event.comment.body == '/scan-devils-advocate-dry-run'))
+        github.event.comment.body == '/scan-devils-advocate-dry-run' ||
+        startsWith(github.event.comment.body, '/challenge ')))
     concurrency:
       group: claude-cross-repo-scan
       cancel-in-progress: false
@@ -68,6 +69,24 @@ jobs:
           COMMENT: ${{ github.event.comment.body }}
         run: |
           set -eu
+          # Owner can immediately review an exact Issue across repositories,
+          # without waiting for the fallback schedule or installing another Runner.
+          if [[ "$COMMENT" == "/challenge "* ]]; then
+            target="${COMMENT#/challenge }"
+            if [[ ! "$target" =~ ^([A-Za-z0-9_-]+)/([A-Za-z0-9_.-]+)\#([1-9][0-9]*)$ ]] || \
+               [[ "${BASH_REMATCH[1]}" != "$OWNER" ]]; then
+              echo "Invalid target; use /challenge $OWNER/repository#number" >&2
+              exit 1
+            fi
+            repo="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+            number="${BASH_REMATCH[3]}"
+            reporter="$(/home/ubuntu/.local/bin/gh api user --jq .login)"
+            python3 plugin/scripts/claude_issue_review.py \
+              --repo "$repo" --issue "$number" --owner "$OWNER" \
+              --reporter "$reporter" --gh /home/ubuntu/.local/bin/gh \
+              --claude /home/ubuntu/.local/bin/claude --timeout 330
+            exit 0
+          fi
           flags=()
           if [ "$COMMENT" = '/scan-devils-advocate-dry-run' ]; then
             flags+=(--dry-run)
