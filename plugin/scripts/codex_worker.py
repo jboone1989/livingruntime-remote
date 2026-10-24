@@ -195,7 +195,11 @@ def main(path):
             if timed_out[0]:
                 result.update({"status": "STALLED", "error": "Codex task idle timeout"})
             elif returncode:
-                result["error"] = "Codex exit=%s: %s" % (returncode, "".join(stderr_parts)[-1200:])
+                # Native turn.failed carries the actionable quota/auth reason.
+                # Some CLI failures exit nonzero without printing any stderr.
+                stderr = "".join(stderr_parts)[-1200:].strip()
+                reason = last_error if turn_failed and last_error else stderr or last_error
+                result["error"] = "Codex exit=%s: %s" % (returncode, reason[:1200])
             elif turn_failed or not turn_completed:
                 result["error"] = last_error or "Codex did not finish a successful turn"
             else:
