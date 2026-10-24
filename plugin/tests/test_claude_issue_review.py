@@ -40,6 +40,12 @@ class IssueReviewTests(unittest.TestCase):
         edited = dict(issue, body=issue["body"][:17000] + "DIFFERENT" + issue["body"][17009:])
         self.assertNotEqual(digest, review.report_input(edited, later, "owner")[1])
 
+    def test_null_issue_comment_author_is_ignored(self):
+        issue = {"title": "Plan", "body": "Goal"}
+        comments = [{"user": None, "body": "orphaned comment"}]
+        _, digest = review.report_input(issue, comments, "owner")
+        self.assertFalse(review.already_reviewed(comments, digest))
+
     def test_untrusted_user_cannot_forge_dedup_marker(self):
         issue = {"title": "Plan", "body": "Goal"}
         _, digest = review.report_input(issue, [], "owner")
