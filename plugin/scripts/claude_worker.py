@@ -245,7 +245,13 @@ def main(path):
                                    (bool(pending_approvals) and now - min(pending_approvals.values()) >= approval_timeout))
                     if expired and proc.poll() is None:
                         killed = True
-                        proc.kill()
+                        # Claude handles SIGTERM and terminates active Bash descendants.
+                        # SIGKILL would skip its native process-tree cleanup.
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
                         return
 
             threading.Thread(target=monitor_timeout, daemon=True).start()
@@ -260,6 +266,12 @@ def main(path):
                         continue
                     if not isinstance(raw, dict):
                         continue
+                    # Inactivity rather than total wall time: active compilation,
+                    # tool events and model streaming should keep a task alive.
+                    # Do not reset the deadline while waiting for human approval.
+                    with timeout_lock:
+                        if not pending_approvals:
+                            deadline[0] = time.monotonic() + timeout
                     if raw.get("type") == "result":
                         last_result = raw
                     for event in public_events(raw):
@@ -293,8 +305,12 @@ def main(path):
             finally:
                 stop_monitor.set()
                 if proc.poll() is None:
-                    proc.kill()
-                    proc.wait()
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
             if killed:
                 output.update({"status": "STALLED", "error": "Claude task timed out"})
             elif returncode:
