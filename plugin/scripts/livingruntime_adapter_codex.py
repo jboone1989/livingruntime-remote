@@ -74,7 +74,8 @@ class CodexAdapter(ClaudeCodeAdapter):
             return False
         try:
             cmd = (Path("/proc") / str(pid) / "cmdline").read_bytes()
-            return b"codex_worker.py" in cmd and str(self._path(record["session_id"])).encode() in cmd
+            native = b"agent-worker\x00codex\x00" in cmd
+            return (b"codex_worker.py" in cmd or native) and str(self._path(record["session_id"])).encode() in cmd
         except OSError:
             return False
 
