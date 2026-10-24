@@ -21,4 +21,12 @@ chmod 755 "$TMP"
 mv -f "$TMP" "$DEST/livingruntime-remote"
 trap - EXIT HUP INT TERM
 printf 'Installed %s to %s\n' "$VERSION" "$DEST/livingruntime-remote"
-printf 'Next: livingruntime-remote install --local --root "$HOME/workspace" --pair YOUR_CODE\n'
+# curl ... | sh consumes stdin, so guide the user via the controlling TTY.
+# CI/automation and existing paired installations remain noninteractive.
+if [ -t 1 ] && [ -r /dev/tty ] && [ ! -s "$HOME/.livingruntime/relay.json" ] \
+   && [ "${LIVINGRUNTIME_INSTALL_NO_SETUP:-0}" != 1 ]; then
+  printf 'Starting interactive pairing. Get a code from ChatGPT.\n'
+  "$DEST/livingruntime-remote" </dev/tty
+else
+  printf 'To pair later: %s\n' "$DEST/livingruntime-remote"
+fi
