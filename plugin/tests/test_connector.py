@@ -19,9 +19,10 @@ class ConnectorTests(unittest.TestCase):
     def test_write_remote_config_creates_workspace_scope(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(connector.Path, "home", return_value=Path(tmp)):
-                path = connector.write_remote_config("user@example", "/srv/project")
+                path = connector.write_remote_config("local", "/srv/project")
                 payload = json.loads(path.read_text(encoding="utf-8"))
-                self.assertEqual(payload["hosts"]["main"]["ssh_host"], "user@example")
+                self.assertEqual(payload["hosts"]["main"]["ssh_host"], "local")
+                self.assertEqual(payload["hosts"]["main"]["transport"], "local")
                 self.assertEqual(payload["hosts"]["main"]["roots"], ["/srv/project"])
                 self.assertEqual(payload["projects"]["workspace"]["path"], "/srv/project")
 
@@ -43,7 +44,7 @@ class ConnectorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(connector.Path, "home", return_value=Path(tmp)):
                 with self.assertRaises(ValueError):
-                    connector.write_remote_config("host", "relative/path")
+                    connector.write_remote_config("local", "relative/path")
 
     def test_windows_task_command_runs_connector(self):
         command = connector._windows_task_command([r"C:\Program Files\LivingRuntime\connector.exe"])
@@ -134,7 +135,8 @@ class ConnectorTests(unittest.TestCase):
                         with patch.object(connector, "install_autostart", return_value="test"):
                             result = connector.install(
                                 pair_code=None,
-                                host="host",
+                                host="local",
+                                local=True,
                                 root="/srv/project",
                                 relay_url="https://remote.livingruntime.com",
                                 name="test",
@@ -149,15 +151,22 @@ class ConnectorTests(unittest.TestCase):
             connector.main([])
         setup.assert_called_once_with()
 
-    def test_interactive_setup_keeps_explicit_ssh_option(self):
-        with patch("builtins.input", side_effect=["ABCD-EFGH", "n", "ubuntu@example", "/srv/project"]):
+    def test_interactive_setup_targets_this_machine(self):
+        with patch("builtins.input", side_effect=["ABCD-EFGH", "/srv/project"]):
             with patch.object(connector, "install", return_value={"autostart": "test"}) as install:
                 connector.interactive_setup()
-        install.assert_called_once()
         kwargs = install.call_args.kwargs
         self.assertEqual(kwargs["pair_code"], "ABCD-EFGH")
-        self.assertEqual(kwargs["host"], "ubuntu@example")
+        self.assertEqual(kwargs["host"], "local")
+        self.assertTrue(kwargs["local"])
         self.assertEqual(kwargs["root"], "/srv/project")
+
+    def test_remote_ssh_host_is_rejected_before_pairing(self):
+        with self.assertRaisesRegex(ValueError, "Connector on each host"):
+            connector.write_remote_config("user@another-machine", "/srv/project")
+        with self.assertRaises(SystemExit):
+            connector.main(["install", "--pair", "ABCD-EFGH", "--host",
+                            "user@another-machine", "--root", "/srv/project"])
 
     def test_status_never_returns_device_token(self):
         with tempfile.TemporaryDirectory() as tmp:
