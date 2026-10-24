@@ -279,6 +279,17 @@ def format_report(repo, sha, round_number, findings):
     return "\n".join(lines), bool(blocking)
 
 
+def already_codex_handed_off(gh, repo, number, sha):
+    token = f"<!-- codex-handoff sha={sha} -->"
+    for page in range(1, 11):
+        comments = api(gh, f"repos/{repo}/issues/{number}/comments?per_page=100&page={page}")
+        if any(token in comment.get("body", "") for comment in comments):
+            return True
+        if len(comments) < 100:
+            return False
+    raise ReviewError("Comment pagination exceeded handoff limit")
+
+
 def codex_handoff_eligible(pr, repo, diff, round_number, blocking):
     # Explicit human opt-in. No forks, release branches, migration/CI/auth changes.
     if not blocking or round_number >= MAX_ROUNDS or repo != "jboone1989/EventGraph":
@@ -386,14 +397,27 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout):
                   f"{len(findings)} verified findings; {int(blocking)} blocking")
     if codex_handoff_eligible(pr, repo, diff, round_number, blocking):
         try:
-            codex_session = handoff_to_vm13(number, sha, body)
-            post_comment(gh, repo, number,
-                         f"<!-- codex-handoff sha={sha} -->\n"
-                         "VM13 native Codex repair started in a separate checkout: "
-                         f"session `{codex_session}`. This handoff only prepares "
-                         "a patch; it does not push, merge or deploy.")
-        except ReviewError as exc:
-            print(f"PR #{number}: Codex handoff blocked: {exc}", file=sys.stderr, flush=True)
+            previous = history.setdefault("handoffs", {}).get(sha)
+            if not previous and not already_codex_handed_off(gh, repo, number, sha):
+                codex_session = handoff_to_vm13(number, sha, body)
+                history["handoffs"][sha] = codex_session
+                # Persist the receipt before posting the optional GitHub comment.
+                # If the comment fails, a retry must not spawn a second session.
+                save_state(state_path, state)
+                try:
+                    post_comment(gh, repo, number,
+                                 f"<!-- codex-handoff sha={sha} -->\n"
+                                 "VM13 native Codex repair started in a separate checkout: "
+                                 f"session `{codex_session}`. This handoff only prepares "
+                                 "a patch; it does not push, merge or deploy.")
+                except Exception as exc:
+                    print(f"PR #{number}: Codex session started but handoff comment failed: "
+                          f"{type(exc).__name__}", file=sys.stderr, flush=True)
+        except Exception as exc:
+            # Handoff is separate from the authoritative Claude review verdict.
+            # It must never prevent saving the reviewed SHA or alter its status.
+            print(f"PR #{number}: Codex handoff unavailable: {type(exc).__name__}",
+                  file=sys.stderr, flush=True)
     # Commit status and comment are idempotently retried if local state write fails.
     history["reviewed"].append(sha)
     history["outcomes"][sha] = blocking
