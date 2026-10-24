@@ -63,7 +63,7 @@ class CodexRegistrationTests(unittest.TestCase):
             workspace = home / "workspace"
             workspace.mkdir()
             codex = home / "codex"
-            codex.write_text("#!/bin/sh\\necho codex\\n")
+            codex.write_text("#!/bin/sh\necho codex\n")
             codex.chmod(0o700)
             config = home / ".livingruntime" / "remote.json"
             config.parent.mkdir()
@@ -71,7 +71,7 @@ class CodexRegistrationTests(unittest.TestCase):
                 "hosts": {"main": {"ssh_host": "localhost"}},
                 "projects": {"eventgraph": {"host": "main", "path": str(workspace)}},
             }))
-            with patch.object(connector.Path, "home", return_value=home), \\
+            with patch.object(connector.Path, "home", return_value=home), \
                  patch.object(connector, "_run",
                               return_value=subprocess.CompletedProcess([], 0, "", "")):
                 result = connector.configure_codex(str(codex), "eventgraph")
