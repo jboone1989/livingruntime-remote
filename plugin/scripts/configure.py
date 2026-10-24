@@ -77,10 +77,10 @@ def write_config(path: Path, payload: dict) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Configure LivingRuntime Remote without storing SSH passwords or private keys."
+        description="Configure this Connector's local projects and workspace roots."
     )
-    parser.add_argument("--host", type=validate_host, help="SSH config alias, e.g. livingruntime-vm")
-    parser.add_argument("--host-id", default=DEFAULT_HOST_ID, help="Logical host id, default main")
+    parser.add_argument("--host", type=validate_host, help="Legacy localhost alias only")
+    parser.add_argument("--host-id", default=DEFAULT_HOST_ID, help="Compatibility alias; only main is supported")
     parser.add_argument("--root", action="append", dest="roots", help="Allowed remote workspace root; repeatable")
     parser.add_argument("--unit", action="append", dest="units", help="Allowlisted systemd .service unit; repeatable")
     parser.add_argument("--project", help="Add or update a named project")
@@ -100,24 +100,28 @@ def main() -> None:
         print(json.dumps(to_storage(normalize(existing)), ensure_ascii=False, indent=2))
         return
 
-    if not existing and not args.host:
-        parser.error("--host is required when creating a new configuration")
+    if args.host and args.host not in {"local", "localhost", "127.0.0.1", "::1"}:
+        parser.error("Install a Connector on each machine instead of configuring remote SSH hosts")
+    if args.host_id != DEFAULT_HOST_ID:
+        parser.error("Each Connector manages only its own host; --host-id must be main")
 
     if existing:
         cfg = normalize(existing)
     else:
-        cfg = normalize(
-            {
-                "ssh_host": args.host,
-                "roots": args.roots or [DEFAULT_ROOT],
-                "systemd_units": args.units or [],
-            }
-        )
+        cfg = normalize({
+            "default_host": DEFAULT_HOST_ID,
+            "hosts": {DEFAULT_HOST_ID: {
+                "transport": "local", "ssh_host": "local",
+                "roots": args.roots or [str(Path.home() / "workspace")],
+                "units": args.units or [],
+            }},
+            "projects": {},
+        })
 
     host_id = str(args.host_id or DEFAULT_HOST_ID)
     host = dict(cfg["hosts"].get(host_id) or {"id": host_id, "ssh_host": "", "roots": [DEFAULT_ROOT], "units": []})
-    if args.host:
-        host["ssh_host"] = args.host
+    if args.host and host.get("transport") != "ssh":
+        host["ssh_host"] = "local"
         host["id"] = host_id
     if args.roots:
         host["roots"] = [posix_path(x) for x in args.roots]
@@ -135,7 +139,7 @@ def main() -> None:
             raise SystemExit("tunnel id must start with tunnel_ and must not be an API key")
         cfg["tunnel_id"] = tunnel_id
 
-    if args.seed_projects or not cfg["projects"]:
+    if args.seed_projects:
         cfg = seed_projects(cfg)
 
     if args.project:
@@ -157,7 +161,10 @@ def main() -> None:
         print("Projects:", ", ".join(sorted(payload["projects"])))
 
     if args.test:
-        test_ssh(host["ssh_host"])
+        if host["transport"] == "ssh":
+            test_ssh(host["ssh_host"])  # Existing legacy Connector only
+        else:
+            print("Local Connector; no SSH setup needed")
 
 
 if __name__ == "__main__":
