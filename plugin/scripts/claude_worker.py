@@ -186,6 +186,7 @@ def main(path):
     timeout_lock = threading.Lock()
     pending_approvals = {}
     deadline = [0.0]
+    old_sigterm_handler = None
 
     try:
         opts = record.get("options") or {}
@@ -215,9 +216,12 @@ def main(path):
             stderr_thread = threading.Thread(target=collect_stderr, daemon=True)
             stderr_thread.start()
             if threading.current_thread() is threading.main_thread():
+                old_sigterm_handler = signal.getsignal(signal.SIGTERM)
                 def on_worker_term(_signum, _frame):
                     # Native cancel targets the worker's original process group.
                     # Claude lives in another group so its own children can be reaped.
+                    output["status"] = "CANCELLED"
+                    output["error"] = "Claude worker cancelled"
                     terminate_cli_group(proc)
                     raise SystemExit(143)
                 signal.signal(signal.SIGTERM, on_worker_term)
@@ -354,6 +358,8 @@ def main(path):
         output["error"] = type(exc).__name__ + ": " + str(exc)[:300]
     finally:
         stop_monitor.set()
+        if old_sigterm_handler is not None and threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGTERM, old_sigterm_handler)
         output["finished_at"] = time.time()
         tmp = receipt_path.with_suffix(".tmp")
         with tmp.open("w", encoding="utf-8") as f:
