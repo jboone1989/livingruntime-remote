@@ -280,6 +280,7 @@ class ClaudeAdapterTests(unittest.TestCase):
             cli = Path(td) / "fake-claude"
             cli.write_text(
                 "#!/usr/bin/python3\nimport json,sys\n"
+                "sys.stdin.readline()\n"  # consume the first user message; then wait for approval
                 "print(json.dumps({'type':'control_request','request_id':'no-answer',"
                 "'request':{'tool_name':'Bash','input':{'command':'git status'}}}),flush=True)\n"
                 "sys.stdin.readline()\n"
