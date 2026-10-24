@@ -21,7 +21,7 @@ class ConnectorOnboardingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
             with patch.object(connector.Path, "home", return_value=home), \
-                 patch("builtins.input", side_effect=["ABCD-1234", "", ""]), \
+                 patch("builtins.input", side_effect=["ABCD-1234", ""]), \
                  patch.object(connector, "install", return_value={"autostart": "systemd"}) as install:
                 connector.interactive_setup()
             install.assert_called_once()
@@ -32,12 +32,12 @@ class ConnectorOnboardingTests(unittest.TestCase):
             self.assertTrue((home / "workspace").is_dir())
 
     @unittest.skipUnless(os.name == "posix", "Linux/macOS interactive setup")
-    def test_ssh_mode_remains_available_explicitly(self):
-        with patch("builtins.input", side_effect=["ABCD-1234", "n", "ubuntu@host", "/srv/projects"]), \
+    def test_custom_root_still_targets_local_machine(self):
+        with patch("builtins.input", side_effect=["ABCD-1234", "/srv/projects"]), \
              patch.object(connector, "install", return_value={"autostart": "systemd"}) as install:
             connector.interactive_setup()
-        self.assertFalse(install.call_args.kwargs["local"])
-        self.assertEqual(install.call_args.kwargs["host"], "ubuntu@host")
+        self.assertTrue(install.call_args.kwargs["local"])
+        self.assertEqual(install.call_args.kwargs["host"], "local")
         self.assertEqual(install.call_args.kwargs["root"], "/srv/projects")
 
     def test_http_401_pairing_error_contains_next_action(self):
