@@ -1325,6 +1325,49 @@ class Relay:
             "direct_mode": True,
         }
 
+    async def discover_devices(self, user_sub: str, include_resources: bool = False) -> dict[str, Any]:
+        """Inventory physical Hosts across the owner's paired Connectors."""
+        connectors = self.connector_statuses(user_sub)
+
+        async def inspect(connector: dict[str, Any]) -> dict[str, Any]:
+            cid = connector["device_id"]
+            row = {"connector_id": cid, "connector_name": connector["name"],
+                   "online": bool(connector["online"]), "devices": [],
+                   "status": "offline" if not connector["online"] else "ok"}
+            if not connector["online"]:
+                return row
+            try:
+                inventory = await self.call(
+                    user_sub, "list_devices", {"include_resources": include_resources},
+                    connector=cid,
+                )
+            except Exception:
+                inventory = None
+            if not isinstance(inventory, dict) or not isinstance(inventory.get("devices"), list):
+                row["status"] = "discovery_failed"
+                return row
+            for host in inventory["devices"]:
+                if isinstance(host, dict) and isinstance(host.get("device_id"), str):
+                    row["devices"].append({
+                        **host, "connector_id": cid,
+                        "connector_name": connector["name"],
+                        "route": cid + "::" + host["device_id"],
+                    })
+            return row
+
+        rows = await asyncio.gather(*(inspect(item) for item in connectors))
+        devices = [host for row in rows for host in row["devices"]]
+        default = next((host for host in devices
+                        if any(c["connector_id"] == host["connector_id"] and
+                               c.get("default") for c in connectors)
+                        and host.get("default")), None)
+        return {
+            "devices": devices, "connectors": rows,
+            "default_device": default["device_id"] if default else None,
+            "default_route": default["route"] if default else None,
+            "partial": any(row["status"] != "ok" for row in rows),
+        }
+
     async def resolve_agent(self, user_sub: str, adapter_id: str, project: str) -> dict[str, Any]:
         inventory = await self.discover_agents(user_sub)
         candidates = [
@@ -3044,12 +3087,14 @@ def create_mcp(
                                 payload, connector=connector)
 
     @expose("list_devices", True, False, False)
-    async def list_devices(include_resources: bool = False) -> dict[str, Any]:
-        return await relay.call(
-            _principal("remote:read"),
-            "list_devices",
-            {"include_resources": bool(include_resources)},
-        )
+    async def list_devices(include_resources: bool = False,
+                           connector: str | None = None) -> dict[str, Any]:
+        user_sub = _principal("remote:read")
+        if connector:
+            return await relay.call(
+                user_sub, "list_devices",
+                {"include_resources": bool(include_resources)}, connector=connector)
+        return await relay.discover_devices(user_sub, bool(include_resources))
 
     @expose("read_file", True, False, False)
     async def read_file(path: str, project: str | None = None, device: str | None = None, offset: int = 0,
