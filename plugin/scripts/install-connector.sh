@@ -23,10 +23,30 @@ trap - EXIT HUP INT TERM
 printf 'Installed %s to %s\n' "$VERSION" "$DEST/livingruntime-remote"
 # curl ... | sh consumes stdin, so guide the user via the controlling TTY.
 # CI/automation and existing paired installations remain noninteractive.
-if [ -t 1 ] && [ -r /dev/tty ] && [ ! -s "$HOME/.livingruntime/relay.json" ] \
+if [ -t 1 ] && [ -r /dev/tty ] \
+   && [ ! -s "${LIVINGRUNTIME_RELAY_CONFIG:-$HOME/.livingruntime/relay.json}" ] \
    && [ "${LIVINGRUNTIME_INSTALL_NO_SETUP:-0}" != 1 ]; then
-  printf 'Starting interactive pairing. Get a code from ChatGPT.\n'
-  "$DEST/livingruntime-remote" </dev/tty
+  printf 'Pairing code from ChatGPT (XXXX-XXXX): ' >/dev/tty
+  IFS= read -r PAIR </dev/tty
+  if [ -z "$PAIR" ]; then
+    printf 'No code supplied; run %s to pair later.\n' "$DEST/livingruntime-remote"
+    exit 0
+  fi
+  # The verified v0.4.67 binary already understands --pair-file. Keep the
+  # one-command installer compatible with an older published binary too.
+  PAIR_FILE="$(mktemp "$DEST/.livingruntime-pair.XXXXXXXX")"
+  trap 'rm -f "$PAIR_FILE"' EXIT HUP INT TERM
+  chmod 600 "$PAIR_FILE"
+  printf '%s\n' "$PAIR" > "$PAIR_FILE"
+  unset PAIR
+  mkdir -p "$HOME/workspace"
+  if ! "$DEST/livingruntime-remote" install --local \
+      --root "$HOME/workspace" --pair-file "$PAIR_FILE"; then
+    printf 'Pairing failed. Create a fresh code in ChatGPT and retry pairing.\n' >&2
+    exit 1
+  fi
+  rm -f "$PAIR_FILE"
+  trap - EXIT HUP INT TERM
 else
   printf 'To pair later: %s\n' "$DEST/livingruntime-remote"
 fi
