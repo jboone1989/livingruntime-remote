@@ -113,6 +113,8 @@ Public users install the Connector on the machine they want ChatGPT to control, 
 curl -fsSL https://remote.livingruntime.com/install.sh | sh
 ```
 
+On an interactive Linux/macOS terminal, the installer now opens the pairing wizard automatically for a new device. Paste the short-lived code from ChatGPT, accept the default local-machine mode, and choose the allowed workspace root (default: `~/workspace`). Re-running the installer on an already-paired device skips pairing. For automation, set `LIVINGRUNTIME_INSTALL_NO_SETUP=1` and configure pairing separately.
+
 ### Windows PowerShell
 
 ```powershell

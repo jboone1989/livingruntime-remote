@@ -149,8 +149,8 @@ class ConnectorTests(unittest.TestCase):
             connector.main([])
         setup.assert_called_once_with()
 
-    def test_interactive_setup_collects_three_inputs(self):
-        with patch("builtins.input", side_effect=["ABCD-EFGH", "ubuntu@example", "/srv/project"]):
+    def test_interactive_setup_keeps_explicit_ssh_option(self):
+        with patch("builtins.input", side_effect=["ABCD-EFGH", "n", "ubuntu@example", "/srv/project"]):
             with patch.object(connector, "install", return_value={"autostart": "test"}) as install:
                 connector.interactive_setup()
         install.assert_called_once()

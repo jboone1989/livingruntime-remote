@@ -5,13 +5,15 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 
 class DistributionTests(unittest.TestCase):
-    def test_install_script_installs_without_pairing(self):
+    def test_install_script_pairs_interactively_without_exposing_code_in_argv(self):
         script=(ROOT/"plugin/scripts/install-connector.sh").read_text()
-        self.assertIn("mktemp",script)
-        self.assertIn("mv -f",script)
-        self.assertIn("--version",script)
-        self.assertNotIn('read -r PAIR_CODE',script)
-        self.assertNotIn(' --pair "$PAIR_CODE"',script)
+        self.assertIn("mktemp", script)
+        self.assertIn("mv -f", script)
+        self.assertIn("--version", script)
+        self.assertIn("[ -t 1 ]", script)
+        self.assertIn("LIVINGRUNTIME_INSTALL_NO_SETUP", script)
+        self.assertIn('--pair-file "$PAIR_FILE"', script)
+        self.assertNotIn('--pair "$PAIR"', script)
     def test_shell_installer_offline_smoke(self):
         import os
         import subprocess

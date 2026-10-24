@@ -45,8 +45,18 @@ def _request(base: str, path: str, body: dict[str, Any],
     if token:
         headers["authorization"] = f"Bearer {token}"
     req = urllib.request.Request(base + path, data=data, headers=headers, method="POST")
-    with urllib.request.build_opener(NoRedirect).open(req, timeout=timeout) as response:
-        payload = json.loads(response.read(1048576).decode())
+    try:
+        with urllib.request.build_opener(NoRedirect).open(req, timeout=timeout) as response:
+            payload = json.loads(response.read(1048576).decode())
+    except urllib.error.HTTPError as exc:
+        # Relay returns an ordinary 401 JSON body for invalid/expired codes.
+        # Do not dump a Python traceback or mistaken login instructions.
+        if path == "/device/pair" and exc.code == 401:
+            raise RuntimeError(
+                "Pairing code is invalid, expired, or already used. "
+                "Request a new code in ChatGPT and retry pairing."
+            ) from None
+        raise RuntimeError(f"Relay request failed (HTTP {exc.code})") from None
     if isinstance(payload, dict) and payload.get("error"):
         raise RuntimeError(str(payload["error"]))
     return payload
