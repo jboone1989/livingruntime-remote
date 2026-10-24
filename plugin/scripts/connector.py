@@ -83,8 +83,10 @@ def write_remote_config(
     parsed_root = PureWindowsPath(root) if style == "windows" else PurePosixPath(root)
     if not parsed_root.is_absolute():
         raise ValueError("root must be an absolute workspace path")
-    transport = "local" if local else "ssh"
-    host_token = "local" if local else configure.validate_host(host)
+    if host not in {"local", "localhost", "127.0.0.1", "::1"}:
+        raise ValueError("Install a Connector on each host; remote SSH targets are no longer supported for new installations")
+    transport = "local"
+    host_token = "local"
     payload = {
         "default_host": "main",
         "hosts": {
@@ -343,9 +345,9 @@ def install(
     skip_ssh_test: bool = False,
     local: bool = False,
 ) -> dict[str, Any]:
-    if not local and not skip_ssh_test:
-        configure.test_ssh(host)
-    remote_path = write_remote_config(host, root, project, local=local)
+    if host not in {"local", "localhost", "127.0.0.1", "::1"}:
+        raise ValueError("Install the Connector on the target machine instead of using SSH")
+    remote_path = write_remote_config("local", root, project, local=True)
     relay_path = relay_config_path()
     paired: dict[str, Any] | None = None
     if pair_code:
@@ -368,7 +370,7 @@ def install(
         "device_id": paired.get("device_id") if paired else None,
         "autostart": autostart,
         "command": command,
-        "transport": "local" if local else "ssh",
+        "transport": "local",
     }
 
 
@@ -477,28 +479,15 @@ def run_connector(config: Path, daemon_log: bool = False) -> None:
 def interactive_setup() -> None:
     print(f"{PRODUCT} Connector {PLUGIN_VERSION}")
     print()
-    if os.name == "nt":
-        print("This connects ChatGPT directly to a bounded workspace on this Windows computer.")
-        print("Native Windows mode does not require localhost SSH.")
-    else:
-        print("This connects ChatGPT to a Linux host you can already access with SSH keys.")
-        print("SSH credentials stay in your normal SSH configuration and are never uploaded.")
+    print("Each machine runs its own Connector, with any number of local Agents.")
     print()
     pair_code = input("Pairing code from ChatGPT (XXXX-XXXX): ").strip()
-    if os.name == "nt":
-        host = "local"
-        root = input(r"Allowed Windows workspace root (for example D:\Projects): ").strip()
-        local = True
-    else:
-        # The common path is to pair this machine, not configure SSH into a
-        # second host. Advanced SSH routing remains available on request.
-        mode = input("Connect this machine directly? [Y/n]: ").strip().lower()
-        local = mode not in {"n", "no"}
-        host = "local" if local else input("SSH host or user@host: ").strip()
-        default_root = str(Path.home() / "workspace")
-        root = input(f"Allowed workspace root [{default_root}]: ").strip() or default_root
-        if local and root == default_root:
-            Path(root).mkdir(parents=True, exist_ok=True)
+    default_root = str(Path.home() / "workspace")
+    root = input(f"Allowed workspace root [{default_root}]: ").strip() or default_root
+    if root == default_root:
+        Path(root).mkdir(parents=True, exist_ok=True)
+    host = "local"
+    local = True
     result = install(
         pair_code=pair_code,
         host=host,
@@ -531,21 +520,21 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--version", action="version", version=PLUGIN_VERSION)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    install_parser = sub.add_parser("install", help="Pair, configure SSH access, and enable autostart")
+    install_parser = sub.add_parser("install", help="Pair this machine and enable autostart")
     pair_source = install_parser.add_mutually_exclusive_group()
     pair_source.add_argument("--pair", dest="pair_code", help="One-time pairing code from ChatGPT")
     pair_source.add_argument("--pair-file", type=Path, help="Owner-only file containing one-time pairing code")
-    install_parser.add_argument("--host", help="SSH alias or user@host")
+    install_parser.add_argument("--host", help=argparse.SUPPRESS)  # Deprecated; only localhost aliases accepted
     install_parser.add_argument("--root", required=True, help="Allowed workspace root")
     install_parser.add_argument(
         "--local",
         action="store_true",
-        help="Use the Connector machine itself as the target instead of SSH",
+        help="Connect this machine (default; kept for older installation commands)",
     )
     install_parser.add_argument("--relay", default=DEFAULT_RELAY_URL)
     install_parser.add_argument("--name", default=socket.gethostname())
     install_parser.add_argument("--project", default="workspace")
-    install_parser.add_argument("--skip-ssh-test", action="store_true")
+    install_parser.add_argument("--skip-ssh-test", action="store_true", help=argparse.SUPPRESS)
 
     run_parser = sub.add_parser("run", help="Run the connector in the foreground")
     run_parser.add_argument("--config", type=Path, default=relay_config_path())
@@ -571,8 +560,8 @@ def main(argv: list[str] | None = None) -> None:
 
     args = parser.parse_args(actual_argv)
     if args.command == "install":
-        if not args.local and not args.host:
-            parser.error("--host is required unless --local is used")
+        if args.host and args.host not in {"local", "localhost", "127.0.0.1", "::1"}:
+            parser.error("Install one Connector on each host; --host SSH routing is no longer supported")
         result = install(
             pair_code=read_pair_file(args.pair_file) if args.pair_file else args.pair_code,
             host=args.host or "local",
@@ -581,7 +570,7 @@ def main(argv: list[str] | None = None) -> None:
             name=args.name,
             project=args.project,
             skip_ssh_test=args.skip_ssh_test,
-            local=args.local,
+            local=True,
         )
         print(json.dumps(result, indent=2))
         print("LivingRuntime Remote is connected. Return to ChatGPT and call connection_status.")
