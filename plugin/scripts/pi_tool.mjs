@@ -21,11 +21,18 @@ function checkPath(root, value) {
     throw new Error("tool path outside project workspace");
   let current = target;
   const suffix = [];
-  while (!fs.existsSync(current)) {
-    suffix.unshift(path.basename(current));
-    const parent = path.dirname(current);
-    if (parent === current) throw new Error("tool path has no existing parent");
-    current = parent;
+  while (true) {
+    try {
+      // lstat sees symlinks even if their targets do not exist.
+      fs.lstatSync(current);
+      break;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      suffix.unshift(path.basename(current));
+      const parent = path.dirname(current);
+      if (parent === current) throw new Error("tool path has no existing parent");
+      current = parent;
+    }
   }
   const resolved = path.resolve(fs.realpathSync(current), ...suffix);
   const realRel = path.relative(root, resolved);

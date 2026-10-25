@@ -85,10 +85,12 @@ class PiAdapter(ClaudeCodeAdapter):
         cwd = pi_workspace(device, project)
         executable = self.executable
         if not executable or not Path(executable).is_file():
-            local = Path(cwd) / ".livingruntime" / "pi-harness" / "node_modules" / ".bin" / "pi"
-            if not local.is_file():
-                raise RuntimeError("Native Pi CLI is not installed on this host/project")
-            executable = str(local.resolve())
+            trusted = Path.home() / ".livingruntime" / "pi-harness" / "node_modules" / ".bin" / "pi"
+            if not trusted.is_file():
+                raise RuntimeError("Native Pi CLI is not installed in trusted Connector home")
+            executable = str(trusted.resolve())
+        if Path(executable).resolve().is_relative_to(Path(cwd).resolve()):
+            raise PermissionError("Pi executable must be outside the agent-writable workspace")
         if "env_file" in options:
             workspace = Path(cwd).resolve(strict=True)
             target = (workspace / options["env_file"]).resolve(strict=True)

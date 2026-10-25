@@ -50,6 +50,12 @@ test("Pi SDK gateway denies workspace escape, including symlinks", () => {
     assert.equal(invoke(cwd, "read", {path:"../outside.txt"}).ok, false);
     fs.symlinkSync("/etc", path.join(cwd, "outside"));
     assert.equal(invoke(cwd, "read", {path:"outside/passwd"}).ok, false);
+    // A broken symlink outside the project must not be treated as an absent file.
+    const outsideMissing = path.join(os.tmpdir(), path.basename(cwd) + "-outside-missing.txt");
+    assert.equal(fs.existsSync(outsideMissing), false);
+    fs.symlinkSync(outsideMissing, path.join(cwd, "dangling"));
+    assert.equal(invoke(cwd, "write", {path:"dangling", content:"ESCAPE"}).ok, false);
+    assert.equal(fs.existsSync(outsideMissing), false);
   } finally {
     fs.rmSync(cwd, {recursive:true, force:true});
   }

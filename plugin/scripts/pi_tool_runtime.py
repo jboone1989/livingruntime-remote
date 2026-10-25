@@ -20,8 +20,10 @@ def execute(tool: str, params: dict, *, cwd: str, timeout_seconds: int = 30) -> 
         raise ValueError("Pi params must be an object")
     timeout = max(1, min(30, int(timeout_seconds)))
     workspace = Path(cwd).resolve(strict=True)
-    sidecar = workspace / ".livingruntime" / "pi-harness" / "pi_tool.mjs"
-    gateway = sidecar if sidecar.is_file() else _SCRIPT
+    trusted = Path.home() / ".livingruntime" / "pi-harness" / "pi_tool.mjs"
+    gateway = trusted if trusted.is_file() else _SCRIPT
+    if not gateway.is_file() or gateway.resolve().is_relative_to(workspace):
+        raise PermissionError("Pi SDK gateway must be outside the writable project workspace")
     process = subprocess.run(
         ["node", str(gateway)],
         cwd=str(workspace),

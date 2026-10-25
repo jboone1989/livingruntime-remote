@@ -235,14 +235,23 @@ in `~/.livingruntime/agent-policy.json` (mode 0600). For compatible existing
 installations, the previous `claude_workspaces` map is used if there is no
 Pi-specific entry.
 
-Install the plugin Node dependencies on **each host** that will execute direct
-Pi SDK tools. For a **frozen Connector**, install Pi inside each authorized
-project's `.livingruntime/pi-harness/` directory and put `pi_tool.mjs` from
-this repository's `plugin/scripts/` in that same directory. The Pi Adapter
-and Pi SDK gateway will use this project-local sidecar when bundled source
-paths are unavailable; no extra Python package installation is required.
-A frozen Connector without this Node sidecar cannot execute `pi_tool`.
-No real GLM request is needed for the direct tool path.
+Install Pi SDK tools in the **Connector owner's home**, not in an
+agent-writable project workspace. The trusted path is
+`~/.livingruntime/pi-harness/`, used both by frozen Connectors and source
+Connectors when the source tools are inside the workspace. The gateway and Pi
+executable refuse to execute from inside the authorized project.
+
+```bash
+mkdir -p "$HOME/.livingruntime/pi-harness"
+cp plugin/package.json plugin/package-lock.json "$HOME/.livingruntime/pi-harness/"
+cp plugin/scripts/pi_tool.mjs "$HOME/.livingruntime/pi-harness/"
+npm ci --prefix "$HOME/.livingruntime/pi-harness" --ignore-scripts
+```
+
+Run these from the trusted Remote repository checkout on each Connector host.
+Do not add the owner-home harness directory to Remote's allowed project roots;
+the Pi SDK gateway can operate on project files, not modify its own executable.
+No new Python dependency and no real GLM request is needed for direct mode.
 
 Validation:
 

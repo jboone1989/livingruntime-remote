@@ -93,15 +93,17 @@ class PiAdapterTests(unittest.TestCase):
     def test_optional_project_env_file_uses_node_without_embedding_secrets(self):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
-            (home / ".env").write_text("NVIDIA_API_KEY=placeholder", encoding="utf8")
-            data = {"executable": "/tmp/pi", "cwd":td, "prompt":"check",
+            workspace = home / "workspace"
+            workspace.mkdir()
+            (workspace / ".env").write_text("NVIDIA_API_KEY=placeholder", encoding="utf8")
+            data = {"executable": "/tmp/pi", "cwd":str(workspace), "prompt":"check",
                     "session_id":str(uuid.uuid4()), "options":{
                         "provider":"nvidia", "model":"z-ai/glm-5.3",
-                        "env_file":str(home / ".env")}}
+                        "env_file":str(workspace / ".env")}}
             args = pi_worker.cli_args(data)
-            self.assertEqual(args[1], "--env-file=" + str(home / ".env"))
+            self.assertEqual(args[1], "--env-file=" + str(workspace / ".env"))
             self.assertNotIn("placeholder", " ".join(args))
-            with patch("livingruntime_adapter_pi.pi_workspace", return_value=td), \
+            with patch("livingruntime_adapter_pi.pi_workspace", return_value=str(workspace)), \
                  patch.object(PiAdapter, "_spawn", return_value="started"):
                 fake = home / "pi"
                 fake.touch()
@@ -110,19 +112,23 @@ class PiAdapterTests(unittest.TestCase):
                 self.assertEqual(adapter.start("test", project="p", device="main",
                       options={"provider":"nvidia","model":"z-ai/glm-5.3",
                                "env_file":".env"}), "started")
+                outside = home / "outside.env"
+                outside.write_text("NVIDIA_API_KEY=test", encoding="utf8")
                 with self.assertRaises(PermissionError):
                     adapter.start("test", project="p", device="main",
-                                  options={"env_file":"../../etc/passwd"})
+                                  options={"env_file":str(outside)})
 
-    def test_project_local_pi_executable_in_frozen_connector(self):
+    def test_trusted_pi_executable_in_frozen_connector(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
+            workspace = root / "workspace"
+            workspace.mkdir()
             executable = root / ".livingruntime/pi-harness/node_modules/.bin/pi"
             executable.parent.mkdir(parents=True)
             executable.write_text("fake-pi")
             executable.chmod(0o700)
-            with patch("livingruntime_adapter_pi.pi_workspace", return_value=td), \
-                 patch.dict(os.environ, {"LIVINGRUNTIME_PI_JOBS": str(root / "jobs")}), \
+            with patch("livingruntime_adapter_pi.pi_workspace", return_value=str(workspace)), \
+                 patch.dict(os.environ, {"HOME": td, "LIVINGRUNTIME_PI_JOBS": str(root / "jobs")}), \
                  patch.object(PiAdapter, "_spawn", return_value="started"):
                 adapter = PiAdapter("/missing/packed/pi")
                 self.assertEqual(adapter.start("probe", project="p", device="main"), "started")
@@ -130,17 +136,27 @@ class PiAdapterTests(unittest.TestCase):
                 self.assertEqual(len(records), 1)
                 self.assertEqual(json.loads(records[0].read_text())["executable"],
                                  str(executable.resolve()))
+                rogue = workspace / "pi"
+                rogue.write_text("agent supplied executable")
+                with self.assertRaises(PermissionError):
+                    PiAdapter(str(rogue)).start("probe", project="p", device="main")
 
-    def test_project_local_sdk_gateway_is_used(self):
+    def test_owner_home_sdk_gateway_is_used(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
+            workspace = root / "workspace"
+            workspace.mkdir()
             gateway = root / ".livingruntime/pi-harness/pi_tool.mjs"
             gateway.parent.mkdir(parents=True)
-            gateway.write_text("// sidecar")
-            with patch.object(pi_tool_runtime.subprocess, "run") as run:
+            gateway.write_text("// trusted sidecar")
+            rogue = workspace / ".livingruntime/pi-harness/pi_tool.mjs"
+            rogue.parent.mkdir(parents=True)
+            rogue.write_text("// agent supplied JS, never execute")
+            with patch.dict(os.environ, {"HOME":td}), \
+                 patch.object(pi_tool_runtime.subprocess, "run") as run:
                 run.return_value.stdout = '{"ok":true,"text":"ok"}'
                 run.return_value.returncode = 0
-                result = pi_tool_runtime.execute("read", {"path":"README.md"}, cwd=td)
+                result = pi_tool_runtime.execute("read", {"path":"README.md"}, cwd=str(workspace))
             self.assertTrue(result["ok"])
             self.assertEqual(run.call_args.args[0][1], str(gateway))
 
