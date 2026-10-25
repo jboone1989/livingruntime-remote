@@ -347,7 +347,7 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
 
 def verify_owner_approval(args):
     """Confirm the owner-authored one-time authorization for exactly this PR HEAD."""
-    if args.manual_rereview_comment_id is None:
+    if getattr(args, "manual_rereview_comment_id", None) is None:
         return None
     if args.pr_number is None or not args.expected_sha:
         raise ReviewError("Manual re-review requires --pr-number and --expected-sha")
