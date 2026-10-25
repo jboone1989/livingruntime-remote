@@ -3,12 +3,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const gateway = path.resolve("plugin/scripts/pi_tool.mjs");
-function invoke(cwd, tool, params) {
+function invoke(cwd, tool, params, extraEnv={}) {
   const cp = spawnSync(process.execPath, [gateway], {
     cwd, input: JSON.stringify({tool, params}), encoding: "utf8", timeout: 12000,
+    env: {...process.env, ...extraEnv},
   });
   assert.ok(cp.stdout, cp.stderr);
   return JSON.parse(cp.stdout);
@@ -39,5 +41,25 @@ test("Pi SDK gateway denies workspace escape, including symlinks", () => {
     assert.equal(invoke(cwd, "read", {path:"outside/passwd"}).ok, false);
   } finally {
     fs.rmSync(cwd, {recursive:true, force:true});
+  }
+});
+
+test("native Pi path expansion cannot escape through @, ~ or file://", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "lr-pi-alias-"));
+  const cwd = path.join(root, "workspace");
+  fs.mkdirSync(cwd);
+  const canary = path.join(root, "canary.txt");
+  fs.writeFileSync(canary, "PRIVATE_PI_ALIAS_CANARY");
+  try {
+    const env = {HOME:root};
+    for (const alias of ["@" + canary, "~/canary.txt", pathToFileURL(canary).href]) {
+      const read = invoke(cwd, "read", {path:alias}, env);
+      assert.ok(!JSON.stringify(read).includes("PRIVATE_PI_ALIAS_CANARY"), alias);
+      const write = invoke(cwd, "write", {path:alias, content:"ESCAPED"}, env);
+      assert.ok(!JSON.stringify(write).includes("PRIVATE_PI_ALIAS_CANARY"), alias);
+      assert.equal(fs.readFileSync(canary, "utf8"), "PRIVATE_PI_ALIAS_CANARY", alias);
+    }
+  } finally {
+    fs.rmSync(root, {recursive:true, force:true});
   }
 });

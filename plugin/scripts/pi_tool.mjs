@@ -13,7 +13,9 @@ const factories = {
 };
 
 function checkPath(root, value) {
-  const target = path.resolve(root, value);
+  // Pi later expands Unicode spaces, @, ~ and file://. Pass it only a
+  // checked absolute path so its normalizer cannot reinterpret the input.
+  const target = path.resolve(root, value.replace(/[\\u00A0\\u2000-\\u200A\\u202F\\u205F\\u3000]/g, " "));
   const relative = path.relative(root, target);
   if (relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative))
     throw new Error("tool path outside project workspace");
@@ -29,6 +31,7 @@ function checkPath(root, value) {
   const realRel = path.relative(root, resolved);
   if (realRel === ".." || realRel.startsWith(".." + path.sep) || path.isAbsolute(realRel))
     throw new Error("tool path resolves outside project workspace");
+  return resolved;
 }
 
 try {
@@ -39,7 +42,7 @@ try {
     throw new Error("Pi SDK parameters must be an object");
   const cwd = fs.realpathSync(process.cwd());
   for (const field of ["path", "file_path", "cwd"]) {
-    if (typeof request.params[field] === "string") checkPath(cwd, request.params[field]);
+    if (typeof request.params[field] === "string") request.params[field] = checkPath(cwd, request.params[field]);
   }
   const result = await factory(cwd).execute(randomUUID(), request.params, undefined, undefined);
   const text = (result?.content ?? [])

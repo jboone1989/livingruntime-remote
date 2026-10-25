@@ -144,6 +144,24 @@ class PiAdapterTests(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(run.call_args.args[0][1], str(gateway))
 
+    def test_followup_does_not_show_previous_turn_result(self):
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict(os.environ, {"LIVINGRUNTIME_PI_JOBS": str(Path(td) / "jobs")}):
+            fake = Path(td) / "pi"
+            fake.touch()
+            adapter = PiAdapter(str(fake))
+            sid = str(uuid.uuid4())
+            adapter._write(sid, {"session_id": sid, "status": "SUCCEEDED",
+                                "result": "OLD_TURN_RESULT", "finished_at": 123.0,
+                                "cwd": td, "options": {}})
+            with patch("livingruntime_adapter_claude.subprocess.Popen") as spawned:
+                spawned.return_value.pid = 24680
+                adapter._spawn(sid, "Continue", True)
+            record = adapter._read(sid)
+            self.assertEqual(record["status"], "RUNNING")
+            self.assertNotIn("result", record)
+            self.assertNotIn("finished_at", record)
+
     def test_direct_tool_rejects_bash(self):
         with self.assertRaisesRegex(ValueError, "bash uses Remote exec"):
             pi_tool_runtime.execute("bash", {"command":"echo a"}, cwd="/tmp")
