@@ -212,9 +212,10 @@ agent in Remote:
   detached execution, events, cancellation, and completion receipts.
   `start_agent(adapter_id="pi", ...)` is the entrypoint.
   Caller-selected `options.provider` and `options.model` still override
-  these defaults. If the authorized project has
-  `.livingruntime/official-glm.env`, the adapter automatically loads it
-  with Node.js `--env-file`, retaining only its file path in the Session.
+  these defaults. If the Connector owner has
+  `~/.livingruntime/official-glm.env` (outside any writable project),
+  the adapter automatically loads it with Node.js `--env-file`, retaining
+  only its file path in the Session.
   Do not include API keys in goals or results.
 
 For the official general API, configure a Pi custom provider in
@@ -237,10 +238,11 @@ For the official general API, configure a Pi custom provider in
 }
 ```
 
-Place the existing BigModel API key (not an NVIDIA key) in the project's
-ignored `.livingruntime/official-glm.env` as `BIGMODEL_API_KEY=...` and
-restrict permissions to mode `0600`. Alternatively pass an explicit
-`options.env_file` inside the authorized workspace. **Coding Plan keys**
+Place the existing BigModel API key (not an NVIDIA key) in the **Connector
+owner's** `~/.livingruntime/official-glm.env` as `BIGMODEL_API_KEY=...`
+with mode `0600`. Keep this directory outside all writable project roots.
+Alternatively pass an explicit `options.env_file` inside the authorized
+workspace (never auto-selected). **Coding Plan keys**
 must instead use their separate `/api/coding/paas/v4` endpoint and matching
 provider configuration; do not mix its subscription quota with the general
 API billing account.
