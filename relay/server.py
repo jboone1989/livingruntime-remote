@@ -511,7 +511,7 @@ LONG_JOB_WIDGET_HTML = r"""<!doctype html>
       while (!stopped) {
         const result = await request("tools/call", {
           name:"wait_long_job",
-          arguments:{job_id:jobId,timeout_seconds:30}
+          arguments:{job_id:jobId,timeout_seconds:30,connector:latestOutput?.connector || null}
         });
         const data = toolResultData(result);
         const job = data?.job || {};
@@ -2498,7 +2498,7 @@ def create_mcp(
         stall_seconds: int = 300,
         heartbeat_seconds: int = 10,
     ) -> dict[str, Any]:
-        return await relay.call(
+        result = await relay.call(
             _principal("remote:write"),
             "start_long_job",
             {
@@ -2511,6 +2511,7 @@ def create_mcp(
                 "heartbeat_seconds": heartbeat_seconds,
             },
         )
+        return {**result, **({"connector": device} if device else {})}
 
     @apps.tool(
         resource_uri=LONG_JOB_WIDGET_URI,
@@ -2525,12 +2526,13 @@ def create_mcp(
         ),
         meta=READ,
     )
-    async def watch_long_job(job_id: str) -> dict[str, Any]:
-        return await relay.call(
+    async def watch_long_job(job_id: str, connector: str | None = None) -> dict[str, Any]:
+        result = await relay.call(
             _principal("remote:read"),
             "watch_long_job",
-            {"job_id": job_id},
+            {"job_id": job_id}, connector=connector,
         )
+        return {**result, **({"connector": connector} if connector else {})}
 
     def cognition_subscription_state(user_sub: str, agent_id: str) -> dict[str, Any]:
         arguments, _ = canonical_arguments({"agent_id": agent_id}, name=COGNITION_EVENT_NAME)
@@ -3035,11 +3037,13 @@ def create_mcp(
     async def wait_long_job(
         job_id: str,
         timeout_seconds: int = 30,
+        connector: str | None = None,
     ) -> dict[str, Any]:
         return await relay.call(
             _principal("remote:read"),
             "wait_long_job",
             {"job_id": job_id, "timeout_seconds": timeout_seconds},
+            connector=connector,
         )
 
     @server.tool(
@@ -3571,11 +3575,11 @@ def create_mcp(
         )
 
     @expose("get_job", True, False, False)
-    async def get_job(job_id: str) -> dict[str, Any]:
+    async def get_job(job_id: str, connector: str | None = None) -> dict[str, Any]:
         return await relay.call(
             _principal("remote:read"),
             "get_job",
-            {"job_id": job_id},
+            {"job_id": job_id}, connector=connector,
         )
 
     @expose("list_jobs", True, False, False)
@@ -3721,11 +3725,11 @@ def create_mcp(
         return result
 
     @expose("get_long_job", True, False, False)
-    async def get_long_job(job_id: str) -> dict[str, Any]:
+    async def get_long_job(job_id: str, connector: str | None = None) -> dict[str, Any]:
         return await relay.call(
             _principal("remote:read"),
             "get_long_job",
-            {"job_id": job_id},
+            {"job_id": job_id}, connector=connector,
         )
 
     @expose("ack_long_job_completion", False, False, False)
@@ -3733,6 +3737,7 @@ def create_mcp(
         job_id: str,
         event_id: str,
         acknowledged_by: str = "chatgpt",
+        connector: str | None = None,
     ) -> dict[str, Any]:
         user_sub = _principal("remote:write")
         result = await relay.call(
@@ -3743,16 +3748,17 @@ def create_mcp(
                 "event_id": event_id,
                 "acknowledged_by": acknowledged_by,
             },
+            connector=connector,
         )
         cleared = relay.store.clear_continuations_for_job(user_sub, job_id)
         return {**result, "relayContinuationBindingsCleared": cleared}
 
     @expose("cancel_long_job", False, False, True)
-    async def cancel_long_job(job_id: str) -> dict[str, Any]:
+    async def cancel_long_job(job_id: str, connector: str | None = None) -> dict[str, Any]:
         return await relay.call(
             _principal("remote:write"),
             "cancel_long_job",
-            {"job_id": job_id},
+            {"job_id": job_id}, connector=connector,
         )
 
     @expose("list_exec_permissions", True, False, False)
