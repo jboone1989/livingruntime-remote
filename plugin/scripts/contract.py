@@ -19,6 +19,7 @@ REMOTE_TOOLS = (
     "cancel_agent",
     "resume_agent",
     "watch_agent_events",
+    "pi_tool",
     "read_file",
     "write_file",
     "delete_path",

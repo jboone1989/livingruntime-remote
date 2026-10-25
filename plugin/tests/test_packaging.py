@@ -176,7 +176,7 @@ class PackagingTests(unittest.TestCase):
         for path in self.root.rglob("*"):
             if not path.is_file() or path.suffix in {".png", ".ico", ".pyc"}:
                 continue
-            if "__pycache__" in path.parts or path.name in {"test_packaging.py", "test_companion.py"}:
+            if "__pycache__" in path.parts or "node_modules" in path.parts or path.name in {"test_packaging.py", "test_companion.py"}:
                 continue
             text = path.read_text(encoding="utf-8", errors="ignore")
             for marker in forbidden:

@@ -146,6 +146,9 @@ class ClaudeCodeAdapter:
         record = self._read(sid)
         if self.status(sid)["status"] == "RUNNING":
             raise RuntimeError("Claude session already running")
+        # Follow-ups start a new turn: never expose the prior turn result as live.
+        for key in ("result", "structured_output", "error", "usage", "finished_at"):
+            record.pop(key, None)
         record.update({"status": "RUNNING", "prompt": prompt, "continue": continued, "started_at": time.time()})
         self._write(sid, record)
         # Keep event history and monotonic seq across native session follow-ups.

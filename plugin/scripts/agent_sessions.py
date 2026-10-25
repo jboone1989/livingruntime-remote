@@ -33,7 +33,7 @@ def start(adapter_id,goal,*,project,device,authorized=False,options=None):
     if authorized is not True:
         raise PermissionError("agent launch requires explicit authorization")
     adapter=registry.get(adapter_id)
-    if options is not None and adapter_id not in {"claude-code", "codex"}:
+    if options is not None and adapter_id not in {"claude-code", "codex", "pi"}:
         raise ValueError("CLI options are only supported by registered native CLI adapters")
     kwargs={"project":project,"device":device}
     if options is not None:

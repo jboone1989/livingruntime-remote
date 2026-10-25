@@ -37,6 +37,13 @@ jobs:
         run: python plugin/scripts/selfcheck.py
       - name: Install plugin MCP runtime
         run: python -m pip install --disable-pip-version-check -r plugin/requirements.txt pytest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Pi SDK
+        run: npm ci --prefix plugin --ignore-scripts --no-audit --no-fund
+      - name: Test native Pi SDK tools
+        run: node --test plugin/tests/test_pi_harness.mjs
       - name: Run plugin tests
         run: python -m unittest discover -s plugin/tests -v
 

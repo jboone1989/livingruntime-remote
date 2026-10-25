@@ -48,7 +48,9 @@ jobs:
           --paths plugin/scripts
           --hidden-import livingruntime_adapter_codex
           --hidden-import livingruntime_adapter_claude
+          --hidden-import livingruntime_adapter_pi
           --hidden-import codex_worker
+          --hidden-import pi_worker
           --hidden-import claude_worker
           plugin/scripts/connector.py
       - name: Build Linux connector on Debian 11 glibc baseline
@@ -64,7 +66,9 @@ jobs:
           --paths plugin/scripts
           --hidden-import livingruntime_adapter_codex
           --hidden-import livingruntime_adapter_claude
+          --hidden-import livingruntime_adapter_pi
           --hidden-import codex_worker
+          --hidden-import pi_worker
           --hidden-import claude_worker
           plugin/scripts/connector.py'
           && sudo chown -R "$(id -u):$(id -g)" dist build
