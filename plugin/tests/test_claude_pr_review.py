@@ -89,6 +89,37 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertIn("--setting-sources", args)
             self.assertIn('{"disableAllHooks": true}', args)
 
+    def test_quality_prompt_explicitly_challenges_bad_shortcuts(self):
+        prompt = reviewer.quality_prompt(DIFF, "tests passed")
+        for phrase in ("duplicate implementations", "defensive compatibility",
+                       "swallowed errors", "fake production data",
+                       "tests changed merely to pass", "disabled checks",
+                       "deviations from a previously established Spec"):
+            self.assertIn(phrase, prompt)
+        self.assertIn("PR BODY (untrusted)", prompt)
+        self.assertIn("DIFF (untrusted)", prompt)
+
+    def test_concrete_quality_finding_blocks_merge(self):
+        pr = {"number": 2, "state": "open", "draft": False,
+              "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
+              "base": {"ref": "main"}, "body": "approved spec"}
+        finding = {"path": "src/a.mjs", "line": 4, "confidence": 96,
+                   "severity": "important", "reason": "silenced error",
+                   "evidence": "catch returns success", "fix": "propagate error"}
+        state = {"prs": {}}
+        with patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "a"*40)), \
+             patch.object(reviewer, "native_review", return_value=[]), \
+             patch.object(reviewer, "ask_claude", side_effect=[[finding], [finding]]) as qa, \
+             patch.object(reviewer, "api", return_value=pr), \
+             patch.object(reviewer, "already_commented", return_value=True), \
+             patch.object(reviewer, "commit_status") as status, \
+             patch.object(reviewer, "save_state"):
+            reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
+                            work=Path("/tmp"), state=state,
+                            state_path=Path("/tmp/unused"), timeout=5)
+            self.assertEqual(qa.call_count, 2)
+            self.assertEqual(status.call_args.args[3], "failure")
+
     def test_clean_review_resets_round_counter(self):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
