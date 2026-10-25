@@ -19,9 +19,12 @@ def execute(tool: str, params: dict, *, cwd: str, timeout_seconds: int = 30) -> 
     if not isinstance(params, dict):
         raise ValueError("Pi params must be an object")
     timeout = max(1, min(30, int(timeout_seconds)))
+    workspace = Path(cwd).resolve(strict=True)
+    sidecar = workspace / ".livingruntime" / "pi-harness" / "pi_tool.mjs"
+    gateway = sidecar if sidecar.is_file() else _SCRIPT
     process = subprocess.run(
-        ["node", str(_SCRIPT)],
-        cwd=str(Path(cwd).resolve(strict=True)),
+        ["node", str(gateway)],
+        cwd=str(workspace),
         input=json.dumps({"tool": tool, "params": params}),
         text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         timeout=timeout, check=False,

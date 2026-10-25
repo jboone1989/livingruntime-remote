@@ -77,14 +77,18 @@ class PiAdapter(ClaudeCodeAdapter):
         return AgentCapabilities(resume=True, messaging=True, events=True, cancel=True)
 
     def start(self, goal, *, project, device, options=None):
-        if self.executable is None or not Path(self.executable).is_file():
-            raise RuntimeError("Native Pi CLI is not installed on this host")
         if not isinstance(goal, str) or not goal.strip() or len(goal) > 40000:
             raise ValueError("invalid Pi goal")
         options = validate_options(options)
         provider = options.get("provider", "zai-coding-cn")
         model = options.get("model", "glm-5.3")
         cwd = pi_workspace(device, project)
+        executable = self.executable
+        if not executable or not Path(executable).is_file():
+            local = Path(cwd) / ".livingruntime" / "pi-harness" / "node_modules" / ".bin" / "pi"
+            if not local.is_file():
+                raise RuntimeError("Native Pi CLI is not installed on this host/project")
+            executable = str(local.resolve())
         if "env_file" in options:
             workspace = Path(cwd).resolve(strict=True)
             target = (workspace / options["env_file"]).resolve(strict=True)
@@ -93,7 +97,7 @@ class PiAdapter(ClaudeCodeAdapter):
             options["env_file"] = str(target)
         sid = str(uuid.uuid4())
         self._write(sid, {
-            "session_id": sid, "cwd": cwd, "executable": self.executable,
+            "session_id": sid, "cwd": cwd, "executable": executable,
             "status": "PENDING", "project": project, "device": device,
             "options": {**options, "provider": provider, "model": model},
         })

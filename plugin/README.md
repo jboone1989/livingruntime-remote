@@ -236,9 +236,13 @@ installations, the previous `claude_workspaces` map is used if there is no
 Pi-specific entry.
 
 Install the plugin Node dependencies on **each host** that will execute direct
-Pi SDK tools. A frozen Connector without this Node sidecar cannot execute
-`pi_tool` until the sidecar is installed. No real GLM request is needed for
-the direct tool path.
+Pi SDK tools. For a **frozen Connector**, install Pi inside each authorized
+project's `.livingruntime/pi-harness/` directory and put `pi_tool.mjs` from
+this repository's `plugin/scripts/` in that same directory. The Pi Adapter
+and Pi SDK gateway will use this project-local sidecar when bundled source
+paths are unavailable; no extra Python package installation is required.
+A frozen Connector without this Node sidecar cannot execute `pi_tool`.
+No real GLM request is needed for the direct tool path.
 
 Validation:
 

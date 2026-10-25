@@ -114,6 +114,36 @@ class PiAdapterTests(unittest.TestCase):
                     adapter.start("test", project="p", device="main",
                                   options={"env_file":"../../etc/passwd"})
 
+    def test_project_local_pi_executable_in_frozen_connector(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            executable = root / ".livingruntime/pi-harness/node_modules/.bin/pi"
+            executable.parent.mkdir(parents=True)
+            executable.write_text("fake-pi")
+            executable.chmod(0o700)
+            with patch("livingruntime_adapter_pi.pi_workspace", return_value=td), \
+                 patch.dict(os.environ, {"LIVINGRUNTIME_PI_JOBS": str(root / "jobs")}), \
+                 patch.object(PiAdapter, "_spawn", return_value="started"):
+                adapter = PiAdapter("/missing/packed/pi")
+                self.assertEqual(adapter.start("probe", project="p", device="main"), "started")
+                records = list((root / "jobs").glob("*.json"))
+                self.assertEqual(len(records), 1)
+                self.assertEqual(json.loads(records[0].read_text())["executable"],
+                                 str(executable.resolve()))
+
+    def test_project_local_sdk_gateway_is_used(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            gateway = root / ".livingruntime/pi-harness/pi_tool.mjs"
+            gateway.parent.mkdir(parents=True)
+            gateway.write_text("// sidecar")
+            with patch.object(pi_tool_runtime.subprocess, "run") as run:
+                run.return_value.stdout = '{"ok":true,"text":"ok"}'
+                run.return_value.returncode = 0
+                result = pi_tool_runtime.execute("read", {"path":"README.md"}, cwd=td)
+            self.assertTrue(result["ok"])
+            self.assertEqual(run.call_args.args[0][1], str(gateway))
+
     def test_direct_tool_rejects_bash(self):
         with self.assertRaisesRegex(ValueError, "bash uses Remote exec"):
             pi_tool_runtime.execute("bash", {"command":"echo a"}, cwd="/tmp")
