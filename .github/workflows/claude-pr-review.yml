@@ -76,13 +76,16 @@ jobs:
           fi
           state="$HOME/.local/state/claude-review/jboone1989_EventGraph-pr-$PR_NUMBER.json"
           work="$HOME/.local/share/claude-review/jboone1989_EventGraph/$PR_NUMBER"
+          manual_args=()
+          if [[ -n "$MANUAL_REREVIEW_COMMENT_ID" ]]; then
+            manual_args=(--manual-rereview-comment-id "$MANUAL_REREVIEW_COMMENT_ID")
+          fi
           python3 plugin/scripts/claude_pr_review.py \
             --repo "$REPO" --pr-number "$PR_NUMBER" \
             --gh /home/ubuntu/.local/bin/gh \
             --claude /home/ubuntu/.local/bin/claude \
             --state "$state" --work "$work" --timeout 180 \
-            --expected-sha "$EXPECTED_SHA" \
-            ${MANUAL_REREVIEW_COMMENT_ID:+--manual-rereview-comment-id "$MANUAL_REREVIEW_COMMENT_ID"}
+            --expected-sha "$EXPECTED_SHA" "${manual_args[@]}"
 
   low-risk-merge:
     # GitHub itself enforces check/docker/e2e/claude-review before the merge.
