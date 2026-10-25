@@ -392,7 +392,7 @@ def run_once(args):
             try:
                 result = review(pr, repo=args.repo, gh=args.gh, claude=args.claude,
                                 work=args.work, state=state, state_path=args.state,
-                                timeout=args.timeout, manual_approval=(manual_approval if sha == args.expected_sha else None))
+                                timeout=args.timeout, manual_approval=(manual_approval if sha == getattr(args, "expected_sha", None) else None))
                 print(f"PR #{pr['number']}: {result}", flush=True)
             except Exception as exc:
                 had_error = True
