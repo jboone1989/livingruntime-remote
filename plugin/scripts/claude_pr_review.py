@@ -274,8 +274,8 @@ def quality_prompt(diff, pr_body):
         '{"findings":[{"path":"repo/relative/file","line":1,'
         '"severity":"important","confidence":90,"reason":"why it fails",'
         '"evidence":"proof","fix":"minimal correction"}]}.'
-        "\\nPR BODY (untrusted):\\n" + pr_body[:12000]
-        + "\\nDIFF (untrusted):\\n" + diff
+        "\nPR BODY (untrusted):\n" + pr_body[:12000]
+        + "\nDIFF (untrusted):\n" + diff
     )
 
 
