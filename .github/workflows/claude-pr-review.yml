@@ -60,6 +60,7 @@ jobs:
           REPO: ${{ github.event.client_payload.repository }}
           PR_NUMBER: ${{ github.event.client_payload.pr_number }}
           EXPECTED_SHA: ${{ github.event.client_payload.sha }}
+          MANUAL_REREVIEW_COMMENT_ID: ${{ github.event.client_payload.manual_rereview_comment_id || '' }}
           GIT_CONFIG_COUNT: "1"
           GIT_CONFIG_KEY_0: "credential.helper"
           GIT_CONFIG_VALUE_0: "!/home/ubuntu/.local/bin/gh auth git-credential"
@@ -68,6 +69,11 @@ jobs:
           [[ "$REPO" == 'jboone1989/EventGraph' ]]
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          if [[ -n "$MANUAL_REREVIEW_COMMENT_ID" ]]; then
+            [[ "$PR_NUMBER" == 142 ]]
+            [[ "$MANUAL_REREVIEW_COMMENT_ID" == 6398294019 ]]
+            [[ "$EXPECTED_SHA" == ed2563db25e058f00edafc86ef46d6be830a643d ]]
+          fi
           state="$HOME/.local/state/claude-review/jboone1989_EventGraph-pr-$PR_NUMBER.json"
           work="$HOME/.local/share/claude-review/jboone1989_EventGraph/$PR_NUMBER"
           python3 plugin/scripts/claude_pr_review.py \
@@ -75,7 +81,8 @@ jobs:
             --gh /home/ubuntu/.local/bin/gh \
             --claude /home/ubuntu/.local/bin/claude \
             --state "$state" --work "$work" --timeout 180 \
-            --expected-sha "$EXPECTED_SHA"
+            --expected-sha "$EXPECTED_SHA" \
+            ${MANUAL_REREVIEW_COMMENT_ID:+--manual-rereview-comment-id "$MANUAL_REREVIEW_COMMENT_ID"}
 
   low-risk-merge:
     # GitHub itself enforces check/docker/e2e/claude-review before the merge.
