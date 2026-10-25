@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 
 MARKER = "<!-- claude-review-worker:v1 sha="
 CONTEXT = "claude-review"
@@ -256,11 +257,12 @@ def verify_prompt(candidates, diff):
     )
 
 
-def format_report(repo, sha, round_number, findings):
+def format_report(repo, sha, round_number, findings, *, manual_rereview=False):
     blocking = sum(f["severity"] == "important" for f in findings)
     lines = [f"{MARKER}{sha} -->",
              "### Claude Code review",
-             f"Commit `{sha}` · review round {round_number}/{MAX_ROUNDS}",
+             (f"Commit {sha} · owner-authorized one-time re-review after {MAX_ROUNDS} rounds"
+              if manual_rereview else f"Commit {sha} · review round {round_number}/{MAX_ROUNDS}"),
              f"**{blocking} blocking**, {len(findings) - blocking} non-blocking (verified)."]
     for index, finding in enumerate(findings, 1):
         path, line = finding["path"], finding["line"]
@@ -272,13 +274,13 @@ def format_report(repo, sha, round_number, findings):
                   f"   - Fix: {finding['fix'][:800]}"]
     if not findings:
         lines.append("\nNo high-confidence, PR-introduced defects were verified.")
-    if blocking and round_number == MAX_ROUNDS:
-        lines.append("\n**Escalation:** third round still blocked; human design review needed.")
+    if blocking and (round_number == MAX_ROUNDS or manual_rereview):
+        lines.append("\n**Escalation:** reviewer remains blocked; additional human resolution needed.")
     lines.append("\nRead-only automated review; CI and human approval are separate.")
     return "\n".join(lines), bool(blocking)
 
 
-def review(pr, *, repo, gh, claude, work, state, state_path, timeout):
+def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_approval=None):
     number, sha = pr["number"], pr["head"]["sha"]
     if pr["state"] != "open" or pr.get("draft"):
         return "skip:draft/closed"
@@ -287,7 +289,7 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout):
     history = state["prs"].setdefault(str(number), {"reviewed": []})
     if sha in history["reviewed"]:
         return "skip:already reviewed"
-    if sha in history.setdefault("limited", []):
+    if sha in history.setdefault("limited", []) and not manual_approval:
         return "skip:already escalated"
     outcomes = history.setdefault("outcomes", {})
     blocked_in_a_row = 0
@@ -297,7 +299,20 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout):
         else:
             break
     round_number = blocked_in_a_row + 1
-    if round_number > MAX_ROUNDS:
+    manually_authorized = False
+    if round_number > MAX_ROUNDS and manual_approval:
+        # Owner-authored approval is verified via the GitHub API before entry.
+        # Consume once BEFORE running Claude, even if Claude later fails.
+        manual_history = history.setdefault("manual_rereviews", {})
+        if sha in manual_history:
+            return "skip:one-time re-review already used"
+        manual_history[sha] = {
+            "approval": manual_approval,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        save_state(state_path, state)
+        manually_authorized = True
+    if round_number > MAX_ROUNDS and not manually_authorized:
         commit_status(gh, repo, sha, "failure", "3 blocked reviews; human review needed")
         history["limited"].append(sha)
         save_state(state_path, state)
@@ -315,7 +330,7 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout):
     fresh = api(gh, f"repos/{repo}/pulls/{number}")
     if fresh["head"]["sha"] != sha:
         return "skip:head updated during review"
-    body, blocking = format_report(repo, sha, round_number, findings)
+    body, blocking = format_report(repo, sha, round_number, findings, manual_rereview=manually_authorized)
     if not already_commented(gh, repo, number, sha):
         post_comment(gh, repo, number, body)
     commit_status(gh, repo, sha, "failure" if blocking else "success",
@@ -323,8 +338,31 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout):
     # Commit status and comment are idempotently retried if local state write fails.
     history["reviewed"].append(sha)
     history["outcomes"][sha] = blocking
+    if manually_authorized:
+        history["manual_rereviews"][sha]["completed_at"] = datetime.now(timezone.utc).isoformat()
+        history["manual_rereviews"][sha]["blocking"] = blocking
     save_state(state_path, state)
     return f"reviewed:{sha[:12]}, blocking={blocking}"
+
+
+def verify_owner_approval(args):
+    """Confirm the owner-authored one-time authorization for exactly this PR HEAD."""
+    if getattr(args, "manual_rereview_comment_id", None) is None:
+        return None
+    if args.pr_number is None or not args.expected_sha:
+        raise ReviewError("Manual re-review requires --pr-number and --expected-sha")
+    cid = args.manual_rereview_comment_id
+    comment = api(args.gh, f"repos/{args.repo}/issues/comments/{cid}")
+    owner = args.repo.split("/", 1)[0]
+    if comment.get("user", {}).get("login", "").casefold() != owner.casefold():
+        raise ReviewError("Manual approval must be authored by repository owner")
+    if not str(comment.get("issue_url", "")).endswith(f"/issues/{args.pr_number}"):
+        raise ReviewError("Manual approval must belong to the same pull request")
+    body = comment.get("body", "")
+    if ("一次性授权记录" not in body or args.expected_sha not in body
+            or f"PR #{args.pr_number}" not in body):
+        raise ReviewError("Owner comment does not approve this exact PR and SHA")
+    return f"{args.repo}/issues/comments/{cid}"
 
 
 def run_once(args):
@@ -333,6 +371,7 @@ def run_once(args):
     with args.state.with_suffix(".lock").open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         state = load_state(args.state)
+        manual_approval = verify_owner_approval(args)
         prs = ([api(args.gh, f"repos/{args.repo}/pulls/{args.pr_number}")]
                if args.pr_number is not None else
                api(args.gh, f"repos/{args.repo}/pulls?state=open&per_page=100"))
@@ -353,7 +392,7 @@ def run_once(args):
             try:
                 result = review(pr, repo=args.repo, gh=args.gh, claude=args.claude,
                                 work=args.work, state=state, state_path=args.state,
-                                timeout=args.timeout)
+                                timeout=args.timeout, manual_approval=(manual_approval if sha == getattr(args, "expected_sha", None) else None))
                 print(f"PR #{pr['number']}: {result}", flush=True)
             except Exception as exc:
                 had_error = True
@@ -388,6 +427,8 @@ def main(argv=None):
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--pr-number", type=int, default=None)
     parser.add_argument("--expected-sha", type=str, default=None)
+    parser.add_argument("--manual-rereview-comment-id", type=int, default=None,
+                        help="Owner-authored approval comment ID for an exact one-time post-cap review")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+", args.repo):
         parser.error("Invalid repository")
