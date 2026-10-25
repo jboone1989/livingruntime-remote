@@ -275,7 +275,7 @@ def format_report(repo, sha, round_number, findings, *, manual_rereview=False):
     if not findings:
         lines.append("\nNo high-confidence, PR-introduced defects were verified.")
     if blocking and (round_number == MAX_ROUNDS or manual_rereview):
-        lines.append("\n**Escalation:** third round still blocked; human design review needed.")
+        lines.append("\n**Escalation:** reviewer remains blocked; additional human resolution needed.")
     lines.append("\nRead-only automated review; CI and human approval are separate.")
     return "\n".join(lines), bool(blocking)
 
@@ -289,7 +289,7 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
     history = state["prs"].setdefault(str(number), {"reviewed": []})
     if sha in history["reviewed"]:
         return "skip:already reviewed"
-    if sha in history.setdefault("limited", []):
+    if sha in history.setdefault("limited", []) and not manual_approval:
         return "skip:already escalated"
     outcomes = history.setdefault("outcomes", {})
     blocked_in_a_row = 0
