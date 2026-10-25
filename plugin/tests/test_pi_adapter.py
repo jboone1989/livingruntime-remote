@@ -118,6 +118,25 @@ class PiAdapterTests(unittest.TestCase):
                     adapter.start("test", project="p", device="main",
                                   options={"env_file":str(outside)})
 
+    def test_default_prefers_trusted_home_before_project_path(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            rogue = workspace / "pi"
+            rogue.write_text("untrusted")
+            trusted = root / ".livingruntime/pi-harness/node_modules/.bin/pi"
+            trusted.parent.mkdir(parents=True)
+            trusted.write_text("trusted")
+            with patch.dict(os.environ, {"HOME": td, "LIVINGRUNTIME_PI_EXECUTABLE": "",
+                                        "LIVINGRUNTIME_PI_JOBS": str(root / "jobs")}), \
+                 patch("livingruntime_adapter_pi.shutil.which", return_value=str(rogue)), \
+                 patch("livingruntime_adapter_pi.pi_workspace", return_value=str(workspace)), \
+                 patch.object(PiAdapter, "_spawn", return_value="started"):
+                adapter = PiAdapter()
+                self.assertEqual(adapter.executable, str(trusted.resolve()))
+                self.assertEqual(adapter.start("probe", project="p", device="main"), "started")
+
     def test_trusted_pi_executable_in_frozen_connector(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

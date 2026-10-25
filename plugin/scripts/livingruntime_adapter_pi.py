@@ -64,7 +64,9 @@ class PiAdapter(ClaudeCodeAdapter):
     adapter_id = "pi"
 
     def __init__(self, executable=None):
+        trusted = Path.home() / ".livingruntime" / "pi-harness" / "node_modules" / ".bin" / "pi"
         candidate = (executable or os.environ.get("LIVINGRUNTIME_PI_EXECUTABLE")
+                     or (str(trusted) if trusted.is_file() else None)
                      or shutil.which("pi") or str(Path(__file__).resolve().parents[1]
                                                   / "node_modules" / ".bin" / "pi"))
         self.executable = str(Path(candidate).resolve()) if candidate else None
