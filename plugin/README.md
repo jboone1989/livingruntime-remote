@@ -204,17 +204,48 @@ agent in Remote:
   delegates to Remote's existing `exec` authorization (including exact
   approvals). It does not bypass the Remote shell policy. SDK tool mode requires
   a **host-local Connector**, not the legacy SSH execution route.
-- **Delegation mode:** the optional `livingruntime_adapter_pi` uses native
-  `pi --mode json --provider zai-coding-cn --model glm-5.3` by default.
-  Native Pi performs its own model/tool loop; Remote only owns Agent Session
-  identity, detached execution, observable events, cancellation, and durable
-  completion receipts. `start_agent(adapter_id="pi", ...)` is the entrypoint.
-  Caller-selected `options.provider` and `options.model` override defaults.
-  To reuse an existing project-local `.env` **without copying credentials**,
-  pass `options={"provider":"nvidia","model":"z-ai/glm-5.3","env_file":".env"}`.
-  The env file must resolve inside that authorized project workspace; only
-  its **path** is stored in the Agent Session. The Pi subprocess loads it
-  using Node.js `--env-file`. No credentials enter the Agent prompt or receipt.
+- **Delegation mode:** the optional `livingruntime_adapter_pi` defaults to
+  `pi --mode json --provider bigmodel-official --model glm-5.3`, calling
+  **Zhipu BigModel's own general API** at
+  `https://open.bigmodel.cn/api/paas/v4` (not NVIDIA or Coding Plan).
+  Pi owns the model/tool loop; Remote owns Agent Session identity,
+  detached execution, events, cancellation, and completion receipts.
+  `start_agent(adapter_id="pi", ...)` is the entrypoint.
+  Caller-selected `options.provider` and `options.model` still override
+  these defaults. If the Connector owner has
+  `~/.livingruntime/official-glm.env` (outside any writable project),
+  the adapter automatically loads it with Node.js `--env-file`, retaining
+  only its file path in the Session.
+  Do not include API keys in goals or results.
+
+For the official general API, configure a Pi custom provider in
+`~/.pi/agent/models.json` on the Connector host (merge into any existing
+`providers` dictionary):
+
+```json
+{
+  "providers": {
+    "bigmodel-official": {
+      "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+      "api": "openai-completions",
+      "apiKey": "$BIGMODEL_API_KEY",
+      "models": [{"id":"glm-5.3","name":"GLM-5.3",
+                  "reasoning":true,"input":["text"],
+                  "compat":{"supportsDeveloperRole":false,
+                            "supportsReasoningEffort":false}}]
+    }
+  }
+}
+```
+
+Place the existing BigModel API key (not an NVIDIA key) in the **Connector
+owner's** `~/.livingruntime/official-glm.env` as `BIGMODEL_API_KEY=...`
+with mode `0600`. Keep this directory outside all writable project roots.
+Alternatively pass an explicit `options.env_file` inside the authorized
+workspace (never auto-selected). **Coding Plan keys**
+must instead use their separate `/api/coding/paas/v4` endpoint and matching
+provider configuration; do not mix its subscription quota with the general
+API billing account.
 
 For a source-based Connector with Node.js 22.19+, install the pinned SDK
 dependency in the checked-out plugin directory:
@@ -228,7 +259,7 @@ Pi CLI is provided by `plugin/node_modules/.bin/pi` after installation, or
 may be specified with `LIVINGRUNTIME_PI_EXECUTABLE`. The Pi provider must
 already be authenticated on the Connector host via native Pi login or an
 appropriate provider environment variable (for example
-`ZAI_CODING_CN_API_KEY`); credentials are not passed in Remote prompts.
+`BIGMODEL_API_KEY` for the official BigModel general API); credentials are not passed in Remote prompts.
 Authorize the Agent with the existing `launch_allowlist`, and set
 `pi_workspaces` as an owner-controlled `device:project` to absolute-path map
 in `~/.livingruntime/agent-policy.json` (mode 0600). For compatible existing

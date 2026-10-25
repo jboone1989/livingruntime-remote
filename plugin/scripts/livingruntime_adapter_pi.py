@@ -82,9 +82,14 @@ class PiAdapter(ClaudeCodeAdapter):
         if not isinstance(goal, str) or not goal.strip() or len(goal) > 40000:
             raise ValueError("invalid Pi goal")
         options = validate_options(options)
-        provider = options.get("provider", "zai-coding-cn")
+        provider = options.get("provider", "bigmodel-official")
         model = options.get("model", "glm-5.3")
         cwd = pi_workspace(device, project)
+        default_env = Path.home() / ".livingruntime" / "official-glm.env"
+        owner_env_selected = (provider == "bigmodel-official" and
+                              "env_file" not in options and default_env.is_file())
+        if owner_env_selected:
+            options["env_file"] = str(default_env)
         executable = self.executable
         if not executable or not Path(executable).is_file():
             trusted = Path.home() / ".livingruntime" / "pi-harness" / "node_modules" / ".bin" / "pi"
@@ -96,8 +101,11 @@ class PiAdapter(ClaudeCodeAdapter):
         if "env_file" in options:
             workspace = Path(cwd).resolve(strict=True)
             target = (workspace / options["env_file"]).resolve(strict=True)
-            if not target.is_relative_to(workspace) or not target.is_file():
-                raise PermissionError("Pi env_file must exist inside the project workspace")
+            owner_home_env = (owner_env_selected and
+                              target == default_env.resolve(strict=True) and
+                              not target.is_relative_to(workspace))
+            if not (target.is_relative_to(workspace) or owner_home_env) or not target.is_file():
+                raise PermissionError("Pi env_file must be explicit in the workspace or the trusted owner-home default")
             options["env_file"] = str(target)
         sid = str(uuid.uuid4())
         self._write(sid, {

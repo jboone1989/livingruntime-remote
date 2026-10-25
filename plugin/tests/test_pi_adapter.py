@@ -118,6 +118,31 @@ class PiAdapterTests(unittest.TestCase):
                     adapter.start("test", project="p", device="main",
                                   options={"env_file":str(outside)})
 
+    def test_default_routes_bigmodel_official_with_owner_home_env(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            workspace = root / "workspace"
+            (workspace / ".livingruntime").mkdir(parents=True)
+            (workspace / ".livingruntime/official-glm.env").write_text("BIGMODEL_API_KEY=untrusted")
+            home_config = root / ".livingruntime"
+            home_config.mkdir()
+            env_file = home_config / "official-glm.env"
+            env_file.write_text("BIGMODEL_API_KEY=placeholder", encoding="utf-8")
+            fake = root / "pi"
+            fake.write_text("# stub")
+            with patch("livingruntime_adapter_pi.pi_workspace", return_value=str(workspace)), \
+                 patch.dict(os.environ, {"HOME":td,"LIVINGRUNTIME_PI_JOBS": str(root / "jobs")}), \
+                 patch.object(PiAdapter, "_spawn", return_value="started"):
+                adapter = PiAdapter(str(fake))
+                self.assertEqual(adapter.start("probe", project="p", device="main"), "started")
+                records = list((root / "jobs").glob("*.json"))
+                self.assertEqual(len(records), 1)
+                opts = json.loads(records[0].read_text())["options"]
+                self.assertEqual(opts["provider"], "bigmodel-official")
+                self.assertEqual(opts["model"], "glm-5.3")
+                self.assertEqual(opts["env_file"], str(env_file.resolve()))
+                self.assertNotIn("placeholder", json.dumps(opts))
+
     def test_default_prefers_trusted_home_before_project_path(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
