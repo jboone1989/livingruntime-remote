@@ -15,7 +15,7 @@ const factories = {
 function checkPath(root, value) {
   // Pi later expands Unicode spaces, @, ~ and file://. Pass it only a
   // checked absolute path so its normalizer cannot reinterpret the input.
-  const target = path.resolve(root, value.replace(/[\\u00A0\\u2000-\\u200A\\u202F\\u205F\\u3000]/g, " "));
+  const target = path.resolve(root, value.replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " "));
   const relative = path.relative(root, target);
   if (relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative))
     throw new Error("tool path outside project workspace");

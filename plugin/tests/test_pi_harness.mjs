@@ -25,6 +25,17 @@ test("real Pi SDK read / edit / write / grep / find", () => {
     const edit = invoke(cwd, "edit", {path:"sample.txt", edits:[{oldText:"alpha", newText:"beta"}]});
     assert.equal(edit.ok, true, JSON.stringify(edit));
     assert.equal(fs.readFileSync(path.join(cwd, "sample.txt"), "utf8"), "beta\n");
+    // Regression for reviewer finding: Unicode-space class must not match ASCII digits/uppercase.
+    for (const name of ["README.md", "File1.txt", "My Project 2026.txt"]) {
+      const payload = "Pi_SDK_FILENAME_OK";
+      const written = invoke(cwd, "write", {path:name, content:payload});
+      assert.equal(written.ok, true, JSON.stringify(written));
+      assert.equal(fs.readFileSync(path.join(cwd, name), "utf8"), payload);
+      const looked = invoke(cwd, "read", {path:name});
+      assert.equal(looked.ok, true, JSON.stringify(looked));
+      assert.match(looked.text, /Pi_SDK_FILENAME_OK/);
+    }
+
     const grep = invoke(cwd, "grep", {pattern:"beta", path:"."});
     assert.equal(grep.ok, true, JSON.stringify(grep));
     const found = invoke(cwd, "find", {pattern:"*.txt", path:"."});
