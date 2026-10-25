@@ -82,9 +82,13 @@ class PiAdapter(ClaudeCodeAdapter):
         if not isinstance(goal, str) or not goal.strip() or len(goal) > 40000:
             raise ValueError("invalid Pi goal")
         options = validate_options(options)
-        provider = options.get("provider", "zai-coding-cn")
+        provider = options.get("provider", "bigmodel-official")
         model = options.get("model", "glm-5.3")
         cwd = pi_workspace(device, project)
+        if provider == "bigmodel-official" and "env_file" not in options:
+            default_env = Path(cwd) / ".livingruntime" / "official-glm.env"
+            if default_env.is_file():
+                options["env_file"] = str(default_env)
         executable = self.executable
         if not executable or not Path(executable).is_file():
             trusted = Path.home() / ".livingruntime" / "pi-harness" / "node_modules" / ".bin" / "pi"
