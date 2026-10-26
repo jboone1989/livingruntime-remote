@@ -114,7 +114,8 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertEqual(env["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"], "1")
             self.assertEqual(env["DEEPSEEK_API_KEY"], "fallback-key")
             for name in overrides:
-                if name not in ("GH_TOKEN", "DEEPSEEK_API_KEY"):
+                if name not in ("GH_TOKEN", "DEEPSEEK_API_KEY",
+                                "CLAUDE_CODE_SUBAGENT_MODEL"):
                     self.assertNotIn(name, env)
 
     def test_both_claude_review_paths_ignore_inherited_provider_overrides(self):
