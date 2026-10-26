@@ -25,12 +25,36 @@ class ReviewError(Exception):
     pass
 
 
-def run(argv, cwd=None, timeout=120, input_text=None):
-    result = subprocess.run(argv, cwd=cwd, timeout=timeout, capture_output=True,
-                            input=input_text, text=True)
+class QuotaExceeded(ReviewError):
+    """Claude session quota exhausted (not a code review finding)."""
+
+
+class ReviewUnavailable(ReviewError):
+    """Fallback review unavailable; do not exhaust the PR retry budget."""
+
+
+def is_claude_quota(message):
+    text = str(message).casefold()
+    return any(phrase in text for phrase in (
+        "session limit", "usage limit", "weekly limit", "plan limit",
+        "quota exceeded", "you've hit your limit", "you have hit your limit",
+        "5-hour limit", "five-hour limit",
+    ))
+
+
+def run(argv, cwd=None, timeout=120, input_text=None, env=None):
+    kwargs = dict(cwd=cwd, timeout=timeout, capture_output=True,
+                  input=input_text, text=True)
+    if env is not None:
+        kwargs["env"] = env
+    result = subprocess.run(argv, **kwargs)
     if result.returncode:
+        message = result.stderr or result.stdout
+        if Path(argv[0]).name == "claude" and is_claude_quota(
+                (result.stderr or "") + "\n" + (result.stdout or "")):
+            raise QuotaExceeded("Claude subscription usage limit reached")
         raise ReviewError(f"{argv[0]} exited {result.returncode}: "
-                          + (result.stderr or result.stdout).strip()[:350])
+                          + (message or "").strip()[:350])
     return result.stdout
 
 
@@ -179,9 +203,11 @@ def filter_findings(findings, diff):
 
 def parse_claude(stdout):
     data = json.loads(stdout)
+    response = data.get("result")
+    if is_claude_quota(response):
+        raise QuotaExceeded("Claude subscription usage limit reached")
     if data.get("is_error"):
         raise ReviewError("Claude reported an execution failure")
-    response = data.get("result")
     if not isinstance(response, str):
         raise ReviewError("Missing Claude result")
     response = response.strip()
@@ -196,6 +222,8 @@ def parse_claude(stdout):
 def parse_native_review(stdout):
     """Normalize Claude Code's bundled /code-review findings, not a custom review prompt."""
     result = json.loads(stdout)
+    if isinstance(result, dict) and is_claude_quota(result.get("result")):
+        raise QuotaExceeded("Claude subscription usage limit reached")
     if not isinstance(result, dict) or result.get("is_error") or str(result.get("subtype", "")).startswith("error_"):
         raise ReviewError("Native Claude Code review failed")
     response = result.get("result")
@@ -233,7 +261,7 @@ def native_review(binary, cwd, baseline, sha, timeout):
     return parse_native_review(run(args, cwd=cwd, timeout=timeout))
 
 
-def ask_claude(binary, cwd, prompt, timeout, model="sonnet"):
+def ask_claude(binary, cwd, prompt, timeout, model="sonnet", env=None):
     # --tools restricts which tools exist (unlike --allowedTools).
     # No Bash, shell execution, edits, writes, or MCP tool calls in review mode.
     stdout = run([binary, "-p", "--output-format", "json",
@@ -242,10 +270,45 @@ def ask_claude(binary, cwd, prompt, timeout, model="sonnet"):
                   "--setting-sources", "user",
                   "--settings", '{"disableAllHooks": true}',
                   "--model", model, "--max-turns", "16"],
-                 cwd=cwd, timeout=timeout, input_text=prompt)
+                 cwd=cwd, timeout=timeout, input_text=prompt, env=env)
     return parse_claude(stdout)
 
 
+
+def deepseek_environment():
+    """Scope the fallback token to DeepSeek's CLI subprocess only."""
+    key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if not key:
+        raise ReviewUnavailable("DEEPSEEK_API_KEY is missing from the review runner")
+    env = os.environ.copy()
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+                 "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+                 "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                 "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"):
+        env.pop(name, None)
+    env.update({
+        "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": key,
+        "ANTHROPIC_MODEL": "deepseek-flash[1m]",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-flash[1m]",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-flash[1m]",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-flash",
+        "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash",
+        "CLAUDE_CODE_EFFORT_LEVEL": "max",
+    })
+    env.pop("DEEPSEEK_API_KEY", None)
+    return env
+
+
+def deepseek_review(binary, directory, diff, pr_body, timeout):
+    """Perform a full independent review rather than reusing partial Claude findings."""
+    env = deepseek_environment()
+    candidates = ask_claude(binary, directory, quality_prompt(diff, pr_body),
+                            timeout, model="deepseek-flash[1m]", env=env)
+    verified = (ask_claude(binary, directory, verify_prompt(candidates, diff),
+                           timeout, model="deepseek-flash[1m]", env=env)
+                if candidates else [])
+    return filter_findings(verified, diff)
 
 
 def needs_quality_review(diff):
@@ -266,7 +329,7 @@ def quality_prompt(diff, pr_body):
     checklist = (Path(__file__).resolve().parents[2]
                  / "docs" / "claude-review-checklist.md").read_text(encoding="utf-8")
     return (
-        "You are Claude, the independent adversarial code reviewer. "
+        "You are the independent adversarial code reviewer. "
         "Use Read/Glob/Grep only; do not execute or change source code. "
         "Read this trusted review checklist and examine EACH applicable item "
         "R01–R18 against actual existing modules, callers, PR changes, tests "
@@ -303,10 +366,10 @@ def verify_prompt(candidates, diff):
     )
 
 
-def format_report(repo, sha, round_number, findings, *, manual_rereview=False):
+def format_report(repo, sha, round_number, findings, *, manual_rereview=False, provider="Claude"):
     blocking = sum(f["severity"] == "important" for f in findings)
     lines = [f"{MARKER}{sha} -->",
-             "### Claude Code review",
+             f"### {provider} Code review",
              (f"Commit {sha} · owner-authorized one-time re-review after {MAX_ROUNDS} rounds"
               if manual_rereview else f"Commit {sha} · review round {round_number}/{MAX_ROUNDS}"),
              f"**{blocking} blocking**, {len(findings) - blocking} non-blocking (verified)."]
@@ -376,33 +439,40 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
         # Native slash-command output can be prose rather than machine-readable
         # findings. Fall back to the existing independent, checklist-driven Claude
         # review; never mark the check successful without a real structured review.
-        used_fallback = False
+        provider = "Claude"
         try:
-            candidates = native_review(claude, directory, baseline, sha, timeout)
-        except ReviewError:
-            # The optional native slash-command can also exit nonzero. Retry
-            # using the complete trusted checklist; this remains a real Claude
-            # review, not an empty pass. Errors in that review still fail closed.
-            candidates = ask_claude(claude, directory,
-                                    quality_prompt(diff, pr.get("body") or ""),
-                                    timeout, "sonnet")
-            used_fallback = True
-        if needs_quality_review(diff) and not used_fallback:
-            candidates += ask_claude(claude, directory,
-                                      quality_prompt(diff, pr.get("body") or ""),
-                                      timeout, "sonnet")
-        verified = (ask_claude(claude, directory,
-                               verify_prompt(candidates, diff), timeout, "sonnet")
-                    if candidates else [])
-        findings = filter_findings(verified, diff)
+            used_fallback = False
+            try:
+                candidates = native_review(claude, directory, baseline, sha, timeout)
+            except QuotaExceeded:
+                raise
+            except ReviewError:
+                # Optional slash command can fail; use the existing full checklist.
+                candidates = ask_claude(claude, directory,
+                                        quality_prompt(diff, pr.get("body") or ""),
+                                        timeout, "sonnet")
+                used_fallback = True
+            if needs_quality_review(diff) and not used_fallback:
+                candidates += ask_claude(claude, directory,
+                                          quality_prompt(diff, pr.get("body") or ""),
+                                          timeout, "sonnet")
+            verified = (ask_claude(claude, directory,
+                                   verify_prompt(candidates, diff), timeout, "sonnet")
+                        if candidates else [])
+            findings = filter_findings(verified, diff)
+        except QuotaExceeded:
+            provider = "DeepSeek-V4.1-Flash-1017"
+            findings = deepseek_review(
+                claude, directory, diff, pr.get("body") or "", timeout)
         fresh = api(gh, f"repos/{repo}/pulls/{number}")
         if fresh["head"]["sha"] != sha:
             return "skip:head updated during review"
-        body, blocking = format_report(repo, sha, round_number, findings, manual_rereview=manually_authorized)
+        body, blocking = format_report(repo, sha, round_number, findings,
+                                       manual_rereview=manually_authorized, provider=provider)
         if not already_commented(gh, repo, number, sha):
             post_comment(gh, repo, number, body)
         commit_status(gh, repo, sha, "failure" if blocking else "success",
-                      f"{len(findings)} verified findings; {int(blocking)} blocking")
+                      f"{provider}: {len(findings)} findings; {int(blocking)} blocking")
         # Commit status and comment are idempotently retried if local state write fails.
         history["reviewed"].append(sha)
         history["outcomes"][sha] = blocking
@@ -410,7 +480,7 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
             history["manual_rereviews"][sha]["completed_at"] = datetime.now(timezone.utc).isoformat()
             history["manual_rereviews"][sha]["blocking"] = blocking
         save_state(state_path, state)
-        return f"reviewed:{sha[:12]}, blocking={blocking}"
+        return f"reviewed:{sha[:12]}, provider={provider}, blocking={blocking}"
 
 
 def verify_owner_approval(args):
@@ -468,12 +538,13 @@ def run_once(args):
                       file=sys.stderr, flush=True)
                 sha = pr.get("head", {}).get("sha", "")
                 history = state["prs"].setdefault(str(pr["number"]), {"reviewed": []})
-                failures = history.setdefault("failures", {})
-                failures[sha] = failures.get(sha, 0) + 1
-                try:
-                    save_state(args.state, state)
-                except OSError as save_exc:
-                    print(f"Failed to save retry state: {save_exc}", file=sys.stderr)
+                if not isinstance(exc, (QuotaExceeded, ReviewUnavailable)):
+                    failures = history.setdefault("failures", {})
+                    failures[sha] = failures.get(sha, 0) + 1
+                    try:
+                        save_state(args.state, state)
+                    except OSError as save_exc:
+                        print(f"Failed to save retry state: {save_exc}", file=sys.stderr)
                 if re.fullmatch(r"[0-9a-f]{40}", sha):
                     try:
                         commit_status(args.gh, args.repo, sha, "error",

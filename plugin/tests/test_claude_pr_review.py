@@ -244,6 +244,8 @@ class ReviewerUnitTests(unittest.TestCase):
             with patch.object(reviewer, "checkout", return_value=(
                      work / "source", DIFF, "a"*40)), \
                  patch.object(reviewer, "native_review",
+                              side_effect=reviewer.ReviewError("Claude unavailable")), \
+                 patch.object(reviewer, "ask_claude",
                               side_effect=reviewer.ReviewError("Claude unavailable")):
                 with self.assertRaisesRegex(reviewer.ReviewError, "Claude unavailable"):
                     reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
@@ -337,6 +339,98 @@ class ReviewerUnitTests(unittest.TestCase):
                 self.assertFalse(reviewer.run_once(args))
                 api.assert_called_once_with("gh", "repos/org/repo/pulls/47")
                 review.assert_called_once()
+
+    def test_claude_quota_is_not_generic_rate_limit(self):
+        class Process:
+            returncode = 1
+            stderr = "You've hit your session limit"
+            stdout = ""
+        with patch.object(reviewer.subprocess, "run", return_value=Process()):
+            with self.assertRaises(reviewer.QuotaExceeded):
+                reviewer.run(["claude", "-p", "test"])
+        self.assertFalse(reviewer.is_claude_quota("Rate limit: too many requests"))
+        self.assertFalse(reviewer.is_claude_quota("Invalid model name"))
+        with self.assertRaises(reviewer.QuotaExceeded):
+            reviewer.parse_claude(json.dumps({
+                "is_error": True, "result": "You've hit your session limit"}))
+        with self.assertRaises(reviewer.QuotaExceeded):
+            reviewer.parse_native_review(json.dumps({
+                "is_error": True, "result": "You've hit your session limit"}))
+
+    def test_deepseek_env_is_scoped_and_uses_v41_flash(self):
+        with patch.dict(reviewer.os.environ,
+                        {"DEEPSEEK_API_KEY": "fake-review-only-key",
+                         "ANTHROPIC_API_KEY": "old-claude-key",
+                         "ANTHROPIC_BASE_URL": "old"}, clear=True):
+            env = reviewer.deepseek_environment()
+        self.assertEqual(env["ANTHROPIC_MODEL"], "deepseek-flash[1m]")
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic")
+        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "fake-review-only-key")
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertNotIn("DEEPSEEK_API_KEY", env)
+        with patch.dict(reviewer.os.environ, {}, clear=True):
+            with self.assertRaises(reviewer.ReviewUnavailable):
+                reviewer.deepseek_environment()
+
+    def test_quota_falls_back_to_actual_deepseek_review(self):
+        pr = {"number": 2, "state": "open", "draft": False,
+              "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
+              "base": {"ref": "main"}, "body": ""}
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
+             patch.object(reviewer, "native_review",
+                          side_effect=reviewer.QuotaExceeded("session limit")), \
+             patch.object(reviewer, "ask_claude", return_value=[]) as ask, \
+             patch.object(reviewer, "api", return_value=pr), \
+             patch.object(reviewer, "already_commented", return_value=False), \
+             patch.object(reviewer, "post_comment") as comment, \
+             patch.object(reviewer, "commit_status") as status, \
+             patch.object(reviewer, "save_state"), \
+             patch.dict(reviewer.os.environ, {"DEEPSEEK_API_KEY": "fake"}):
+            result = reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
+                                     work=Path(tmp), state={"prs": {}},
+                                     state_path=Path(tmp)/"state", timeout=5)
+        self.assertIn("provider=DeepSeek-V4.1-Flash-1017", result)
+        self.assertEqual(ask.call_count, 1)
+        self.assertEqual(ask.call_args.kwargs["model"], "deepseek-flash[1m]")
+        self.assertIn("ANTHROPIC_AUTH_TOKEN", ask.call_args.kwargs["env"])
+        self.assertIn("DeepSeek", comment.call_args.args[3])
+        self.assertEqual(status.call_args.args[3], "success")
+
+    def test_claude_returns_on_next_review_without_deepseek(self):
+        pr = {"number": 2, "state": "open", "draft": False,
+              "head": {"sha": "d"*40, "repo": {"full_name": "org/repo"}},
+              "base": {"ref": "main"}, "body": ""}
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
+             patch.object(reviewer, "native_review", return_value=[]), \
+             patch.object(reviewer, "ask_claude", return_value=[]), \
+             patch.object(reviewer, "deepseek_review") as deepseek, \
+             patch.object(reviewer, "api", return_value=pr), \
+             patch.object(reviewer, "already_commented", return_value=True), \
+             patch.object(reviewer, "commit_status"), \
+             patch.object(reviewer, "save_state"):
+            result = reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
+                                     work=Path(tmp), state={"prs": {}},
+                                     state_path=Path(tmp)/"state", timeout=5)
+        self.assertIn("provider=Claude", result)
+        deepseek.assert_not_called()
+
+    def test_quota_without_key_does_not_consume_retry_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pr = {"number": 7, "state": "open", "draft": False,
+                  "head": {"sha": "c"*40, "repo": {"full_name": "org/repo"}},
+                  "base": {"ref": "main"}}
+            args = argparse.Namespace(repo="org/repo", gh="gh", claude="claude",
+                        pr_number=7, expected_sha=pr["head"]["sha"],
+                        work=Path(tmp), timeout=5, state=Path(tmp)/"state")
+            with patch.object(reviewer, "api", return_value=pr), \
+                 patch.object(reviewer, "review",
+                              side_effect=reviewer.ReviewUnavailable("key absent")), \
+                 patch.object(reviewer, "commit_status") as status:
+                self.assertTrue(reviewer.run_once(args))
+            self.assertFalse(args.state.exists())
+            self.assertEqual(status.call_args.args[3], "error")
 
 if __name__ == "__main__":
     unittest.main()
