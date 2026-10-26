@@ -374,7 +374,7 @@ def format_report(repo, sha, round_number, findings, *, manual_rereview=False, p
     lines = [f"{MARKER}{sha} -->",
              f"### {provider} Code review",
              (f"Commit {sha} · owner-authorized one-time re-review after {MAX_ROUNDS} rounds"
-              if manual_rereview else f"Commit {sha} · review round {round_number}/{MAX_ROUNDS}"),
+              if manual_rereview else f"Commit {sha} · review round {round_number}"),
              f"**{blocking} blocking**, {len(findings) - blocking} non-blocking (verified)."]
     for index, finding in enumerate(findings, 1):
         path, line = finding["path"], finding["line"]
@@ -386,7 +386,7 @@ def format_report(repo, sha, round_number, findings, *, manual_rereview=False, p
                   f"   - Fix: {finding['fix'][:800]}"]
     if not findings:
         lines.append("\nNo high-confidence, PR-introduced defects were verified.")
-    if blocking and (round_number == MAX_ROUNDS or manual_rereview):
+    if blocking and manual_rereview:
         lines.append("\n**Escalation:** reviewer remains blocked; additional human resolution needed.")
     lines.append("\nRead-only automated review; CI and human approval are separate.")
     return "\n".join(lines), bool(blocking)
@@ -401,8 +401,8 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
     history = state["prs"].setdefault(str(number), {"reviewed": []})
     if sha in history["reviewed"]:
         return "skip:already reviewed"
-    if sha in history.setdefault("limited", []) and not manual_approval:
-        return "skip:already escalated"
+    # Previously capped SHA entries are not silently approved or skipped: they still
+    # require a real review. A successfully reviewed SHA is already handled above.
     outcomes = history.setdefault("outcomes", {})
     blocked_in_a_row = 0
     for previous in reversed(history["reviewed"]):
@@ -424,11 +424,8 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
         }
         save_state(state_path, state)
         manually_authorized = True
-    if round_number > MAX_ROUNDS and not manually_authorized:
-        commit_status(gh, repo, sha, "failure", "3 blocked reviews; human review needed")
-        history["limited"].append(sha)
-        save_state(state_path, state)
-        return "limit:manual review"
+    # Every new commit SHA gets an independent review, even after three blocked revisions.
+    # The reviewed-SHA guard above still prevents duplicate work and status spoofing.
     base = pr["base"]["ref"]
     if not re.fullmatch(r"[a-zA-Z0-9_./-]+", base) or base.startswith("-"):
         raise ReviewError("Unsafe base ref")
