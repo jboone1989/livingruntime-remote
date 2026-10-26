@@ -49,7 +49,7 @@ class ReviewerUnitTests(unittest.TestCase):
               "base": {"ref": "main"}, "body": "approved spec"}
         state = {"prs": {"2": {"reviewed": ["s1", "s2", "s3"],
                                 "outcomes": {"s1": True, "s2": True, "s3": True},
-                                "limited": ["a"*40]}}}
+                                "limited": ["a"*40], "failures": {"a"*40: 2}}}}
         with (patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "b"*40)) as checkout,
               patch.object(reviewer, "native_review", return_value=[]),
               patch.object(reviewer, "ask_claude", return_value=[]),
