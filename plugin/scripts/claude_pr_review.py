@@ -295,6 +295,7 @@ def deepseek_environment():
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-flash",
         "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash",
         "CLAUDE_CODE_EFFORT_LEVEL": "max",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "786432",
     })
     env.pop("DEEPSEEK_API_KEY", None)
     return env
