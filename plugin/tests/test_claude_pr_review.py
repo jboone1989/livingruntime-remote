@@ -110,9 +110,12 @@ class ReviewerUnitTests(unittest.TestCase):
         with patch.dict(reviewer.os.environ, overrides, clear=True):
             env = reviewer.claude_subscription_environment()
             self.assertEqual(env["GH_TOKEN"], "runner-github-token")
+            self.assertEqual(env["CLAUDE_CODE_SUBAGENT_MODEL"], "sonnet")
+            self.assertEqual(env["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"], "1")
             self.assertEqual(env["DEEPSEEK_API_KEY"], "fallback-key")
             for name in overrides:
-                if name not in ("GH_TOKEN", "DEEPSEEK_API_KEY"):
+                if name not in ("GH_TOKEN", "DEEPSEEK_API_KEY",
+                                "CLAUDE_CODE_SUBAGENT_MODEL"):
                     self.assertNotIn(name, env)
 
     def test_both_claude_review_paths_ignore_inherited_provider_overrides(self):
@@ -162,6 +165,8 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertEqual(reviewer.ask_claude("claude", Path("/tmp"), "prompt", 30), [])
             args = proc.call_args.args[0]
             self.assertEqual(proc.call_args.kwargs["input"], "prompt")
+            self.assertEqual(proc.call_args.kwargs["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "sonnet")
+            self.assertEqual(proc.call_args.kwargs["env"]["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"], "1")
             self.assertNotIn("prompt", args)
             self.assertIn("--setting-sources", args)
             self.assertIn('{"disableAllHooks": true}', args)
@@ -375,6 +380,9 @@ class ReviewerUnitTests(unittest.TestCase):
             argv = cli.call_args.args[0]
             self.assertIn("/code-review high " + "a"*40 + ".." + "b"*40, argv)
             self.assertIn("--permission-mode", argv)
+            self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
+            self.assertEqual(cli.call_args.kwargs["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "sonnet")
+            self.assertEqual(cli.call_args.kwargs["env"]["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"], "1")
             self.assertIn("--disallowedTools", argv)
             self.assertNotIn("--bare", argv)
 
