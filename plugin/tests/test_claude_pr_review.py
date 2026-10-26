@@ -364,6 +364,8 @@ class ReviewerUnitTests(unittest.TestCase):
                          "ANTHROPIC_BASE_URL": "old"}, clear=True):
             env = reviewer.deepseek_environment()
         self.assertEqual(env["ANTHROPIC_MODEL"], "claude-sonnet-4-5-20250929")
+        self.assertEqual(env["ANTHROPIC_DEFAULT_SONNET_MODEL"], "claude-sonnet-4-5-20250929")
+        self.assertEqual(env["CLAUDE_CODE_SUBAGENT_MODEL"], "deepseek-flash")
         self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic")
         # DeepSeek Anthropic endpoint maps native claude-sonnet* to Flash.
         self.assertEqual(env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "786432")
