@@ -51,7 +51,7 @@ jobs:
       github.event_name == 'repository_dispatch' &&
       github.event.client_payload.repository == 'jboone1989/EventGraph'
     runs-on: [self-hosted, Linux, X64, claude-review]
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -85,7 +85,7 @@ jobs:
             --repo "$REPO" --pr-number "$PR_NUMBER" \
             --gh /home/ubuntu/.local/bin/gh \
             --claude /home/ubuntu/.local/bin/claude \
-            --state "$state" --work "$work" --timeout 180 \
+            --state "$state" --work "$work" --timeout 360 \
             --expected-sha "$EXPECTED_SHA" "${manual_args[@]}"
 
   low-risk-merge:
