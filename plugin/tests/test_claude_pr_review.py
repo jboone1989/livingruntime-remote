@@ -200,6 +200,10 @@ class ReviewerUnitTests(unittest.TestCase):
 
             original_run = reviewer.run
             def local_run(args, **kwargs):
+                # Keep the production URL validation while routing Git I/O to
+                # this test's local bare remote (no network dependency).
+                if args[-3:] == ["remote", "get-url", "origin"]:
+                    return "https://github.com/org/repo.git\\n"
                 args = [str(remote) if a == "https://github.com/org/repo.git" else a
                         for a in args]
                 return original_run(args, **kwargs)
