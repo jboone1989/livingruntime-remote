@@ -363,8 +363,9 @@ class ReviewerUnitTests(unittest.TestCase):
                          "ANTHROPIC_API_KEY": "old-claude-key",
                          "ANTHROPIC_BASE_URL": "old"}, clear=True):
             env = reviewer.deepseek_environment()
-        self.assertEqual(env["ANTHROPIC_MODEL"], "deepseek-flash[1m]")
+        self.assertEqual(env["ANTHROPIC_MODEL"], "claude-sonnet-4-5-20250929")
         self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic")
+        # DeepSeek Anthropic endpoint maps native claude-sonnet* to Flash.
         self.assertEqual(env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "786432")
         self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "fake-review-only-key")
         self.assertNotIn("ANTHROPIC_API_KEY", env)
@@ -393,7 +394,7 @@ class ReviewerUnitTests(unittest.TestCase):
                                      state_path=Path(tmp)/"state", timeout=5)
         self.assertIn("provider=DeepSeek-V4.1-Flash-1017", result)
         self.assertEqual(ask.call_count, 1)
-        self.assertEqual(ask.call_args.kwargs["model"], "deepseek-flash[1m]")
+        self.assertEqual(ask.call_args.kwargs["model"], "claude-sonnet-4-5-20250929")
         self.assertIn("ANTHROPIC_AUTH_TOKEN", ask.call_args.kwargs["env"])
         self.assertIn("DeepSeek", comment.call_args.args[3])
         self.assertEqual(status.call_args.args[3], "success")
