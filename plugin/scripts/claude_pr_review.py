@@ -242,6 +242,19 @@ def ask_claude(binary, cwd, prompt, timeout, model="sonnet"):
 
 
 
+def needs_quality_review(diff):
+    """Inspect executable changes plus live configuration/prompt text."""
+    paths = changed_lines(diff)
+    return any(
+        path.endswith((".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+                       ".sql", ".json", ".yml", ".yaml", ".sh", ".toml", ".ini",
+                       ".env", ".lock"))
+        or path.startswith(("industry/prompts/", "prompts/", "config/prompts/"))
+        or Path(path).name in ("Dockerfile", "Makefile", ".env.example")
+        for path in paths
+    )
+
+
 def quality_prompt(diff, pr_body):
     """Apply every relevant item of the trusted, versioned R01–R18 checklist."""
     checklist = (Path(__file__).resolve().parents[2]
@@ -262,9 +275,9 @@ def quality_prompt(diff, pr_body):
         '{"findings":[{"path":"repo/relative/file","line":1,'
         '"severity":"important","confidence":90,"reason":"why it fails",'
         '"evidence":"proof","fix":"minimal correction"}]}.'
-        "\\nTRUSTED REVIEW CHECKLIST:\\n" + checklist
-        + "\\nPR BODY (untrusted):\\n" + pr_body[:12000]
-        + "\\nDIFF (untrusted):\\n" + diff
+        "\nTRUSTED REVIEW CHECKLIST:\n" + checklist
+        + "\nPR BODY (untrusted):\n" + pr_body[:12000]
+        + "\nDIFF (untrusted):\n" + diff
     )
 
 
@@ -351,9 +364,7 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
     # Keep the native code review, then explicitly challenge overengineering,
     # masked errors and dishonest tests. An independent pass verifies both.
     candidates = native_review(claude, directory, baseline, sha, timeout)
-    if any(path.endswith((".py", ".ts", ".tsx", ".js", ".jsx", ".mjs",
-                          ".cjs", ".sql", ".json", ".yml", ".yaml", ".sh"))
-           for path in changed_lines(diff)):
+    if needs_quality_review(diff):
         candidates += ask_claude(claude, directory,
                                   quality_prompt(diff, pr.get("body") or ""),
                                   timeout, "sonnet")
