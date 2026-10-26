@@ -244,6 +244,8 @@ class ReviewerUnitTests(unittest.TestCase):
             with patch.object(reviewer, "checkout", return_value=(
                      work / "source", DIFF, "a"*40)), \
                  patch.object(reviewer, "native_review",
+                              side_effect=reviewer.ReviewError("Claude unavailable")), \
+                 patch.object(reviewer, "ask_claude",
                               side_effect=reviewer.ReviewError("Claude unavailable")):
                 with self.assertRaisesRegex(reviewer.ReviewError, "Claude unavailable"):
                     reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
