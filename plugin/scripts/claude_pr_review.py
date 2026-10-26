@@ -59,9 +59,10 @@ def claude_subscription_environment():
         "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
         "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_EFFORT_LEVEL",
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+        "DEEPSEEK_API_KEY",
     ):
         env.pop(name, None)
-    # The PR reviewer must not inherit Opus defaults, including in subagents.
+    # The subscription CLI must not inherit the fallback key or Opus defaults.
     env["CLAUDE_CODE_SUBAGENT_MODEL"] = "sonnet"
     env["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"] = "1"
     return env
@@ -278,12 +279,12 @@ def parse_native_review(stdout):
 
 
 def native_review(binary, cwd, baseline, sha, timeout):
-    # --model is required even when user settings default to Opus.
+    # --model is explicit; disable user settings so saved API tokens cannot override subscription.
     args = [binary, "-p", f"/code-review high {baseline}..{sha}",
             "--model", "sonnet",
             "--output-format", "json", "--permission-mode", "plan",
             "--max-turns", "48", "--disallowedTools", "Edit,Write,NotebookEdit,mcp__*",
-            "--strict-mcp-config", "--setting-sources", "user",
+            "--strict-mcp-config", "--setting-sources", "",
             "--settings", '{"disableAllHooks":true}']
     return parse_native_review(run(
         args, cwd=cwd, timeout=timeout, env=claude_subscription_environment()))
@@ -292,10 +293,11 @@ def native_review(binary, cwd, baseline, sha, timeout):
 def ask_claude(binary, cwd, prompt, timeout, model="sonnet", env=None):
     # --tools restricts which tools exist (unlike --allowedTools).
     # No Bash, shell execution, edits, writes, or MCP tool calls in review mode.
+    # The caller passes all needed settings, never user-level auth overrides.
     stdout = run([binary, "-p", "--output-format", "json",
                   "--permission-mode", "plan", "--tools", "Read,Glob,Grep",
                   "--disallowedTools", "mcp__*", "--strict-mcp-config",
-                  "--setting-sources", "user",
+                  "--setting-sources", "",
                   "--settings", '{"disableAllHooks": true}',
                   "--model", model, "--max-turns", "16"],
                  cwd=cwd, timeout=timeout, input_text=prompt,
