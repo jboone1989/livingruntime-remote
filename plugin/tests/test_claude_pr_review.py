@@ -365,6 +365,7 @@ class ReviewerUnitTests(unittest.TestCase):
             env = reviewer.deepseek_environment()
         self.assertEqual(env["ANTHROPIC_MODEL"], "deepseek-flash[1m]")
         self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic")
+        self.assertEqual(env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "786432")
         self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "fake-review-only-key")
         self.assertNotIn("ANTHROPIC_API_KEY", env)
         self.assertNotIn("DEEPSEEK_API_KEY", env)
