@@ -1,6 +1,7 @@
 import argparse
 import json
 import importlib.util
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -169,6 +170,82 @@ class ReviewerUnitTests(unittest.TestCase):
                                      state_path=Path("/tmp/unused"), timeout=5)
             self.assertIn("reviewed:", result)
             self.assertFalse(state["prs"]["2"]["outcomes"]["b"*40])
+
+    def test_checkout_fetches_current_remote_refs_into_bare_cache(self):
+        def git(*args):
+            return subprocess.run(["git", *map(str, args)], check=True,
+                                  capture_output=True, text=True).stdout.strip()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            remote, author, work = root / "remote.git", root / "author", root / "work"
+            work.mkdir()
+            git("init", "--bare", remote)
+            git("init", author)
+            git("-C", author, "config", "user.email", "review@example.test")
+            git("-C", author, "config", "user.name", "Review Test")
+            git("-C", author, "checkout", "-b", "develop")
+            (author / "file.txt").write_text("base\n")
+            git("-C", author, "add", ".")
+            git("-C", author, "commit", "-m", "base")
+            git("-C", author, "remote", "add", "origin", remote)
+            git("-C", author, "push", "origin", "develop")
+            git("-C", author, "checkout", "-b", "change")
+            (author / "file.txt").write_text("feature\n")
+            git("-C", author, "commit", "-am", "feature")
+            head = git("-C", author, "rev-parse", "HEAD")
+            git("-C", author, "push", "origin", "HEAD:refs/pull/17/head")
+            git("-C", author, "checkout", "develop")
+            base_before = git("-C", author, "rev-parse", "HEAD")
+
+            original_run = reviewer.run
+            def local_run(args, **kwargs):
+                args = [str(remote) if a == "https://github.com/org/repo.git" else a
+                        for a in args]
+                return original_run(args, **kwargs)
+
+            cache = work / "pr-17-objects.git"
+            with patch.object(reviewer, "run", side_effect=local_run):
+                with tempfile.TemporaryDirectory(dir=work) as temporary:
+                    source = Path(temporary) / "source"
+                    directory, diff, baseline = reviewer.checkout(
+                        "org/repo", 17, head, "develop", source, cache)
+                    self.assertEqual(directory, source)
+                    self.assertEqual(baseline, base_before)
+                    self.assertIn("+feature", diff)
+                    self.assertEqual((source / "file.txt").read_text(), "feature\n")
+                self.assertFalse(source.exists())
+
+                (author / "other.txt").write_text("new base\n")
+                git("-C", author, "add", ".")
+                git("-C", author, "commit", "-m", "advance develop")
+                git("-C", author, "push", "origin", "develop")
+                base_after = git("-C", author, "rev-parse", "HEAD")
+                with tempfile.TemporaryDirectory(dir=work) as temporary:
+                    reviewer.checkout("org/repo", 17, head, "develop",
+                                      Path(temporary) / "source", cache)
+                self.assertEqual(git("--git-dir", cache, "rev-parse",
+                                     "refs/review/base"), base_after)
+                self.assertEqual(git("--git-dir", cache, "rev-parse",
+                                     "refs/review/head"), head)
+                self.assertEqual(git("--git-dir", cache, "for-each-ref",
+                                     "--format=%(refname)", "refs/heads"), "")
+
+    def test_temporary_review_checkout_cleaned_when_claude_fails(self):
+        pr = {"number": 17, "state": "open", "draft": False,
+              "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
+              "base": {"ref": "develop"}}
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "reviews"
+            with patch.object(reviewer, "checkout", return_value=(
+                     work / "source", DIFF, "a"*40)), \
+                 patch.object(reviewer, "native_review",
+                              side_effect=reviewer.ReviewError("Claude unavailable")):
+                with self.assertRaisesRegex(reviewer.ReviewError, "Claude unavailable"):
+                    reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
+                                    work=work, state={"prs": {}},
+                                    state_path=Path(tmp) / "state.json", timeout=5)
+            self.assertEqual(list(work.iterdir()), [])
 
     def test_comment_marker_and_blocking(self):
         finding = {"path": "src/a.mjs", "line": 4,
