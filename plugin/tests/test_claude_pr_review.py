@@ -94,6 +94,65 @@ class ReviewerUnitTests(unittest.TestCase):
 """
         self.assertEqual(reviewer.changed_lines(diff), {"src/a.mjs": {1, 2, 3}})
 
+    def test_claude_subscription_uses_clean_auth_environment(self):
+        overrides = {
+            "ANTHROPIC_API_KEY": "wrong-api",
+            "ANTHROPIC_AUTH_TOKEN": "wrong-token",
+            "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+            "ANTHROPIC_MODEL": "deepseek-flash",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-flash",
+            "CLAUDE_CODE_OAUTH_TOKEN": "wrong-override",
+            "CLAUDE_CODE_USE_BEDROCK": "1",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash",
+            "DEEPSEEK_API_KEY": "fallback-key",
+            "GH_TOKEN": "runner-github-token",
+        }
+        with patch.dict(reviewer.os.environ, overrides, clear=True):
+            env = reviewer.claude_subscription_environment()
+            self.assertEqual(env["GH_TOKEN"], "runner-github-token")
+            self.assertEqual(env["DEEPSEEK_API_KEY"], "fallback-key")
+            for name in overrides:
+                if name not in ("GH_TOKEN", "DEEPSEEK_API_KEY"):
+                    self.assertNotIn(name, env)
+
+    def test_both_claude_review_paths_ignore_inherited_provider_overrides(self):
+        original = {
+            "ANTHROPIC_API_KEY": "api-override",
+            "ANTHROPIC_AUTH_TOKEN": "token-override",
+            "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+            "CLAUDE_CODE_OAUTH_TOKEN": "oauth-override",
+        }
+        native_response = json.dumps({
+            "subtype": "success", "is_error": False,
+            "result": "[]",
+        })
+        with patch.dict(reviewer.os.environ, original), \
+             patch.object(reviewer, "run", return_value=native_response) as native:
+            self.assertEqual(reviewer.native_review(
+                "claude", Path("/tmp"), "a"*40, "b"*40, 30), [])
+            env = native.call_args.kwargs["env"]
+            self.assertTrue(all(name not in env for name in original))
+        with patch.dict(reviewer.os.environ, original), \
+             patch.object(reviewer, "run",
+                          return_value=json.dumps({"result": json.dumps({"findings": []}), "is_error": False})) as ask:
+            self.assertEqual(reviewer.ask_claude(
+                "claude", Path("/tmp"), "review", 30), [])
+            env = ask.call_args.kwargs["env"]
+            self.assertTrue(all(name not in env for name in original))
+
+    def test_deepseek_review_still_uses_own_api_token(self):
+        with patch.dict(reviewer.os.environ, {
+            "ANTHROPIC_API_KEY": "wrong",
+            "DEEPSEEK_API_KEY": "fallback-key",
+        }), patch.object(reviewer, "run",
+                         return_value=json.dumps({"result": json.dumps({"findings": []}), "is_error": False})) as run:
+            self.assertEqual(reviewer.ask_claude(
+                "claude", Path("/tmp"), "review", 30,
+                env=reviewer.deepseek_environment()), [])
+            env = run.call_args.kwargs["env"]
+            self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "fallback-key")
+            self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic")
+
     def test_claude_prompt_via_stdin_no_project_hooks(self):
         class Result:
             returncode = 0
