@@ -286,15 +286,18 @@ def deepseek_environment():
                  "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
                  "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"):
         env.pop(name, None)
+    # Claude CLI recognizes its own Sonnet ID; DeepSeek officially maps
+    # claude-sonnet* to the current Flash model at its Anthropic endpoint.
     env.update({
         "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
         "ANTHROPIC_AUTH_TOKEN": key,
-        "ANTHROPIC_MODEL": "deepseek-flash[1m]",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-flash[1m]",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-flash[1m]",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-flash",
+        "ANTHROPIC_MODEL": "claude-sonnet-4-5-20250929",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-sonnet-4-5-20250929",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-5-20250929",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-sonnet-4-5-20250929",
         "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash",
         "CLAUDE_CODE_EFFORT_LEVEL": "max",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "786432",
     })
     env.pop("DEEPSEEK_API_KEY", None)
     return env
@@ -304,9 +307,9 @@ def deepseek_review(binary, directory, diff, pr_body, timeout):
     """Perform a full independent review rather than reusing partial Claude findings."""
     env = deepseek_environment()
     candidates = ask_claude(binary, directory, quality_prompt(diff, pr_body),
-                            timeout, model="deepseek-flash[1m]", env=env)
+                            timeout, model="claude-sonnet-4-5-20250929", env=env)
     verified = (ask_claude(binary, directory, verify_prompt(candidates, diff),
-                           timeout, model="deepseek-flash[1m]", env=env)
+                           timeout, model="claude-sonnet-4-5-20250929", env=env)
                 if candidates else [])
     return filter_findings(verified, diff)
 
