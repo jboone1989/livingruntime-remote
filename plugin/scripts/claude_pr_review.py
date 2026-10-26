@@ -373,8 +373,20 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
             work / f"pr-{number}-objects.git")
         # Keep the native code review, then explicitly challenge overengineering,
         # masked errors and dishonest tests. An independent pass verifies both.
-        candidates = native_review(claude, directory, baseline, sha, timeout)
-        if needs_quality_review(diff):
+        # Native slash-command output can be prose rather than machine-readable
+        # findings. Fall back to the existing independent, checklist-driven Claude
+        # review; never mark the check successful without a real structured review.
+        used_fallback = False
+        try:
+            candidates = native_review(claude, directory, baseline, sha, timeout)
+        except ReviewError as exc:
+            if "Native review did not return a JSON findings list" not in str(exc):
+                raise
+            candidates = ask_claude(claude, directory,
+                                    quality_prompt(diff, pr.get("body") or ""),
+                                    timeout, "sonnet")
+            used_fallback = True
+        if needs_quality_review(diff) and not used_fallback:
             candidates += ask_claude(claude, directory,
                                       quality_prompt(diff, pr.get("body") or ""),
                                       timeout, "sonnet")
