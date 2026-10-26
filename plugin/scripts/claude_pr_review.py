@@ -61,6 +61,9 @@ def claude_subscription_environment():
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
     ):
         env.pop(name, None)
+    # The PR reviewer must not inherit Opus defaults, including in subagents.
+    env["CLAUDE_CODE_SUBAGENT_MODEL"] = "sonnet"
+    env["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"] = "1"
     return env
 
 
@@ -275,7 +278,9 @@ def parse_native_review(stdout):
 
 
 def native_review(binary, cwd, baseline, sha, timeout):
+    # --model is required even when user settings default to Opus.
     args = [binary, "-p", f"/code-review high {baseline}..{sha}",
+            "--model", "sonnet",
             "--output-format", "json", "--permission-mode", "plan",
             "--max-turns", "48", "--disallowedTools", "Edit,Write,NotebookEdit,mcp__*",
             "--strict-mcp-config", "--setting-sources", "user",
