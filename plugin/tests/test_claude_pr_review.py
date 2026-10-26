@@ -135,6 +135,10 @@ class ReviewerUnitTests(unittest.TestCase):
                 "claude", Path("/tmp"), "a"*40, "b"*40, 30), [])
             env = native.call_args.kwargs["env"]
             self.assertTrue(all(name not in env for name in original))
+            args = native.call_args.args[0]
+            self.assertIn("--safe-mode", args)
+            self.assertEqual(args[args.index("--setting-sources") + 1], "")
+            self.assertNotIn("--bare", args)
         with patch.dict(reviewer.os.environ, original), \
              patch.object(reviewer, "run",
                           return_value=json.dumps({"result": json.dumps({"findings": []}), "is_error": False})) as ask:
@@ -142,6 +146,10 @@ class ReviewerUnitTests(unittest.TestCase):
                 "claude", Path("/tmp"), "review", 30), [])
             env = ask.call_args.kwargs["env"]
             self.assertTrue(all(name not in env for name in original))
+            args = ask.call_args.args[0]
+            self.assertIn("--safe-mode", args)
+            self.assertEqual(args[args.index("--setting-sources") + 1], "")
+            self.assertNotIn("--bare", args)
 
     def test_deepseek_review_still_uses_own_api_token(self):
         with patch.dict(reviewer.os.environ, {
