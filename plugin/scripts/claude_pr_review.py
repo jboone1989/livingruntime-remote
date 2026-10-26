@@ -42,6 +42,28 @@ def is_claude_quota(message):
     ))
 
 
+def claude_subscription_environment():
+    """Always use Claude Code's on-disk subscription login, not inherited API auth.
+
+    The same self-hosted Runner also invokes DeepSeek through ANTHROPIC_AUTH_TOKEN.
+    The ordinary Claude invocation must not inherit any conflicting model routing
+    or authentication setting from that process, service, or host.
+    """
+    env = os.environ.copy()
+    for name in (
+        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS",
+        "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_SUBAGENT_MODEL",
+        "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_EFFORT_LEVEL",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+    ):
+        env.pop(name, None)
+    return env
+
+
 def run(argv, cwd=None, timeout=120, input_text=None, env=None):
     kwargs = dict(cwd=cwd, timeout=timeout, capture_output=True,
                   input=input_text, text=True)
@@ -258,7 +280,8 @@ def native_review(binary, cwd, baseline, sha, timeout):
             "--max-turns", "48", "--disallowedTools", "Edit,Write,NotebookEdit,mcp__*",
             "--strict-mcp-config", "--setting-sources", "user",
             "--settings", '{"disableAllHooks":true}']
-    return parse_native_review(run(args, cwd=cwd, timeout=timeout))
+    return parse_native_review(run(
+        args, cwd=cwd, timeout=timeout, env=claude_subscription_environment()))
 
 
 def ask_claude(binary, cwd, prompt, timeout, model="sonnet", env=None):
@@ -270,7 +293,8 @@ def ask_claude(binary, cwd, prompt, timeout, model="sonnet", env=None):
                   "--setting-sources", "user",
                   "--settings", '{"disableAllHooks": true}',
                   "--model", model, "--max-turns", "16"],
-                 cwd=cwd, timeout=timeout, input_text=prompt, env=env)
+                 cwd=cwd, timeout=timeout, input_text=prompt,
+                 env=claude_subscription_environment() if env is None else env)
     return parse_claude(stdout)
 
 
