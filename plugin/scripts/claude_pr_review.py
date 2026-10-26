@@ -86,24 +86,30 @@ def save_state(path, data):
     os.replace(tmp_path, path)
 
 
-def checkout(repo, number, sha, base, work):
+def checkout(repo, number, sha, base, directory, cache):
+    """Fetch both remote commits afresh; retain Git objects, never a source tree."""
     url = f"https://github.com/{repo}.git"
-    directory = work / f"pr-{number}"
-    if not (directory / ".git").is_dir():
-        if directory.exists():
-            raise ReviewError("Refusing to reuse a non-git review directory")
-        run(["git", "clone", "--no-checkout", "--", url, str(directory)], timeout=180)
-    actual = run(["git", "-C", str(directory), "remote", "get-url", "origin"]).strip()
+    if not cache.exists():
+        run(["git", "init", "--bare", str(cache)], timeout=30)
+        run(["git", "--git-dir", str(cache), "remote", "add", "origin", url])
+    actual = run(["git", "--git-dir", str(cache), "remote", "get-url", "origin"]).strip()
     if actual != url:
-        raise ReviewError("Review checkout origin mismatch")
-    run(["git", "-C", str(directory), "fetch", "--no-tags", "origin",
-         f"refs/pull/{number}/head"], timeout=120)
-    fetched = run(["git", "-C", str(directory), "rev-parse", "FETCH_HEAD"]).strip()
+        raise ReviewError("Review cache origin mismatch")
+    # Fixed refs in a per-PR bare cache; no stale local develop or working branch.
+    run(["git", "--git-dir", str(cache), "fetch", "--no-tags", "origin",
+         f"+refs/pull/{number}/head:refs/review/head"], timeout=120)
+    fetched = run(["git", "--git-dir", str(cache), "rev-parse", "refs/review/head"]).strip()
     if fetched != sha:
         raise ReviewError("PR changed during fetch; will retry")
+    run(["git", "--git-dir", str(cache), "fetch", "--no-tags", "origin",
+         f"+refs/heads/{base}:refs/review/base"], timeout=90)
+    baseline = run(["git", "--git-dir", str(cache), "merge-base",
+                    sha, "refs/review/base"]).strip()
+    # A shared clone borrows only objects from the bare cache and lives inside
+    # TemporaryDirectory; deleting it never removes the cache's Git objects.
+    run(["git", "clone", "--shared", "--no-checkout", "--",
+         str(cache), str(directory)], timeout=60)
     run(["git", "-C", str(directory), "checkout", "--detach", "--force", sha], timeout=60)
-    run(["git", "-C", str(directory), "fetch", "--no-tags", "origin", base], timeout=90)
-    baseline = run(["git", "-C", str(directory), "merge-base", sha, "FETCH_HEAD"]).strip()
     diff = run(["git", "-C", str(directory), "diff", "--no-ext-diff",
                 "--unified=3", baseline, sha, "--"], timeout=60)
     if not diff.strip():
@@ -360,34 +366,38 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
     base = pr["base"]["ref"]
     if not re.fullmatch(r"[a-zA-Z0-9_./-]+", base) or base.startswith("-"):
         raise ReviewError("Unsafe base ref")
-    directory, diff, baseline = checkout(repo, number, sha, base, work)
-    # Keep the native code review, then explicitly challenge overengineering,
-    # masked errors and dishonest tests. An independent pass verifies both.
-    candidates = native_review(claude, directory, baseline, sha, timeout)
-    if needs_quality_review(diff):
-        candidates += ask_claude(claude, directory,
-                                  quality_prompt(diff, pr.get("body") or ""),
-                                  timeout, "sonnet")
-    verified = (ask_claude(claude, directory,
-                           verify_prompt(candidates, diff), timeout, "sonnet")
-                if candidates else [])
-    findings = filter_findings(verified, diff)
-    fresh = api(gh, f"repos/{repo}/pulls/{number}")
-    if fresh["head"]["sha"] != sha:
-        return "skip:head updated during review"
-    body, blocking = format_report(repo, sha, round_number, findings, manual_rereview=manually_authorized)
-    if not already_commented(gh, repo, number, sha):
-        post_comment(gh, repo, number, body)
-    commit_status(gh, repo, sha, "failure" if blocking else "success",
-                  f"{len(findings)} verified findings; {int(blocking)} blocking")
-    # Commit status and comment are idempotently retried if local state write fails.
-    history["reviewed"].append(sha)
-    history["outcomes"][sha] = blocking
-    if manually_authorized:
-        history["manual_rereviews"][sha]["completed_at"] = datetime.now(timezone.utc).isoformat()
-        history["manual_rereviews"][sha]["blocking"] = blocking
-    save_state(state_path, state)
-    return f"reviewed:{sha[:12]}, blocking={blocking}"
+    work.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f"source-pr-{number}-", dir=work) as temp:
+        directory, diff, baseline = checkout(
+            repo, number, sha, base, Path(temp) / "source",
+            work / f"pr-{number}-objects.git")
+        # Keep the native code review, then explicitly challenge overengineering,
+        # masked errors and dishonest tests. An independent pass verifies both.
+        candidates = native_review(claude, directory, baseline, sha, timeout)
+        if needs_quality_review(diff):
+            candidates += ask_claude(claude, directory,
+                                      quality_prompt(diff, pr.get("body") or ""),
+                                      timeout, "sonnet")
+        verified = (ask_claude(claude, directory,
+                               verify_prompt(candidates, diff), timeout, "sonnet")
+                    if candidates else [])
+        findings = filter_findings(verified, diff)
+        fresh = api(gh, f"repos/{repo}/pulls/{number}")
+        if fresh["head"]["sha"] != sha:
+            return "skip:head updated during review"
+        body, blocking = format_report(repo, sha, round_number, findings, manual_rereview=manually_authorized)
+        if not already_commented(gh, repo, number, sha):
+            post_comment(gh, repo, number, body)
+        commit_status(gh, repo, sha, "failure" if blocking else "success",
+                      f"{len(findings)} verified findings; {int(blocking)} blocking")
+        # Commit status and comment are idempotently retried if local state write fails.
+        history["reviewed"].append(sha)
+        history["outcomes"][sha] = blocking
+        if manually_authorized:
+            history["manual_rereviews"][sha]["completed_at"] = datetime.now(timezone.utc).isoformat()
+            history["manual_rereviews"][sha]["blocking"] = blocking
+        save_state(state_path, state)
+        return f"reviewed:{sha[:12]}, blocking={blocking}"
 
 
 def verify_owner_approval(args):
