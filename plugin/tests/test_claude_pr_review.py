@@ -110,16 +110,16 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertIn(phrase.casefold(), prompt.casefold())
         self.assertLess(prompt.index("TRUSTED REVIEW CHECKLIST"),
                         prompt.index("PR BODY (untrusted)"))
-        self.assertIn("\\nDIFF (untrusted):\\n", prompt)
+        self.assertIn("\nDIFF (untrusted):\n", prompt)
 
     def test_quality_review_includes_live_prompts_and_configuration(self):
         def changed(path):
             return (
-                "diff --git a/" + path + " b/" + path + "\\n"
-                "--- a/" + path + "\\n"
-                "+++ b/" + path + "\\n"
-                "@@ -1 +1 @@\\n"
-                "-old\\n+new\\n"
+                "diff --git a/" + path + " b/" + path + "\n"
+                "--- a/" + path + "\n"
+                "+++ b/" + path + "\n"
+                "@@ -1 +1 @@\n"
+                "-old\n+new\n"
             )
         for path in ("src/a.py", "industry/prompts/selection-score.md",
                      "prompts/runtime.md", ".github/workflows/check.yml",
