@@ -50,13 +50,13 @@ class ReviewerUnitTests(unittest.TestCase):
         state = {"prs": {"2": {"reviewed": ["s1", "s2", "s3"],
                                 "outcomes": {"s1": True, "s2": True, "s3": True},
                                 "limited": ["a"*40]}}}
-        with patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "b"*40)) as checkout, \\
-             patch.object(reviewer, "native_review", return_value=[]), \\
-             patch.object(reviewer, "ask_claude", return_value=[]), \\
-             patch.object(reviewer, "api", return_value=pr), \\
-             patch.object(reviewer, "already_commented", return_value=True), \\
-             patch.object(reviewer, "commit_status") as status, \\
-             patch.object(reviewer, "save_state"):
+        with (patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "b"*40)) as checkout,
+              patch.object(reviewer, "native_review", return_value=[]),
+              patch.object(reviewer, "ask_claude", return_value=[]),
+              patch.object(reviewer, "api", return_value=pr),
+              patch.object(reviewer, "already_commented", return_value=True),
+              patch.object(reviewer, "commit_status") as status,
+              patch.object(reviewer, "save_state")):
             result = reviewer.review(
                 pr, repo="org/repo", gh="gh", claude="claude",
                 work=Path("/tmp"), state=state,
