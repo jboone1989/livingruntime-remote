@@ -126,15 +126,15 @@ class ReviewerUnitTests(unittest.TestCase):
             "subtype": "success", "is_error": False,
             "result": "[]",
         })
-        with patch.dict(reviewer.os.environ, original), \\
+        with patch.dict(reviewer.os.environ, original), \
              patch.object(reviewer, "run", return_value=native_response) as native:
             self.assertEqual(reviewer.native_review(
                 "claude", Path("/tmp"), "a"*40, "b"*40, 30), [])
             env = native.call_args.kwargs["env"]
             self.assertTrue(all(name not in env for name in original))
-        with patch.dict(reviewer.os.environ, original), \\
+        with patch.dict(reviewer.os.environ, original), \
              patch.object(reviewer, "run",
-                          return_value='{"result":"{\\\\"findings\\\\":[]}","is_error":false}') as ask:
+                          return_value=json.dumps({"result": json.dumps({"findings": []}), "is_error": False})) as ask:
             self.assertEqual(reviewer.ask_claude(
                 "claude", Path("/tmp"), "review", 30), [])
             env = ask.call_args.kwargs["env"]
@@ -145,7 +145,7 @@ class ReviewerUnitTests(unittest.TestCase):
             "ANTHROPIC_API_KEY": "wrong",
             "DEEPSEEK_API_KEY": "fallback-key",
         }), patch.object(reviewer, "run",
-                         return_value='{"result":"{\\\\"findings\\\\":[]}","is_error":false}') as run:
+                         return_value=json.dumps({"result": json.dumps({"findings": []}), "is_error": False})) as run:
             self.assertEqual(reviewer.ask_claude(
                 "claude", Path("/tmp"), "review", 30,
                 env=reviewer.deepseek_environment()), [])
