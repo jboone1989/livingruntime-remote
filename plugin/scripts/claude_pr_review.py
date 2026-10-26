@@ -524,9 +524,8 @@ def run_once(args):
                 continue
             history = state["prs"].get(str(pr["number"]), {})
             sha = pr.get("head", {}).get("sha", "")
-            if history.get("failures", {}).get(sha, 0) >= 2:
-                print(f"PR #{pr['number']}: retry limit reached for {sha[:9]}", flush=True)
-                continue
+            # Only a completed review is terminal for a SHA. Transient runner/model
+            # errors remain retryable when CI dispatches a review again.
             try:
                 result = review(pr, repo=args.repo, gh=args.gh, claude=args.claude,
                                 work=args.work, state=state, state_path=args.state,
