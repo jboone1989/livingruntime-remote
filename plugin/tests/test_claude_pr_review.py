@@ -112,10 +112,9 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertEqual(env["GH_TOKEN"], "runner-github-token")
             self.assertEqual(env["CLAUDE_CODE_SUBAGENT_MODEL"], "sonnet")
             self.assertEqual(env["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"], "1")
-            self.assertEqual(env["DEEPSEEK_API_KEY"], "fallback-key")
+            self.assertNotIn("DEEPSEEK_API_KEY", env)
             for name in overrides:
-                if name not in ("GH_TOKEN", "DEEPSEEK_API_KEY",
-                                "CLAUDE_CODE_SUBAGENT_MODEL"):
+                if name not in ("GH_TOKEN", "CLAUDE_CODE_SUBAGENT_MODEL"):
                     self.assertNotIn(name, env)
 
     def test_both_claude_review_paths_ignore_inherited_provider_overrides(self):
@@ -135,6 +134,8 @@ class ReviewerUnitTests(unittest.TestCase):
                 "claude", Path("/tmp"), "a"*40, "b"*40, 30), [])
             env = native.call_args.kwargs["env"]
             self.assertTrue(all(name not in env for name in original))
+            native_args = native.call_args.args[0]
+            self.assertEqual(native_args[native_args.index("--setting-sources") + 1], "")
         with patch.dict(reviewer.os.environ, original), \
              patch.object(reviewer, "run",
                           return_value=json.dumps({"result": json.dumps({"findings": []}), "is_error": False})) as ask:
@@ -169,6 +170,7 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertEqual(proc.call_args.kwargs["env"]["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"], "1")
             self.assertNotIn("prompt", args)
             self.assertIn("--setting-sources", args)
+            self.assertEqual(args[args.index("--setting-sources") + 1], "")
             self.assertIn('{"disableAllHooks": true}', args)
 
     def test_quality_prompt_explicitly_challenges_bad_shortcuts(self):
