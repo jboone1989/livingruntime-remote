@@ -379,9 +379,10 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
         used_fallback = False
         try:
             candidates = native_review(claude, directory, baseline, sha, timeout)
-        except ReviewError as exc:
-            if "Native review did not return a JSON findings list" not in str(exc):
-                raise
+        except ReviewError:
+            # The optional native slash-command can also exit nonzero. Retry
+            # using the complete trusted checklist; this remains a real Claude
+            # review, not an empty pass. Errors in that review still fail closed.
             candidates = ask_claude(claude, directory,
                                     quality_prompt(diff, pr.get("body") or ""),
                                     timeout, "sonnet")
