@@ -61,6 +61,9 @@ def claude_subscription_environment():
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
     ):
         env.pop(name, None)
+    # Keep the existing Claude subscription login. --bare disables OAuth and
+    # is not suitable here; safe-mode and empty setting sources discard ambient
+    # user/project customizations that may reintroduce API-key auth.
     # The PR reviewer must not inherit Opus defaults, including in subagents.
     env["CLAUDE_CODE_SUBAGENT_MODEL"] = "sonnet"
     env["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"] = "1"
@@ -283,7 +286,7 @@ def native_review(binary, cwd, baseline, sha, timeout):
             "--model", "sonnet",
             "--output-format", "json", "--permission-mode", "plan",
             "--max-turns", "48", "--disallowedTools", "Edit,Write,NotebookEdit,mcp__*",
-            "--strict-mcp-config", "--setting-sources", "user",
+            "--strict-mcp-config", "--safe-mode", "--setting-sources", "",
             "--settings", '{"disableAllHooks":true}']
     return parse_native_review(run(
         args, cwd=cwd, timeout=timeout, env=claude_subscription_environment()))
@@ -295,7 +298,7 @@ def ask_claude(binary, cwd, prompt, timeout, model="sonnet", env=None):
     stdout = run([binary, "-p", "--output-format", "json",
                   "--permission-mode", "plan", "--tools", "Read,Glob,Grep",
                   "--disallowedTools", "mcp__*", "--strict-mcp-config",
-                  "--setting-sources", "user",
+                  "--safe-mode", "--setting-sources", "",
                   "--settings", '{"disableAllHooks": true}',
                   "--model", model, "--max-turns", "16"],
                  cwd=cwd, timeout=timeout, input_text=prompt,
