@@ -99,6 +99,37 @@ class ReviewerUnitTests(unittest.TestCase):
         self.assertIn("PR BODY (untrusted)", prompt)
         self.assertIn("DIFF (untrusted)", prompt)
 
+    def test_checklist_covers_ferro_line_policy_and_all_review_dimensions(self):
+        prompt = reviewer.quality_prompt(DIFF, "author claim")
+        for key in range(1, 19):
+            self.assertIn(f"R{key:02d}", prompt)
+        for phrase in ("50 lines or fewer", "over 100 lines",
+                       "do not split merely to reach a number",
+                       "Module", "R16", "R17", "swallowed errors",
+                       "runtime", "architecture", "unnecessary complexity"):
+            self.assertIn(phrase.casefold(), prompt.casefold())
+        self.assertLess(prompt.index("TRUSTED REVIEW CHECKLIST"),
+                        prompt.index("PR BODY (untrusted)"))
+        self.assertIn("\nDIFF (untrusted):\n", prompt)
+
+    def test_quality_review_includes_live_prompts_and_configuration(self):
+        def changed(path):
+            return (
+                "diff --git a/" + path + " b/" + path + "\n"
+                "--- a/" + path + "\n"
+                "+++ b/" + path + "\n"
+                "@@ -1 +1 @@\n"
+                "-old\n+new\n"
+            )
+        for path in ("src/a.py", "industry/prompts/selection-score.md",
+                     "prompts/runtime.md", ".github/workflows/check.yml",
+                     ".env", "Dockerfile", "config/provider.toml"):
+            with self.subTest(path=path):
+                self.assertTrue(reviewer.needs_quality_review(changed(path)))
+        for path in ("docs/README.md", "specs/demo/spec.md", "README.md"):
+            with self.subTest(path=path):
+                self.assertFalse(reviewer.needs_quality_review(changed(path)))
+
     def test_concrete_quality_finding_blocks_merge(self):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},

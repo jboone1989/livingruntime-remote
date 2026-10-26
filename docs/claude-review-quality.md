@@ -17,6 +17,12 @@ Claude must challenge whether each new piece of code is necessary. An author say
 | Scope drift | Does the diff deviate from the prior approved Spec or omit an acceptance condition? | Identify the pinned spec and the missing behavior |
 | Unverified delivery | Does the PR claim a successful deployment or live test that was never executed? | Distinguish actual receipts from CI mocks |
 
+## Complete review coverage (R01–R18)
+
+The operational [Claude review checklist](claude-review-checklist.md) is the **single source of truth** for the full checklist. The existing reviewer reads it into its quality prompt **on every applicable code, runtime prompt or deployment/config PR**; Claude must examine each applicable item, not only the ten anti-patterns below. This includes FERRO's original module-ownership guidance: most functions under 50 lines, scrutinize >100-line mixed-responsibility functions; cohesive source modules often 50–100 lines when sensible. Length by itself is **never** a reason to fail a PR or invent extra layers.
+
+The anti-pattern table above gives examples, not the complete scope. The model must inspect real callers, types, state transitions, DB writes, concurrency, UI, provider behavior, CI, deployment and test validity as applicable. No extra reviewer process or service was introduced.
+
 ## Blocking standard
 
 A concrete, high-confidence, PR-introduced defect is blocking; a speculative cleanup or mere style preference is not. Legitimate test fixtures are allowed **only when clearly labeled as test data** and never used as production evidence. Do not demand an abstraction or defensive layer merely for hypothetical future safety.
