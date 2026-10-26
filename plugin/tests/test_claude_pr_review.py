@@ -43,19 +43,36 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertEqual(reviewer.load_state(Path(tmp) / "absent"),
                              {"version": 1, "prs": {}})
 
-    def test_round_limit_never_runs_claude(self):
+    def test_new_sha_after_three_blocked_reviews_is_really_reviewed(self):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "a"*40, "repo": {"full_name": "org/repo"}},
-              "base": {"ref": "main"}}
-        state = {"prs": {"2": {"reviewed": ["s1", "s2", "s3"]}}}
-        with patch.object(reviewer, "commit_status") as status, \
-             patch.object(reviewer, "checkout") as checkout:
-            self.assertEqual(reviewer.review(
+              "base": {"ref": "main"}, "body": "approved spec"}
+        state = {"prs": {"2": {"reviewed": ["s1", "s2", "s3"],
+                                "outcomes": {"s1": True, "s2": True, "s3": True},
+                                "limited": ["a"*40]}}}
+        with (patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "b"*40)) as checkout,
+              patch.object(reviewer, "native_review", return_value=[]),
+              patch.object(reviewer, "ask_claude", return_value=[]),
+              patch.object(reviewer, "api", return_value=pr),
+              patch.object(reviewer, "already_commented", return_value=True),
+              patch.object(reviewer, "commit_status") as status,
+              patch.object(reviewer, "save_state")):
+            result = reviewer.review(
                 pr, repo="org/repo", gh="gh", claude="claude",
                 work=Path("/tmp"), state=state,
-                state_path=Path("/tmp/unused"), timeout=5), "limit:manual review")
-            status.assert_called_once()
-            checkout.assert_not_called()
+                state_path=Path("/tmp/unused"), timeout=5)
+            self.assertIn("reviewed:", result)
+            checkout.assert_called_once()
+            self.assertEqual(status.call_args.args[3], "success")
+            self.assertIn("a"*40, state["prs"]["2"]["reviewed"])
+
+            # Re-dispatching the same SHA still cannot fabricate a second review.
+            again = reviewer.review(
+                pr, repo="org/repo", gh="gh", claude="claude",
+                work=Path("/tmp"), state=state,
+                state_path=Path("/tmp/unused"), timeout=5)
+            self.assertEqual(again, "skip:already reviewed")
+            checkout.assert_called_once()
 
     def test_external_fork_skipped(self):
         pr = {"number": 1, "state": "open", "draft": False,

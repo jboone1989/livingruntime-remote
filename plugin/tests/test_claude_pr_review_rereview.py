@@ -37,7 +37,7 @@ class OneTimeReviewTests(unittest.TestCase):
                 with self.assertRaises(reviewer.ReviewError):
                     reviewer.verify_owner_approval(self.args())
 
-    def test_after_cap_requires_owner_approval_and_runs_real_review_once(self):
+    def test_after_cap_runs_real_review_automatically_once_per_sha(self):
         pr = {"number": 142, "state": "open", "draft": False,
               "head": {"sha": SHA, "repo": {"full_name": REPO}},
               "base": {"ref": "develop"}}
@@ -47,28 +47,23 @@ class OneTimeReviewTests(unittest.TestCase):
             "limited": [SHA]}}}
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "state.json"
-            with patch.object(reviewer, "checkout", return_value=(Path(d), "diff", "base")), \
-                 patch.object(reviewer, "native_review", return_value=[]) as native, \
-                 patch.object(reviewer, "api", return_value=pr), \
-                 patch.object(reviewer, "already_commented", return_value=False), \
-                 patch.object(reviewer, "post_comment") as comment, \
-                 patch.object(reviewer, "commit_status") as status:
-                # The existing escalation is preserved when no approval exists.
-                self.assertEqual(reviewer.review(pr, repo=REPO, gh="gh", claude="claude",
-                    work=Path(d), state=state, state_path=path, timeout=60),
-                    "skip:already escalated")
-                native.assert_not_called()
+            with (patch.object(reviewer, "checkout", return_value=(Path(d), "diff", "base")),
+                  patch.object(reviewer, "native_review", return_value=[]) as native,
+                  patch.object(reviewer, "api", return_value=pr),
+                  patch.object(reviewer, "already_commented", return_value=False),
+                  patch.object(reviewer, "post_comment") as comment,
+                  patch.object(reviewer, "commit_status") as status):
+                # A fourth distinct SHA must actually be reviewed, even if the old
+                # persistent state recorded it as escalated by the previous worker.
                 result = reviewer.review(pr, repo=REPO, gh="gh", claude="claude",
-                    work=Path(d), state=state, state_path=path, timeout=60,
-                    manual_approval="owner-comment/6398294019")
+                    work=Path(d), state=state, state_path=path, timeout=60)
                 self.assertIn("blocking=False", result)
                 native.assert_called_once()
                 comment.assert_called_once()
                 self.assertEqual(status.call_args.args[3], "success")
-                self.assertEqual(reviewer.load_state(path)["prs"]["142"]["manual_rereviews"][SHA]["blocking"], False)
+                self.assertIn(SHA, reviewer.load_state(path)["prs"]["142"]["reviewed"])
                 self.assertEqual(reviewer.review(pr, repo=REPO, gh="gh", claude="claude",
-                    work=Path(d), state=state, state_path=path, timeout=60,
-                    manual_approval="owner-comment/6398294019"),
+                    work=Path(d), state=state, state_path=path, timeout=60),
                     "skip:already reviewed")
                 native.assert_called_once()
 
