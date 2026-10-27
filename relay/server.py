@@ -2385,98 +2385,6 @@ def create_mcp(
     )
 
     @apps.tool(
-        resource_uri=PI_JOB_WIDGET_URI,
-        visibility=["model", "app"],
-        name="start_pi_agent",
-        title=TOOL_TEXT["start_pi_agent"][0],
-        description=TOOL_TEXT["start_pi_agent"][1],
-        annotations=ToolAnnotations(
-            readOnlyHint=False,
-            destructiveHint=True,
-            openWorldHint=False,
-        ),
-        meta=WRITE,
-    )
-    async def start_pi_agent(
-        goal: str,
-        project: str,
-        session_file: str | None = None,
-    ) -> dict[str, Any]:
-        return await relay.call(
-            _principal("remote:write"),
-            "start_pi_agent",
-            {
-                "goal": goal,
-                "project": project,
-                "session_file": session_file,
-            },
-        )
-
-    @apps.tool(
-        resource_uri=PI_JOB_WIDGET_URI,
-        visibility=["model", "app"],
-        name="start_pi_step",
-        title=TOOL_TEXT["start_pi_step"][0],
-        description=TOOL_TEXT["start_pi_step"][1],
-        annotations=ToolAnnotations(
-            readOnlyHint=False,
-            destructiveHint=True,
-            openWorldHint=False,
-        ),
-        meta=WRITE,
-    )
-    async def start_pi_step(
-        goal: str,
-        project: str,
-        actions: list[dict[str, Any]],
-        session_file: str | None = None,
-        runtime_job_id: str | None = None,
-    ) -> dict[str, Any]:
-        return await relay.call(
-            _principal("remote:write"),
-            "start_pi_step",
-            {
-                "goal": goal,
-                "project": project,
-                "actions": actions,
-                "session_file": session_file,
-                "runtime_job_id": runtime_job_id,
-            },
-        )
-
-    @apps.tool(
-        resource_uri=PI_JOB_WIDGET_URI,
-        visibility=["model", "app"],
-        name="watch_pi_job",
-        title="Watch Pi Remote job",
-        description=(
-            "Attach a no-polling watcher to an existing Pi Remote detached job. "
-            "Use this after starting a Pi Remote job. The widget waits for terminal state "
-            "and publishes durable state for MCP Events/lifecycle recovery without injecting a follow-up prompt."
-        ),
-        annotations=ToolAnnotations(
-            readOnlyHint=True,
-            destructiveHint=False,
-            openWorldHint=False,
-        ),
-        meta=READ,
-    )
-    async def watch_pi_job(
-        job_id: str,
-        pi_remote_dir: str = "/home/ubuntu/src/pi-remote",
-        job_root: str | None = None,
-    ) -> dict[str, Any]:
-        return await relay.call(
-            _principal("remote:read"),
-            "watch_pi_job",
-            {
-                "job_id": job_id,
-                "pi_remote_dir": pi_remote_dir,
-                "job_root": job_root,
-            },
-        )
-
-    @apps.tool(
         resource_uri=LONG_JOB_WIDGET_URI,
         visibility=["model", "app"],
         name="start_long_job",
@@ -3155,37 +3063,6 @@ def create_mcp(
         )
 
     @server.tool(
-        name="wait_pi_job_completion",
-        title="Wait for Pi Remote job completion",
-        description=(
-            "App-only long wait for a Pi Remote detached job. This is used by the Pi job watcher "
-            "so the model does not poll job status."
-        ),
-        annotations=ToolAnnotations(
-            readOnlyHint=True,
-            destructiveHint=False,
-            openWorldHint=False,
-        ),
-        meta={**READ, "ui": {"visibility": ["app"]}},
-    )
-    async def wait_pi_job_completion(
-        job_id: str,
-        pi_remote_dir: str = "/home/ubuntu/src/pi-remote",
-        job_root: str | None = None,
-        timeout_seconds: int = 90,
-    ) -> dict[str, Any]:
-        return await relay.call(
-            _principal("remote:read"),
-            "wait_pi_job_completion",
-            {
-                "job_id": job_id,
-                "pi_remote_dir": pi_remote_dir,
-                "job_root": job_root,
-                "timeout_seconds": timeout_seconds,
-            },
-        )
-
-    @server.tool(
         name="bind_openai_job_continuation",
         title="Bind durable job to OpenAI session",
         description=(
@@ -3276,64 +3153,6 @@ def create_mcp(
                 },
                 "runtimeJobId": job_id,
             }
-
-    @server.tool(
-        name="bind_openai_pi_continuation",
-        title="Bind Pi job to OpenAI session",
-        description=(
-            "Internal OpenAI runtime hook helper. Bind a watched Pi Remote job to the current "
-            "Codex or ChatGPT Work session so lifecycle recovery can restore its durable context after session changes."
-        ),
-        annotations=ToolAnnotations(
-            readOnlyHint=False,
-            destructiveHint=False,
-            openWorldHint=False,
-        ),
-        meta=READ,
-    )
-    async def bind_openai_pi_continuation(
-        session_id: str,
-        job_id: str,
-        pi_remote_dir: str = "/home/ubuntu/src/pi-remote",
-        job_root: str | None = None,
-    ) -> dict[str, Any]:
-        user_sub = _principal("remote:read")
-        session_id = str(session_id).strip()
-        job_id = str(job_id).strip()
-        pi_remote_dir = str(pi_remote_dir).strip()
-        if not session_id or len(session_id) > 256:
-            raise ValueError("session_id must be a bounded non-empty string")
-        if not job_id or len(job_id) > 128:
-            raise ValueError("job_id must be a bounded non-empty string")
-        if not pi_remote_dir or len(pi_remote_dir) > 4096:
-            raise ValueError("pi_remote_dir must be a bounded non-empty path")
-        if job_root is not None and len(job_root) > 4096:
-            raise ValueError("job_root path is too long")
-        connector = await relay.call(
-            user_sub,
-            "bind_openai_pi_continuation",
-            {
-                "session_id": session_id,
-                "job_id": job_id,
-                "pi_remote_dir": pi_remote_dir,
-                "job_root": job_root,
-            },
-        )
-        if connector.get("armed") is False:
-            relay.store.clear_continuation(user_sub, session_id)
-            return connector
-        binding = relay.store.bind_continuation(
-            user_sub, session_id, job_id, pi_remote_dir, job_root
-        )
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "PostToolUse",
-                "additionalContext": (
-                    f"Pi Remote continuation is armed for job {binding['job_id']} in this OpenAI session."
-                ),
-            },
-            **({"runtimeJobId": connector.get("runtimeJobId")} if connector.get("runtimeJobId") else {}),
-        }
 
     def expose(name: str, read_only: bool, open_world: bool, destructive: bool):
         meta = {**(READ if read_only else WRITE), "ui": {"visibility": ["model", "app"]}}

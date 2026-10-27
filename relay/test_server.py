@@ -845,11 +845,6 @@ class RelayServerTests(unittest.TestCase):
             "create_pairing_code",
             "device_status",
             "disconnect_device",
-            "start_pi_agent",
-            "start_pi_step",
-            "watch_pi_job",
-            "wait_pi_job_completion",
-            "bind_openai_pi_continuation",
             "claim_llm_request_for_watcher",
             "open_remote_control_plane",
             "open_browser_takeover",
@@ -985,39 +980,6 @@ class RelayServerTests(unittest.TestCase):
         self.assertNotIn("resourceUri", tools["wait_llm_request"].meta["ui"])
         self.assertNotIn("resourceUri", tools["wait_long_job"].meta["ui"])
         self.assertEqual(
-            tools["watch_pi_job"].meta["ui"]["resourceUri"],
-            server.PI_JOB_WIDGET_URI,
-        )
-        self.assertEqual(
-            tools["watch_pi_job"].meta["ui"]["visibility"],
-            ["model", "app"],
-        )
-        self.assertEqual(
-            tools["start_pi_agent"].meta["ui"]["resourceUri"],
-            server.PI_JOB_WIDGET_URI,
-        )
-        self.assertEqual(
-            tools["start_pi_agent"].meta["ui"]["visibility"],
-            ["model", "app"],
-        )
-        self.assertTrue(tools["start_pi_agent"].annotations.destructive_hint)
-        self.assertFalse(tools["start_pi_agent"].annotations.open_world_hint)
-        self.assertEqual(
-            tools["start_pi_step"].meta["ui"]["resourceUri"],
-            server.PI_JOB_WIDGET_URI,
-        )
-        self.assertEqual(
-            tools["start_pi_step"].meta["ui"]["visibility"],
-            ["model", "app"],
-        )
-        self.assertTrue(tools["start_pi_step"].annotations.destructive_hint)
-        self.assertFalse(tools["start_pi_step"].annotations.open_world_hint)
-        self.assertEqual(
-            tools["wait_pi_job_completion"].meta["ui"]["visibility"],
-            ["app"],
-        )
-        self.assertNotIn("resourceUri", tools["wait_pi_job_completion"].meta["ui"])
-        self.assertEqual(
             tools["open_remote_control_plane"].meta["ui"]["resourceUri"],
             server.CONTROL_PLANE_WIDGET_URI,
         )
@@ -1053,9 +1015,6 @@ class RelayServerTests(unittest.TestCase):
         self.assertTrue(tools["remote_overview"].annotations.read_only_hint)
         self.assertFalse(tools["github_identity"].annotations.read_only_hint)
         self.assertTrue(tools["github_identity"].annotations.open_world_hint)
-        self.assertFalse(
-            tools["bind_openai_pi_continuation"].annotations.destructive_hint
-        )
         resources = asyncio.run(mcp.list_resources())
         resource_uris = {str(resource.uri) for resource in resources}
         self.assertTrue(server.PI_JOB_WIDGET_URI.endswith("pi-job-watch-v3.html"))
@@ -1363,11 +1322,20 @@ class RelayServerTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_public_mcp_does_not_expose_retired_pi_tools(self):
+        mcp = server.create_mcp(server.Relay(self.store))
+        names = {tool.name for tool in mcp._tool_manager.list_tools()}
+        retired = {"start_pi_agent", "start_pi_step", "watch_pi_job",
+                   "wait_pi_job_completion", "bind_openai_pi_continuation"}
+        self.assertFalse(names & retired)
+        self.assertTrue({"start_agent", "get_agent_session",
+                         "watch_agent_events"} <= names)
+
     def test_public_openai_lifecycle_recovery_has_no_stop_continuation_tools(self):
         source = inspect.getsource(server.create_mcp)
         self.assertIn("bind_openai_job_continuation", source)
         self.assertIn("recover_openai_job_continuation", source)
-        self.assertIn("bind_openai_pi_continuation", source)
+        self.assertNotIn("bind_openai_pi_continuation", source)
         self.assertNotIn("continue_openai_job", source)
         self.assertNotIn("continue_openai_pi_job", source)
         self.assertNotIn("stop_hook_active", source)
