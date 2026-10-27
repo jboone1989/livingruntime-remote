@@ -392,7 +392,7 @@ def documentation_only(diff):
         return False
     for section in sections:
         lines = section.splitlines()
-        header = re.fullmatch(r"a/([^\\s]+) b/([^\\s]+)", lines[0]) if lines else None
+        header = re.fullmatch(r"a/([^\s]+) b/([^\s]+)", lines[0]) if lines else None
         if not header or header.group(1) != header.group(2):
             return False
         path = header.group(2)
