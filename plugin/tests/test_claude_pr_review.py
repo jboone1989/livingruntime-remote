@@ -80,6 +80,28 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertIn("TRUSTED REVIEW CHECKLIST", ask.call_args_list[1].args[2])
             self.assertEqual(status.call_args.args[3], "success")
 
+    def test_malformed_document_json_uses_full_checklist_fallback(self):
+        diff = ("diff --git a/specs/x/spec.md b/specs/x/spec.md\n"
+                "--- a/specs/x/spec.md\n+++ b/specs/x/spec.md\n"
+                "@@ -1 +1 @@\n-old\n+new\n")
+        pr = {"number": 20, "state": "open", "draft": False,
+              "head": {"sha": "a"*40, "repo": {"full_name": "org/repo"}},
+              "base": {"ref": "develop"}, "body": "spec"}
+        with (patch.object(reviewer, "checkout", return_value=(Path("/tmp"), diff, "b"*40)),
+              patch.object(reviewer, "native_review") as native,
+              patch.object(reviewer, "ask_claude", side_effect=[json.JSONDecodeError("bad", "{", 0), []]) as ask,
+              patch.object(reviewer, "api", return_value=pr),
+              patch.object(reviewer, "already_commented", return_value=True),
+              patch.object(reviewer, "commit_status") as status,
+              patch.object(reviewer, "save_state")):
+            reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
+                            work=Path("/tmp"), state={"prs": {}},
+                            state_path=Path("/tmp/unused"), timeout=360)
+            native.assert_not_called()
+            self.assertEqual(ask.call_count, 2)
+            self.assertIn("TRUSTED REVIEW CHECKLIST", ask.call_args_list[1].args[2])
+            self.assertEqual(status.call_args.args[3], "success")
+
     def test_trusted_agent_instructions_still_get_deep_review(self):
         for path in ("docs/claude-review-checklist.md", "plugin/skills/deploy/SKILL.md",
                      "AGENTS.md", "plugin/README.md"):
