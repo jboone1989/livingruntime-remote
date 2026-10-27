@@ -22,6 +22,117 @@ DIFF = """diff --git a/src/a.mjs b/src/a.mjs
 """
 
 class ReviewerUnitTests(unittest.TestCase):
+    def test_document_only_uses_a_focused_real_claude_review(self):
+        document_diff = ("diff --git a/specs/008/spec.md b/specs/008/spec.md\n"
+                         "--- a/specs/008/spec.md\n+++ b/specs/008/spec.md\n"
+                         "@@ -1 +1 @@\n-old\n+new acceptance criterion\n")
+        self.assertTrue(reviewer.documentation_only(document_diff))
+        self.assertIn("\nPR BODY (untrusted):\n", reviewer.documentation_prompt(document_diff, "approved"))
+        pr = {"number": 19, "state": "open", "draft": False,
+              "head": {"sha": "a"*40, "repo": {"full_name": "org/repo"}},
+              "base": {"ref": "develop"}, "body": "document the approved deployment"}
+        state = {"prs": {}}
+        with (patch.object(reviewer, "checkout", return_value=(Path("/tmp"), document_diff, "b"*40)),
+              patch.object(reviewer, "native_review") as native,
+              patch.object(reviewer, "ask_claude", return_value=[]) as ask,
+              patch.object(reviewer, "api", return_value=pr),
+              patch.object(reviewer, "already_commented", return_value=True),
+              patch.object(reviewer, "commit_status") as status,
+              patch.object(reviewer, "save_state")):
+            reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
+                            work=Path("/tmp"), state=state,
+                            state_path=Path("/tmp/unused"), timeout=360)
+            native.assert_not_called()
+            ask.assert_called_once()
+            self.assertIn("documentation-only", ask.call_args.args[2])
+            self.assertEqual(ask.call_args.args[3], 360)
+            self.assertEqual(ask.call_args.kwargs["max_turns"], 6)
+            self.assertEqual(status.call_args.args[3], "success")
+
+    def test_unknown_source_types_cannot_be_misclassified_as_docs(self):
+        for path in ["src/main.go", "src/thing.rs", "frontend/app.vue",
+                     "web/styles.css", "index.html", "infra/main.tf",
+                     "build/unknown", "docs/runtime.sh"]:
+            diff = f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n"
+            self.assertFalse(reviewer.documentation_only(diff), path)
+        self.assertFalse(reviewer.documentation_only("diff without a parseable path"))
+
+    def test_incomplete_document_review_requires_full_checklist_fallback(self):
+        doc = ("diff --git a/specs/x/spec.md b/specs/x/spec.md\n"
+               "--- a/specs/x/spec.md\n+++ b/specs/x/spec.md\n"
+               "@@ -1 +1 @@\n-old\n+new\n")
+        pr = {"number": 19, "state": "open", "draft": False,
+              "head": {"sha": "a"*40, "repo": {"full_name": "org/repo"}},
+              "base": {"ref": "develop"}, "body": "approved document"}
+        with (patch.object(reviewer, "checkout", return_value=(Path("/tmp"), doc, "b"*40)),
+              patch.object(reviewer, "native_review") as native,
+              patch.object(reviewer, "ask_claude", side_effect=[reviewer.ReviewError("Missing Claude result"), []]) as ask,
+              patch.object(reviewer, "api", return_value=pr),
+              patch.object(reviewer, "already_commented", return_value=True),
+              patch.object(reviewer, "commit_status") as status,
+              patch.object(reviewer, "save_state")):
+            reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
+                            work=Path("/tmp"), state={"prs": {}},
+                            state_path=Path("/tmp/unused"), timeout=360)
+            native.assert_not_called()
+            self.assertEqual(ask.call_count, 2)
+            self.assertIn("documentation-only", ask.call_args_list[0].args[2])
+            self.assertIn("TRUSTED REVIEW CHECKLIST", ask.call_args_list[1].args[2])
+            self.assertEqual(status.call_args.args[3], "success")
+
+    def test_malformed_document_json_uses_full_checklist_fallback(self):
+        diff = ("diff --git a/specs/x/spec.md b/specs/x/spec.md\n"
+                "--- a/specs/x/spec.md\n+++ b/specs/x/spec.md\n"
+                "@@ -1 +1 @@\n-old\n+new\n")
+        pr = {"number": 20, "state": "open", "draft": False,
+              "head": {"sha": "a"*40, "repo": {"full_name": "org/repo"}},
+              "base": {"ref": "develop"}, "body": "spec"}
+        with (patch.object(reviewer, "checkout", return_value=(Path("/tmp"), diff, "b"*40)),
+              patch.object(reviewer, "native_review") as native,
+              patch.object(reviewer, "ask_claude", side_effect=[json.JSONDecodeError("bad", "{", 0), []]) as ask,
+              patch.object(reviewer, "api", return_value=pr),
+              patch.object(reviewer, "already_commented", return_value=True),
+              patch.object(reviewer, "commit_status") as status,
+              patch.object(reviewer, "save_state")):
+            reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
+                            work=Path("/tmp"), state={"prs": {}},
+                            state_path=Path("/tmp/unused"), timeout=360)
+            native.assert_not_called()
+            self.assertEqual(ask.call_count, 2)
+            self.assertIn("TRUSTED REVIEW CHECKLIST", ask.call_args_list[1].args[2])
+            self.assertEqual(status.call_args.args[3], "success")
+
+    def test_trusted_agent_instructions_still_get_deep_review(self):
+        for path in ("docs/claude-review-checklist.md", "plugin/skills/deploy/SKILL.md",
+                     "AGENTS.md", "plugin/README.md", "docs/AGENTS.md",
+                     "docs/CLAUDE.md", "specs/a/AGENTS.md", "specs/a/SKILL.md"):
+            patch = (f"diff --git a/{path} b/{path}\n"
+                     f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n")
+            self.assertFalse(reviewer.documentation_only(patch), path)
+
+    def test_prose_mixed_with_deletion_rename_or_mode_always_gets_code_review(self):
+        doc = ("diff --git a/README.md b/README.md\n"
+               "--- a/README.md\n+++ b/README.md\n"
+               "@@ -1 +1 @@\n-before\n+after\n")
+        deletion = ("diff --git a/src/auth.py b/src/auth.py\n"
+                    "deleted file mode 100644\n"
+                    "--- a/src/auth.py\n+++ /dev/null\n"
+                    "@@ -1 +0,0 @@\n-secret\n")
+        rename = ("diff --git a/src/a.go b/src/b.go\n"
+                  "similarity index 100%\nrename from src/a.go\nrename to src/b.go\n")
+        chmod = ("diff --git a/script.sh b/script.sh\n"
+                 "old mode 100644\nnew mode 100755\n")
+        for change in (deletion, rename, chmod):
+            self.assertFalse(reviewer.documentation_only(doc + change))
+            self.assertFalse(reviewer.documentation_only(change + doc))
+
+    def test_prompt_markdown_is_not_a_documentation_review(self):
+        for path in ("prompts/system.md", "config/prompts/instruction.md",
+                     "industry/prompts/news-explainer.md"):
+            patch = (f"diff --git a/{path} b/{path}\n"
+                     f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n")
+            self.assertFalse(reviewer.documentation_only(patch))
+
     def test_anchors_only_added_lines(self):
         self.assertEqual(reviewer.changed_lines(DIFF), {"src/a.mjs": {4}})
 

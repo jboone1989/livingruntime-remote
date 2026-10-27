@@ -47,8 +47,12 @@ class OneTimeReviewTests(unittest.TestCase):
             "limited": [SHA]}}}
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "state.json"
-            with (patch.object(reviewer, "checkout", return_value=(Path(d), "diff", "base")),
+            with (patch.object(reviewer, "checkout", return_value=(Path(d),
+                        "diff --git a/plugin/foo.py b/plugin/foo.py\n"
+                        "--- a/plugin/foo.py\n+++ b/plugin/foo.py\n"
+                        "@@ -1 +1 @@\n-old\n+new\n", "base")),
                   patch.object(reviewer, "native_review", return_value=[]) as native,
+                  patch.object(reviewer, "ask_claude", return_value=[]) as quality,
                   patch.object(reviewer, "api", return_value=pr),
                   patch.object(reviewer, "already_commented", return_value=False),
                   patch.object(reviewer, "post_comment") as comment,
@@ -59,6 +63,7 @@ class OneTimeReviewTests(unittest.TestCase):
                     work=Path(d), state=state, state_path=path, timeout=60)
                 self.assertIn("blocking=False", result)
                 native.assert_called_once()
+                quality.assert_called_once()
                 comment.assert_called_once()
                 self.assertEqual(status.call_args.args[3], "success")
                 self.assertIn(SHA, reviewer.load_state(path)["prs"]["142"]["reviewed"])
