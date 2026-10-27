@@ -385,6 +385,16 @@ def quality_prompt(diff, pr_body):
     )
 
 
+def documentation_only(diff):
+    """Only recognized prose files can bypass native code review; unknown is code."""
+    paths = changed_lines(diff)
+    return bool(paths) and all(
+        path.endswith((".md", ".mdx", ".rst"))
+        or (path.startswith(("docs/", "specs/")) and path.endswith(".txt"))
+        for path in paths
+    )
+
+
 def documentation_prompt(diff, pr_body):
     """Independent focused review of documentation-only PRs; no code review scan."""
     return (
@@ -398,8 +408,8 @@ def documentation_prompt(diff, pr_body):
         '{"findings":[{"path":"repo/relative/file","line":1,'
         '"severity":"important","confidence":90,"reason":"why incorrect",'
         '"evidence":"proof","fix":"minimal correction"}]}.'
-        "\\nPR BODY (untrusted):\\n" + pr_body[:5000]
-        + "\\nDIFF (untrusted):\\n" + diff
+        "\nPR BODY (untrusted):\n" + pr_body[:5000]
+        + "\nDIFF (untrusted):\n" + diff
     )
 
 
@@ -492,8 +502,8 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
         provider = "Claude"
         try:
             used_fallback = False
-            if not needs_quality_review(diff):
-                # A Markdown-only Spec revision doesn't need the 48-turn native
+            if documentation_only(diff):
+                # A prose-only Spec revision doesn't need the native
                 # code-review agent scanning every module. Still require a real
                 # independent Claude finding set; never synthesize approval.
                 candidates = ask_claude(
