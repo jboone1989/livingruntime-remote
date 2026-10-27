@@ -45,7 +45,7 @@ class ReviewerUnitTests(unittest.TestCase):
             native.assert_not_called()
             ask.assert_called_once()
             self.assertIn("documentation-only", ask.call_args.args[2])
-            self.assertEqual(ask.call_args.args[3], 120)
+            self.assertEqual(ask.call_args.args[3], 360)
             self.assertEqual(ask.call_args.kwargs["max_turns"], 6)
             self.assertEqual(status.call_args.args[3], "success")
 
@@ -56,6 +56,29 @@ class ReviewerUnitTests(unittest.TestCase):
             diff = f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n"
             self.assertFalse(reviewer.documentation_only(diff), path)
         self.assertFalse(reviewer.documentation_only("diff without a parseable path"))
+
+    def test_incomplete_document_review_requires_full_checklist_fallback(self):
+        doc = ("diff --git a/specs/x/spec.md b/specs/x/spec.md\n"
+               "--- a/specs/x/spec.md\n+++ b/specs/x/spec.md\n"
+               "@@ -1 +1 @@\n-old\n+new\n")
+        pr = {"number": 19, "state": "open", "draft": False,
+              "head": {"sha": "a"*40, "repo": {"full_name": "org/repo"}},
+              "base": {"ref": "develop"}, "body": "approved document"}
+        with (patch.object(reviewer, "checkout", return_value=(Path("/tmp"), doc, "b"*40)),
+              patch.object(reviewer, "native_review") as native,
+              patch.object(reviewer, "ask_claude", side_effect=[reviewer.ReviewError("Missing Claude result"), []]) as ask,
+              patch.object(reviewer, "api", return_value=pr),
+              patch.object(reviewer, "already_commented", return_value=True),
+              patch.object(reviewer, "commit_status") as status,
+              patch.object(reviewer, "save_state")):
+            reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
+                            work=Path("/tmp"), state={"prs": {}},
+                            state_path=Path("/tmp/unused"), timeout=360)
+            native.assert_not_called()
+            self.assertEqual(ask.call_count, 2)
+            self.assertIn("documentation-only", ask.call_args_list[0].args[2])
+            self.assertIn("TRUSTED REVIEW CHECKLIST", ask.call_args_list[1].args[2])
+            self.assertEqual(status.call_args.args[3], "success")
 
     def test_trusted_agent_instructions_still_get_deep_review(self):
         for path in ("docs/claude-review-checklist.md", "plugin/skills/deploy/SKILL.md",
