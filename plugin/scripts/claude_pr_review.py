@@ -542,8 +542,9 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
                     candidates = native_review(claude, directory, baseline, sha, timeout)
                 except QuotaExceeded:
                     raise
-                except ReviewError:
-                    # Slash review may fail; use the trusted full checklist.
+                except (ReviewError, subprocess.TimeoutExpired, json.JSONDecodeError):
+                    # Invalid or missing native JSON is not an approval. Require
+                    # a fresh, independent checklist-driven Claude review.
                     candidates = ask_claude(claude, directory,
                                             quality_prompt(diff, pr.get("body") or ""),
                                             timeout, "sonnet")
