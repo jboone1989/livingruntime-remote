@@ -358,12 +358,12 @@ class ReviewerUnitTests(unittest.TestCase):
               "base": {"ref": "main"}, "body": "approved spec"}
         state = {"prs": {}}
         malformed = json.JSONDecodeError("empty native result", "", 0)
-        with patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "a"*40)), \\
-             patch.object(reviewer, "native_review", side_effect=malformed), \\
-             patch.object(reviewer, "ask_claude", return_value=[]) as ask, \\
-             patch.object(reviewer, "api", return_value=pr), \\
-             patch.object(reviewer, "already_commented", return_value=True), \\
-             patch.object(reviewer, "commit_status") as status, \\
+        with patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "a"*40)), \
+             patch.object(reviewer, "native_review", side_effect=malformed), \
+             patch.object(reviewer, "ask_claude", return_value=[]) as ask, \
+             patch.object(reviewer, "api", return_value=pr), \
+             patch.object(reviewer, "already_commented", return_value=True), \
+             patch.object(reviewer, "commit_status") as status, \
              patch.object(reviewer, "save_state"):
             reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
                             work=Path("/tmp"), state=state,
