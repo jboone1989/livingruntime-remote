@@ -352,6 +352,28 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertEqual(qa.call_count, 2)
             self.assertEqual(status.call_args.args[3], "failure")
 
+    def test_native_invalid_json_requires_real_claude_fallback(self):
+        pr = {"number": 2, "state": "open", "draft": False,
+              "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
+              "base": {"ref": "main"}, "body": "approved spec"}
+        state = {"prs": {}}
+        malformed = json.JSONDecodeError("empty native result", "", 0)
+        with patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "a"*40)), \\
+             patch.object(reviewer, "native_review", side_effect=malformed), \\
+             patch.object(reviewer, "ask_claude", return_value=[]) as ask, \\
+             patch.object(reviewer, "api", return_value=pr), \\
+             patch.object(reviewer, "already_commented", return_value=True), \\
+             patch.object(reviewer, "commit_status") as status, \\
+             patch.object(reviewer, "save_state"):
+            reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
+                            work=Path("/tmp"), state=state,
+                            state_path=Path("/tmp/unused"), timeout=5)
+            # Approval cannot come from malformed native output: Claude must
+            # actually run the full trusted quality checklist.
+            self.assertEqual(ask.call_count, 1)
+            self.assertIn("R01", ask.call_args.args[2])
+            self.assertEqual(status.call_args.args[3], "success")
+
     def test_clean_review_resets_round_counter(self):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
