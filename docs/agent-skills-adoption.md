@@ -1,16 +1,17 @@
-# Shared engineering skills for LivingRuntime Remote
+# Shared engineering skills — provenance and routes
 
-Approved by owner on 2026-10-27: adopt exactly the following five:
-`constraint-driven-development`, `context-engineering`, `debugging-and-error-recovery`, `source-driven-development`, `code-simplification`.
+Owner-approved five skills from [jboone1989/agent-skills](https://github.com/jboone1989/agent-skills) (fork of [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills)) at commit `aeac41d4d005999432bb7312f7ff06383a91d59d`, v0.6.13:
 
-Source: [jboone1989/agent-skills](https://github.com/jboone1989/agent-skills) (fork of [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills)) at commit `aeac41d4d005999432bb7312f7ff06383a91d59d` / v0.6.13.
+- constraint-driven-development
+- context-engineering
+- debugging-and-error-recovery
+- source-driven-development
+- code-simplification
 
-Location: `plugin/skills` for Remote plugin packaging; `.agents/skills` for Pi/Codex; `.claude/skills` for Claude Code. All copies use the same exact Git blob contents. Includes `references/floor-guard.md` for the constraint skill; the reference does NOT automatically install a second checker.
+**Single canonical Skill body per name:** `plugin/skills/<name>/SKILL.md`, also used by the Remote plugin package. Discovery adapters at `.agents/skills/<name>/SKILL.md` (Pi/Codex) and `.claude/skills/<name>/SKILL.md` (Claude) must load that full local canonical body before doing work. The constraint Skill's `references/floor-guard.md` sits by its canonical body.
 
-Project constraints: `.agents/CONSTRAINTS.md`. Existing reviewer: `docs/claude-review-checklist.md`. Existing targeted Remote debug skill: `plugin/skills/debug-and-repair/SKILL.md`.
+`.agents/CONSTRAINTS.md` is the quality baseline. The existing `plugin/skills/debug-and-repair` still governs authorized host work; the Claude R01–R18 review remains the independent merge gate. New skills do not grant host permissions, create new CI jobs, or insert extra human confirmations for approved work.
 
-Validation checklist: five SKILL.md entries in all three roots with identical Git blob content; constraint reference in all three; no changed Remote executables, permissions or GitHub Actions.
+Adoption is split across two focused PRs to respect the existing **80KB Claude review diff budget** without enlarging/bypassing that review rule. Installing the files in Git does not prove a deployed Remote plugin is updated.
 
-The new plugin skill files only become available to deployed ChatGPT connectors when a compatible Remote plugin package/release installs them; merging source code is not proof of a deployed skill catalog.
-
-License: MIT; Copyright (c) 2025 Addy Osmani; full text in [agent-skills-MIT-LICENSE.md](third-party/agent-skills-MIT-LICENSE.md).
+License: MIT, Copyright (c) 2025 Addy Osmani. Full notice: [agent-skills-MIT-LICENSE.md](third-party/agent-skills-MIT-LICENSE.md).
