@@ -46,6 +46,7 @@ class ReviewerUnitTests(unittest.TestCase):
             ask.assert_called_once()
             self.assertIn("documentation-only", ask.call_args.args[2])
             self.assertEqual(ask.call_args.args[3], 120)
+            self.assertEqual(ask.call_args.kwargs["max_turns"], 6)
             self.assertEqual(status.call_args.args[3], "success")
 
     def test_unknown_source_types_cannot_be_misclassified_as_docs(self):
@@ -55,6 +56,13 @@ class ReviewerUnitTests(unittest.TestCase):
             diff = f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n"
             self.assertFalse(reviewer.documentation_only(diff), path)
         self.assertFalse(reviewer.documentation_only("diff without a parseable path"))
+
+    def test_trusted_agent_instructions_still_get_deep_review(self):
+        for path in ("docs/claude-review-checklist.md", "plugin/skills/deploy/SKILL.md",
+                     "AGENTS.md", "plugin/README.md"):
+            patch = (f"diff --git a/{path} b/{path}\n"
+                     f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n")
+            self.assertFalse(reviewer.documentation_only(patch), path)
 
     def test_prose_mixed_with_deletion_rename_or_mode_always_gets_code_review(self):
         doc = ("diff --git a/README.md b/README.md\n"
