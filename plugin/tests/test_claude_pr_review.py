@@ -22,6 +22,30 @@ DIFF = """diff --git a/src/a.mjs b/src/a.mjs
 """
 
 class ReviewerUnitTests(unittest.TestCase):
+    def test_document_only_uses_a_focused_real_claude_review(self):
+        document_diff = ("diff --git a/specs/008/spec.md b/specs/008/spec.md\\n"
+                         "--- a/specs/008/spec.md\\n+++ b/specs/008/spec.md\\n"
+                         "@@ -1 +1 @@\\n-old\\n+new acceptance criterion\\n")
+        pr = {"number": 19, "state": "open", "draft": False,
+              "head": {"sha": "a"*40, "repo": {"full_name": "org/repo"}},
+              "base": {"ref": "develop"}, "body": "document the approved deployment"}
+        state = {"prs": {}}
+        with (patch.object(reviewer, "checkout", return_value=(Path("/tmp"), document_diff, "b"*40)),
+              patch.object(reviewer, "native_review") as native,
+              patch.object(reviewer, "ask_claude", return_value=[]) as ask,
+              patch.object(reviewer, "api", return_value=pr),
+              patch.object(reviewer, "already_commented", return_value=True),
+              patch.object(reviewer, "commit_status") as status,
+              patch.object(reviewer, "save_state")):
+            reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
+                            work=Path("/tmp"), state=state,
+                            state_path=Path("/tmp/unused"), timeout=360)
+            native.assert_not_called()
+            ask.assert_called_once()
+            self.assertIn("documentation-only", ask.call_args.args[2])
+            self.assertEqual(ask.call_args.args[3], 120)
+            self.assertEqual(status.call_args.args[3], "success")
+
     def test_anchors_only_added_lines(self):
         self.assertEqual(reviewer.changed_lines(DIFF), {"src/a.mjs": {4}})
 
