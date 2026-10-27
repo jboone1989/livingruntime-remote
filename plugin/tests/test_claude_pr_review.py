@@ -23,9 +23,11 @@ DIFF = """diff --git a/src/a.mjs b/src/a.mjs
 
 class ReviewerUnitTests(unittest.TestCase):
     def test_document_only_uses_a_focused_real_claude_review(self):
-        document_diff = ("diff --git a/specs/008/spec.md b/specs/008/spec.md\\n"
-                         "--- a/specs/008/spec.md\\n+++ b/specs/008/spec.md\\n"
-                         "@@ -1 +1 @@\\n-old\\n+new acceptance criterion\\n")
+        document_diff = ("diff --git a/specs/008/spec.md b/specs/008/spec.md\n"
+                         "--- a/specs/008/spec.md\n+++ b/specs/008/spec.md\n"
+                         "@@ -1 +1 @@\n-old\n+new acceptance criterion\n")
+        self.assertTrue(reviewer.documentation_only(document_diff))
+        self.assertIn("\nPR BODY (untrusted):\n", reviewer.documentation_prompt(document_diff, "approved"))
         pr = {"number": 19, "state": "open", "draft": False,
               "head": {"sha": "a"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "develop"}, "body": "document the approved deployment"}
@@ -45,6 +47,14 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertIn("documentation-only", ask.call_args.args[2])
             self.assertEqual(ask.call_args.args[3], 120)
             self.assertEqual(status.call_args.args[3], "success")
+
+    def test_unknown_source_types_cannot_be_misclassified_as_docs(self):
+        for path in ["src/main.go", "src/thing.rs", "frontend/app.vue",
+                     "web/styles.css", "index.html", "infra/main.tf",
+                     "build/unknown", "docs/runtime.sh"]:
+            diff = f"diff --git a/{path} b/{path}\\n--- a/{path}\\n+++ b/{path}\\n@@ -1 +1 @@\\n-old\\n+new\\n"
+            self.assertFalse(reviewer.documentation_only(diff), path)
+        self.assertFalse(reviewer.documentation_only("diff without a parseable path"))
 
     def test_anchors_only_added_lines(self):
         self.assertEqual(reviewer.changed_lines(DIFF), {"src/a.mjs": {4}})
