@@ -104,7 +104,8 @@ class ReviewerUnitTests(unittest.TestCase):
 
     def test_trusted_agent_instructions_still_get_deep_review(self):
         for path in ("docs/claude-review-checklist.md", "plugin/skills/deploy/SKILL.md",
-                     "AGENTS.md", "plugin/README.md"):
+                     "AGENTS.md", "plugin/README.md", "docs/AGENTS.md",
+                     "docs/CLAUDE.md", "specs/a/AGENTS.md", "specs/a/SKILL.md"):
             patch = (f"diff --git a/{path} b/{path}\n"
                      f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n")
             self.assertFalse(reviewer.documentation_only(patch), path)
