@@ -56,6 +56,29 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertFalse(reviewer.documentation_only(diff), path)
         self.assertFalse(reviewer.documentation_only("diff without a parseable path"))
 
+    def test_prose_mixed_with_deletion_rename_or_mode_always_gets_code_review(self):
+        doc = ("diff --git a/README.md b/README.md\n"
+               "--- a/README.md\n+++ b/README.md\n"
+               "@@ -1 +1 @@\n-before\n+after\n")
+        deletion = ("diff --git a/src/auth.py b/src/auth.py\n"
+                    "deleted file mode 100644\n"
+                    "--- a/src/auth.py\n+++ /dev/null\n"
+                    "@@ -1 +0,0 @@\n-secret\n")
+        rename = ("diff --git a/src/a.go b/src/b.go\n"
+                  "similarity index 100%\nrename from src/a.go\nrename to src/b.go\n")
+        chmod = ("diff --git a/script.sh b/script.sh\n"
+                 "old mode 100644\nnew mode 100755\n")
+        for change in (deletion, rename, chmod):
+            self.assertFalse(reviewer.documentation_only(doc + change))
+            self.assertFalse(reviewer.documentation_only(change + doc))
+
+    def test_prompt_markdown_is_not_a_documentation_review(self):
+        for path in ("prompts/system.md", "config/prompts/instruction.md",
+                     "industry/prompts/news-explainer.md"):
+            patch = (f"diff --git a/{path} b/{path}\n"
+                     f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n")
+            self.assertFalse(reviewer.documentation_only(patch))
+
     def test_anchors_only_added_lines(self):
         self.assertEqual(reviewer.changed_lines(DIFF), {"src/a.mjs": {4}})
 
