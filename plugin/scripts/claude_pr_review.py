@@ -530,7 +530,7 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
                         timeout, "sonnet", max_turns=6)
                 except QuotaExceeded:
                     raise
-                except (ReviewError, subprocess.TimeoutExpired):
+                except (ReviewError, subprocess.TimeoutExpired, json.JSONDecodeError):
                     # No rubber-stamp on exhausted turns: require the full R01–R18
                     # checklist and normal time/turn budget before any green status.
                     candidates = ask_claude(
