@@ -1,0 +1,36 @@
+name: DeepSeek Flash Claude Code host provisioning and smoke
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deepseek-profile-smoke.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deepseek-flash-smoke:
+    runs-on: [self-hosted, Linux, X64, claude-review]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install scoped DeepSeek credential and verify native CLI
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          set -eu
+          if [ "$(hostname)" != "VM-0-9-ubuntu" ] || [ "$(id -un)" != "ubuntu" ]; then
+            echo "Unexpected runner host or identity; did not provision credentials"
+            exit 1
+          fi
+          if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
+            echo "DEEPSEEK_API_KEY GitHub Repository Secret is missing"
+            exit 1
+          fi
+          umask 077
+          install -d -m 0700 "$HOME/.livingruntime/credentials"
+          printf "%s" "$DEEPSEEK_API_KEY" > "$HOME/.livingruntime/credentials/deepseek-api-key"
+          chmod 0600 "$HOME/.livingruntime/credentials/deepseek-api-key"
+          unset DEEPSEEK_API_KEY
+          python3 plugin/scripts/deepseek_cli_smoke.py
