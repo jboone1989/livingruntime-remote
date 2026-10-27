@@ -52,7 +52,7 @@ class ReviewerUnitTests(unittest.TestCase):
         for path in ["src/main.go", "src/thing.rs", "frontend/app.vue",
                      "web/styles.css", "index.html", "infra/main.tf",
                      "build/unknown", "docs/runtime.sh"]:
-            diff = f"diff --git a/{path} b/{path}\\n--- a/{path}\\n+++ b/{path}\\n@@ -1 +1 @@\\n-old\\n+new\\n"
+            diff = f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n"
             self.assertFalse(reviewer.documentation_only(diff), path)
         self.assertFalse(reviewer.documentation_only("diff without a parseable path"))
 
