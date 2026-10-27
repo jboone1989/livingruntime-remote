@@ -47,7 +47,10 @@ class OneTimeReviewTests(unittest.TestCase):
             "limited": [SHA]}}}
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "state.json"
-            with (patch.object(reviewer, "checkout", return_value=(Path(d), "diff", "base")),
+            with (patch.object(reviewer, "checkout", return_value=(Path(d),
+                        "diff --git a/plugin/foo.py b/plugin/foo.py\n"
+                        "--- a/plugin/foo.py\n+++ b/plugin/foo.py\n"
+                        "@@ -1 +1 @@\n-old\n+new\n", "base")),
                   patch.object(reviewer, "native_review", return_value=[]) as native,
                   patch.object(reviewer, "api", return_value=pr),
                   patch.object(reviewer, "already_commented", return_value=False),
