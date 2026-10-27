@@ -1,6 +1,6 @@
 {
   "name": "livingruntime-remote",
-  "version": "0.4.70",
+  "version": "0.4.71",
   "description": "Connect your machines and native Agents through one Remote app.",
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
