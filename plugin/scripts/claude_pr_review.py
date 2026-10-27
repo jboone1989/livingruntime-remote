@@ -386,13 +386,29 @@ def quality_prompt(diff, pr_body):
 
 
 def documentation_only(diff):
-    """Only recognized prose files can bypass native code review; unknown is code."""
-    paths = changed_lines(diff)
-    return bool(paths) and all(
-        path.endswith((".md", ".mdx", ".rst"))
-        or (path.startswith(("docs/", "specs/")) and path.endswith(".txt"))
-        for path in paths
-    )
+    """Be deliberately strict: any non-prose or ambiguous file gets code review."""
+    sections = diff.split("diff --git ")[1:]
+    if not sections:
+        return False
+    for section in sections:
+        lines = section.splitlines()
+        header = re.fullmatch(r"a/([^\\s]+) b/([^\\s]+)", lines[0]) if lines else None
+        if not header or header.group(1) != header.group(2):
+            return False
+        path = header.group(2)
+        if path.startswith(("industry/prompts/", "prompts/", "config/prompts/")):
+            return False
+        if not (path.endswith((".md", ".mdx", ".rst")) or
+                (path.startswith(("docs/", "specs/")) and path.endswith(".txt"))):
+            return False
+        if (f"--- a/{path}" not in lines or f"+++ b/{path}" not in lines or
+                not any(line.startswith("@@ ") for line in lines)):
+            return False
+        if any(line.startswith(("rename from ", "rename to ", "old mode ",
+                                "new mode ", "Binary files ", "GIT binary patch",
+                                "deleted file mode ", "new file mode ")) for line in lines):
+            return False
+    return True
 
 
 def documentation_prompt(diff, pr_body):
