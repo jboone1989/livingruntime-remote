@@ -285,7 +285,7 @@ def native_review(binary, cwd, baseline, sha, timeout):
     args = [binary, "-p", f"/code-review high {baseline}..{sha}",
             "--model", "sonnet",
             "--output-format", "json", "--permission-mode", "plan",
-            "--max-turns", "48", "--disallowedTools", "Edit,Write,NotebookEdit,mcp__*",
+            "--max-turns", "12", "--disallowedTools", "Edit,Write,NotebookEdit,mcp__*",
             "--strict-mcp-config", "--safe-mode", "--setting-sources", "",
             "--settings", '{"disableAllHooks":true}']
     return parse_native_review(run(
@@ -300,7 +300,7 @@ def ask_claude(binary, cwd, prompt, timeout, model="sonnet", env=None):
                   "--disallowedTools", "mcp__*", "--strict-mcp-config",
                   "--safe-mode", "--setting-sources", "",
                   "--settings", '{"disableAllHooks": true}',
-                  "--model", model, "--max-turns", "16"],
+                  "--model", model, "--max-turns", "6"],
                  cwd=cwd, timeout=timeout, input_text=prompt,
                  env=claude_subscription_environment() if env is None else env)
     return parse_claude(stdout)
