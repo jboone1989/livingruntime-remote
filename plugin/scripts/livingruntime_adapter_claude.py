@@ -22,8 +22,9 @@ _ALLOWED_OPTIONS = {
     "duplex", "timeout_seconds", "fallback_model", "forward_subagent_text",
     "include_hook_events", "json_schema", "max_budget_usd", "autocompact",
     "append_subagent_system_prompt", "mcp_configs", "plugin_dirs", "additional_dirs",
-    "approval_timeout_seconds",
+    "approval_timeout_seconds", "provider_profile",
 }
+_PROVIDER_PROFILES = {"claude-subscription", "deepseek-flash"}
 _MODES = {"plan", "default", "acceptEdits", "auto", "dontAsk"}
 _EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultracode"}
 _IDENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
@@ -37,6 +38,13 @@ def validate_options(value):
     if not isinstance(value, dict) or set(value) - _ALLOWED_OPTIONS:
         raise ValueError("unsupported Claude CLI option")
     opts = dict(value)
+    if "provider_profile" in opts and opts["provider_profile"] not in _PROVIDER_PROFILES:
+        raise ValueError("invalid provider profile")
+    if opts.get("provider_profile") == "deepseek-flash":
+        if opts.get("model") not in (None, "deepseek-flash"):
+            raise ValueError("DeepSeek profile requires a DeepSeek model")
+        if opts.get("fallback_model"):
+            raise ValueError("DeepSeek profile cannot use Claude fallback-model")
     for key in ("agent", "model"):
         if key in opts and (not isinstance(opts[key], str) or not _IDENT.fullmatch(opts[key])):
             raise ValueError("invalid " + key)

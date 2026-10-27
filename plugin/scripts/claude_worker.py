@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -14,11 +15,56 @@ import time
 from pathlib import Path
 
 
+def provider_environment(record):
+    """Give each Claude CLI child only the selected provider's credentials."""
+    opts = record.get("options") or {}
+    profile = opts.get("provider_profile", "claude-subscription")
+    env = os.environ.copy()
+    key = env.pop("DEEPSEEK_API_KEY", None)
+    # A configured Anthropic key takes precedence over a subscription login.
+    # Neither provider should inherit another provider's routing or authentication.
+    for name in (
+        "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
+        "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+    ):
+        env.pop(name, None)
+    if profile == "claude-subscription":
+        return env
+    if profile != "deepseek-flash":
+        raise ValueError("invalid provider profile")
+    if not key:
+        path = Path.home() / ".livingruntime" / "credentials" / "deepseek-api-key"
+        if path.is_file():
+            meta = path.stat()
+            if meta.st_uid != os.getuid() or stat.S_IMODE(meta.st_mode) & 0o077:
+                raise PermissionError("DeepSeek credential file must be owner-only")
+            key = path.read_text(encoding="utf-8").strip()
+    if not key:
+        raise FileNotFoundError("DeepSeek credential not configured on this host")
+    env.update({
+        "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+        "ANTHROPIC_AUTH_TOKEN": key,
+        "ANTHROPIC_MODEL": "deepseek-flash[1m]",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-flash[1m]",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-flash[1m]",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-flash",
+        "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash",
+        "CLAUDE_CODE_EFFORT_LEVEL": "max",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "786432",
+    })
+    return env
+
+
 def cli_args(record):
     opts = record.get("options") or {}
     args = [record["executable"], "-p", "--output-format", "stream-json", "--verbose",
             "--include-partial-messages", "--permission-mode", opts.get("permission_mode", "plan")]
     for key in ("agent", "model", "effort"):
+        if key == "model" and opts.get("provider_profile") == "deepseek-flash":
+            continue  # DeepSeek model is routed via isolated environment.
         if opts.get(key):
             args += ["--" + key, opts[key]]
     if opts.get("agents"):
@@ -208,7 +254,7 @@ def main(path):
             proc = subprocess.Popen(
                 args, cwd=record["cwd"], stdin=subprocess.PIPE if opts.get("duplex") else subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
-                start_new_session=True,
+                start_new_session=True, env=provider_environment(record),
             )
             stderr_parts = []
             def collect_stderr():
