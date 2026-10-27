@@ -285,14 +285,14 @@ def native_review(binary, cwd, baseline, sha, timeout):
     args = [binary, "-p", f"/code-review high {baseline}..{sha}",
             "--model", "sonnet",
             "--output-format", "json", "--permission-mode", "plan",
-            "--max-turns", "12", "--disallowedTools", "Edit,Write,NotebookEdit,mcp__*",
+            "--max-turns", "48", "--disallowedTools", "Edit,Write,NotebookEdit,mcp__*",
             "--strict-mcp-config", "--safe-mode", "--setting-sources", "",
             "--settings", '{"disableAllHooks":true}']
     return parse_native_review(run(
         args, cwd=cwd, timeout=timeout, env=claude_subscription_environment()))
 
 
-def ask_claude(binary, cwd, prompt, timeout, model="sonnet", env=None):
+def ask_claude(binary, cwd, prompt, timeout, model="sonnet", env=None, max_turns=16):
     # --tools restricts which tools exist (unlike --allowedTools).
     # No Bash, shell execution, edits, writes, or MCP tool calls in review mode.
     stdout = run([binary, "-p", "--output-format", "json",
@@ -300,7 +300,7 @@ def ask_claude(binary, cwd, prompt, timeout, model="sonnet", env=None):
                   "--disallowedTools", "mcp__*", "--strict-mcp-config",
                   "--safe-mode", "--setting-sources", "",
                   "--settings", '{"disableAllHooks": true}',
-                  "--model", model, "--max-turns", "6"],
+                  "--model", model, "--max-turns", str(max_turns)],
                  cwd=cwd, timeout=timeout, input_text=prompt,
                  env=claude_subscription_environment() if env is None else env)
     return parse_claude(stdout)
@@ -398,8 +398,10 @@ def documentation_only(diff):
         path = header.group(2)
         if path.startswith(("industry/prompts/", "prompts/", "config/prompts/")):
             return False
-        if not (path.endswith((".md", ".mdx", ".rst")) or
-                (path.startswith(("docs/", "specs/")) and path.endswith(".txt"))):
+        if path in ("AGENTS.md", "docs/claude-review-checklist.md") or path.endswith("/SKILL.md"):
+            return False
+        if not (path.startswith(("specs/", "docs/")) and path.endswith((".md", ".mdx", ".rst", ".txt"))
+                or path in ("README.md", "CHANGELOG.md", "CONTRIBUTING.md")):
             return False
         if (f"--- a/{path}" not in lines or f"+++ b/{path}" not in lines or
                 not any(line.startswith("@@ ") for line in lines)):
@@ -524,7 +526,7 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
                 # independent Claude finding set; never synthesize approval.
                 candidates = ask_claude(
                     claude, directory, documentation_prompt(diff, pr.get("body") or ""),
-                    min(timeout, 120), "sonnet")
+                    min(timeout, 120), "sonnet", max_turns=6)
                 used_fallback = True
             else:
                 try:
