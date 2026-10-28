@@ -44,7 +44,7 @@ jobs:
             --repo "$REPO" --pr-number "$PR_NUMBER" \
             --gh /home/ubuntu/.local/bin/gh \
             --claude /home/ubuntu/.local/bin/claude \
-            --state "$state" --work "$work" --timeout 180
+            --state "$state" --work "$work" --timeout 360
 
   dispatched-review:
     if: >-
