@@ -683,6 +683,18 @@ class ReviewerUnitTests(unittest.TestCase):
                     "claude", interrupted, [], cwd=Path("/tmp"), timeout=5,
                     env={}, phase="native-review")
 
+    def test_second_interrupted_resume_requires_independent_review(self):
+        first = reviewer.ReviewInterrupted(
+            "0d01dcdb-fd91-484e-8175-25437b05f80e")
+        second = reviewer.ReviewInterrupted(
+            "0d01dcdb-fd91-484e-8175-25437b05f80e")
+        with patch.object(reviewer, "run", side_effect=second):
+            with self.assertRaisesRegex(
+                    reviewer.ReviewUnavailable, "remained interrupted after one resume"):
+                reviewer.resume_claude(
+                    "claude", first, [], cwd=Path("/tmp"), timeout=5,
+                    env={}, phase="native-review")
+
     def test_stale_resume_marker_uses_deepseek_not_claude_retry(self):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
