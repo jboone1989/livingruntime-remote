@@ -120,9 +120,9 @@
 | 状态 | 含义 | 合法后继（完整集合） |
 | --- | --- | --- |
 | `PROPOSED` | Agent 提议的子工作，尚未被当前 Goal 授权 | READY / WAITING / REJECTED / CANCELLED |
-| `WAITING` | 等待依赖、外部 CI / review、Goal 暂停或指定时间；不得虚称 RUNNING | READY / BLOCKED_HUMAN / FAILED / CANCELLED |
-| `READY` | 依赖已满足且已有授权，可领取 | CLAIMED / CANCELLED |
-| `CLAIMED` | 已原子授予某 worker 有限租约 | RUNNING / READY（租约失效）/ WAITING（暂停）/ CANCELLED |
+| `WAITING` | 等待依赖、外部 CI / review、Goal 暂停或指定时间；不得虚称 RUNNING | READY / VERIFYING（已有执行证据、只待验收结果）/ BLOCKED_HUMAN / FAILED / CANCELLED |
+| `READY` | 依赖已满足且已有授权，可领取 | CLAIMED / WAITING / BLOCKED_HUMAN / FAILED / CANCELLED |
+| `CLAIMED` | 已原子授予某 worker 有限租约 | RUNNING / READY（租约失效）/ WAITING（暂停）/ BLOCKED_HUMAN / FAILED / CANCELLED |
 | `RUNNING` | 存在实际在运行的 Agent/进程证据 | VERIFYING / WAITING（安全暂停）/ BLOCKED_HUMAN / RETRY_WAIT / FAILED / CANCELLED |
 | `VERIFYING` | 正等待已定义的可验证证据 | SUCCEEDED / READY（需修复）/ WAITING / BLOCKED_HUMAN / FAILED / CANCELLED |
 | `BLOCKED_HUMAN` | 只等待用户不可替代的决定/授权 | READY / WAITING（依赖未满足）/ FAILED / CANCELLED |
@@ -130,6 +130,8 @@
 | `SUCCEEDED`, `FAILED`, `CANCELLED`, `REJECTED` | 终态；用户可新建后续项，但不可假装原项仍执行 | 无 |
 
 **初始态**：用户直接创建且已授权的 WorkItem，依赖满足则为 `READY`，否则为 `WAITING`；只有 Agent 自行提出的子项进入 `PROPOSED`。Goal `paused=true` 时禁止新领取，`CLAIMED/RUNNING` 经安全停止和检查点进入 `WAITING`（暂停原因），恢复后依依赖状态回到 `READY`；`cancel_requested` 必须先停止/确认进程与外部副作用边界，再转 `CANCELLED`，不能仅修改状态字符串。所有状态转移通过原子条件更新与审计事件记录。
+
+**就绪与验收边界**：`READY/CLAIMED` 发现预算耗尽、能力不覆盖或需求冲突时，按已授权策略转 `WAITING`（有可恢复条件）、`BLOCKED_HUMAN`（确需新决定）或 `FAILED`（终止），不得无原因停在可领取态。`VERIFYING → WAITING → VERIFYING` 仅用于执行已结束、等待外部 CI/review/证据的情况；外部结果到达后直接恢复验收，**不重新认领或重跑已完成的副作用**。只有确需修复时才由 `VERIFYING → READY` 发起新执行尝试。
 
 状态表示 WorkItem 的生命周期，不等于 Agent Session 状态，也不等于收件箱回执的 `PENDING/ACKED`。例如原生 Agent 已结束但 CI 未通过时 WorkItem 仍可在 VERIFYING/WAITING；完成回执未被用户 ACK 不会阻塞其他工作。
 
