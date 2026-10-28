@@ -154,7 +154,9 @@ def resume_claude(binary, interrupted, options, *, cwd, timeout, env, phase):
     try:
         return run(argv, cwd=cwd, timeout=timeout, env=resume_env)
     except ReviewInterrupted as second:
-        raise ReviewError(
+        # A second interrupted turn is not a completed review. The one-resume
+        # limit is exhausted, so require the existing independent provider.
+        raise ReviewUnavailable(
             f"{phase}: Claude remained interrupted after one resume "
             f"(stop_reason={second.stop_reason})") from second
     except ReviewError as exc:
