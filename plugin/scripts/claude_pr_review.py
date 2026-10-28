@@ -626,9 +626,9 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
                     candidates = ask_claude(
                         claude, directory, documentation_prompt(diff, pr.get("body") or ""),
                         timeout, "sonnet", max_turns=6)
-                except (QuotaExceeded, ReviewUnavailable):
+                except (QuotaExceeded, ReviewUnavailable, subprocess.TimeoutExpired):
                     raise
-                except (ReviewError, subprocess.TimeoutExpired, json.JSONDecodeError):
+                except (ReviewError, json.JSONDecodeError):
                     # No rubber-stamp on exhausted turns: require the full R01–R18
                     # checklist and normal time/turn budget before any green status.
                     candidates = ask_claude(
@@ -638,9 +638,9 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
             else:
                 try:
                     candidates = native_review(claude, directory, baseline, sha, timeout)
-                except (QuotaExceeded, ReviewUnavailable):
+                except (QuotaExceeded, ReviewUnavailable, subprocess.TimeoutExpired):
                     raise
-                except (ReviewError, subprocess.TimeoutExpired, json.JSONDecodeError):
+                except (ReviewError, json.JSONDecodeError):
                     # Invalid or missing native JSON is not an approval. Require
                     # a fresh, independent checklist-driven Claude review.
                     candidates = ask_claude(claude, directory,
@@ -655,7 +655,7 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
                                    verify_prompt(candidates, diff), timeout, "sonnet")
                         if candidates else [])
             findings = filter_findings(verified, diff)
-        except (QuotaExceeded, ReviewUnavailable):
+        except (QuotaExceeded, ReviewUnavailable, subprocess.TimeoutExpired):
             provider = "DeepSeek-V4.1-Flash-1017"
             findings = deepseek_review(
                 claude, directory, diff, pr.get("body") or "", timeout)
