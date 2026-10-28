@@ -33,6 +33,19 @@ class ReviewUnavailable(ReviewError):
     """Fallback review unavailable; do not exhaust the PR retry budget."""
 
 
+class ReviewInterrupted(ReviewError):
+    """Claude Code ended a persisted print-mode session before the turn completed."""
+
+    def __init__(self, session_id, stop_reason="tool_use", subtype=None):
+        self.session_id = session_id
+        self.stop_reason = stop_reason
+        self.subtype = subtype
+        detail = f"stop_reason={stop_reason}"
+        if subtype:
+            detail += f", subtype={subtype}"
+        super().__init__(f"Claude session interrupted ({detail})")
+
+
 def is_claude_quota(message):
     text = str(message).casefold()
     return any(phrase in text for phrase in (
@@ -70,6 +83,36 @@ def claude_subscription_environment():
     return env
 
 
+def _claude_failure_metadata(*outputs):
+    """Parse Claude Code's terminal JSON without logging its unbounded payload."""
+    for output in outputs:
+        text = (output or "").strip()
+        if not text:
+            continue
+        candidates = [text, *reversed(text.splitlines())]
+        for candidate in candidates:
+            try:
+                value = json.loads(candidate)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(value, dict):
+                continue
+            session_id = value.get("session_id")
+            if not isinstance(session_id, str) or not re.fullmatch(
+                    r"[0-9a-fA-F-]{32,40}", session_id):
+                session_id = None
+            return {
+                "session_id": session_id,
+                "stop_reason": value.get("stop_reason")
+                    if isinstance(value.get("stop_reason"), str) else None,
+                "subtype": value.get("subtype")
+                    if isinstance(value.get("subtype"), str) else None,
+                "is_error": value.get("is_error")
+                    if isinstance(value.get("is_error"), bool) else None,
+            }
+    return {}
+
+
 def run(argv, cwd=None, timeout=120, input_text=None, env=None):
     kwargs = dict(cwd=cwd, timeout=timeout, capture_output=True,
                   input=input_text, text=True)
@@ -78,12 +121,42 @@ def run(argv, cwd=None, timeout=120, input_text=None, env=None):
     result = subprocess.run(argv, **kwargs)
     if result.returncode:
         message = result.stderr or result.stdout
-        if Path(argv[0]).name == "claude" and is_claude_quota(
-                (result.stderr or "") + "\n" + (result.stdout or "")):
+        output = (result.stderr or "") + "\n" + (result.stdout or "")
+        is_claude = Path(argv[0]).name == "claude"
+        if is_claude and is_claude_quota(output):
             raise QuotaExceeded("Claude subscription usage limit reached")
+        if is_claude:
+            metadata = _claude_failure_metadata(result.stdout, result.stderr)
+            if (metadata.get("stop_reason") == "tool_use"
+                    and metadata.get("session_id")):
+                raise ReviewInterrupted(
+                    metadata["session_id"], metadata["stop_reason"],
+                    metadata.get("subtype"))
+            fields = [
+                f"{key}={metadata[key]}" for key in
+                ("stop_reason", "subtype", "is_error")
+                if metadata.get(key) is not None
+            ]
+            if fields:
+                raise ReviewError(
+                    f"claude exited {result.returncode}: " + ", ".join(fields))
         raise ReviewError(f"{argv[0]} exited {result.returncode}: "
                           + (message or "").strip()[:350])
     return result.stdout
+
+
+def resume_claude(binary, interrupted, options, *, cwd, timeout, env, phase):
+    """Continue one persisted interrupted turn once; never synthesize a review."""
+    resume_env = (env or os.environ.copy()).copy()
+    resume_env["CLAUDE_CODE_RESUME_INTERRUPTED_TURN"] = "1"
+    resume_env["CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS"] = "600000"
+    argv = [binary, "-p", "--resume", interrupted.session_id, *options]
+    try:
+        return run(argv, cwd=cwd, timeout=timeout, env=resume_env)
+    except ReviewInterrupted as second:
+        raise ReviewError(
+            f"{phase}: Claude remained interrupted after one resume "
+            f"(stop_reason={second.stop_reason})") from second
 
 
 def api(gh, endpoint):
@@ -282,27 +355,44 @@ def parse_native_review(stdout):
 
 def native_review(binary, cwd, baseline, sha, timeout):
     # --model is required even when user settings default to Opus.
-    args = [binary, "-p", f"/code-review high {baseline}..{sha}",
-            "--model", "sonnet",
-            "--output-format", "json", "--permission-mode", "plan",
-            "--max-turns", "48", "--disallowedTools", "Edit,Write,NotebookEdit,mcp__*",
-            "--strict-mcp-config", "--safe-mode", "--setting-sources", "",
-            "--settings", '{"disableAllHooks":true}']
-    return parse_native_review(run(
-        args, cwd=cwd, timeout=timeout, env=claude_subscription_environment()))
+    prompt = f"/code-review high {baseline}..{sha}"
+    options = [
+        "--model", "sonnet",
+        "--output-format", "json", "--permission-mode", "plan",
+        "--max-turns", "48", "--disallowedTools", "Edit,Write,NotebookEdit,mcp__*",
+        "--strict-mcp-config", "--safe-mode", "--setting-sources", "",
+        "--settings", '{"disableAllHooks":true}',
+    ]
+    env = claude_subscription_environment()
+    args = [binary, "-p", prompt, *options]
+    try:
+        stdout = run(args, cwd=cwd, timeout=timeout, env=env)
+    except ReviewInterrupted as interrupted:
+        stdout = resume_claude(
+            binary, interrupted, options, cwd=cwd, timeout=timeout,
+            env=env, phase="native-review")
+    return parse_native_review(stdout)
 
 
-def ask_claude(binary, cwd, prompt, timeout, model="sonnet", env=None, max_turns=16):
+def ask_claude(binary, cwd, prompt, timeout, model="sonnet", env=None,
+               max_turns=16, phase="prompt-review"):
     # --tools restricts which tools exist (unlike --allowedTools).
     # No Bash, shell execution, edits, writes, or MCP tool calls in review mode.
-    stdout = run([binary, "-p", "--output-format", "json",
-                  "--permission-mode", "plan", "--tools", "Read,Glob,Grep",
-                  "--disallowedTools", "mcp__*", "--strict-mcp-config",
-                  "--safe-mode", "--setting-sources", "",
-                  "--settings", '{"disableAllHooks": true}',
-                  "--model", model, "--max-turns", str(max_turns)],
-                 cwd=cwd, timeout=timeout, input_text=prompt,
-                 env=claude_subscription_environment() if env is None else env)
+    options = [
+        "--output-format", "json", "--permission-mode", "plan",
+        "--tools", "Read,Glob,Grep", "--disallowedTools", "mcp__*",
+        "--strict-mcp-config", "--safe-mode", "--setting-sources", "",
+        "--settings", '{"disableAllHooks": true}',
+        "--model", model, "--max-turns", str(max_turns),
+    ]
+    selected_env = claude_subscription_environment() if env is None else env
+    try:
+        stdout = run([binary, "-p", *options], cwd=cwd, timeout=timeout,
+                     input_text=prompt, env=selected_env)
+    except ReviewInterrupted as interrupted:
+        stdout = resume_claude(
+            binary, interrupted, options, cwd=cwd, timeout=timeout,
+            env=selected_env, phase=phase)
     return parse_claude(stdout)
 
 
