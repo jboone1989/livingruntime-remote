@@ -673,6 +673,39 @@ class ReviewerUnitTests(unittest.TestCase):
             with self.assertRaises(reviewer.ReviewUnavailable):
                 reviewer.deepseek_environment()
 
+    def test_stale_resume_marker_requires_fresh_independent_review(self):
+        interrupted = reviewer.ReviewInterrupted(
+            "0d01dcdb-fd91-484e-8175-25437b05f80e")
+        with patch.object(reviewer, "run", side_effect=reviewer.ReviewError(
+                "claude exited 1: Error: No deferred tool marker found in the resumed session")):
+            with self.assertRaisesRegex(reviewer.ReviewUnavailable, "resume marker missing"):
+                reviewer.resume_claude(
+                    "claude", interrupted, [], cwd=Path("/tmp"), timeout=5,
+                    env={}, phase="native-review")
+
+    def test_stale_resume_marker_uses_deepseek_not_claude_retry(self):
+        pr = {"number": 2, "state": "open", "draft": False,
+              "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
+              "base": {"ref": "main"}, "body": ""}
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
+             patch.object(reviewer, "native_review",
+                          side_effect=reviewer.ReviewUnavailable("resume marker missing")), \
+             patch.object(reviewer, "deepseek_review", return_value=[]) as deepseek, \
+             patch.object(reviewer, "ask_claude") as claude, \
+             patch.object(reviewer, "api", return_value=pr), \
+             patch.object(reviewer, "already_commented", return_value=True), \
+             patch.object(reviewer, "commit_status") as status, \
+             patch.object(reviewer, "save_state"):
+            result = reviewer.review(
+                pr, repo="org/repo", gh="gh", claude="claude",
+                work=Path(tmp), state={"prs": {}},
+                state_path=Path(tmp)/"state", timeout=5)
+        self.assertIn("provider=DeepSeek-V4.1-Flash-1017", result)
+        deepseek.assert_called_once()
+        claude.assert_not_called()
+        self.assertEqual(status.call_args.args[3], "success")
+
     def test_quota_falls_back_to_actual_deepseek_review(self):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
