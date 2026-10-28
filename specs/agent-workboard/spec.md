@@ -117,26 +117,29 @@
 
 ### 3.3 状态机
 
-| 状态 | 含义 | 合法后继（示例） |
+| 状态 | 含义 | 合法后继（完整集合） |
 | --- | --- | --- |
-| `PROPOSED` | Agent 提议的子工作，尚未被当前 Goal 授权 | READY / WAITING / REJECTED |
-| `WAITING` | 等待依赖、外部 CI / review 或指定时间；不得虚称 RUNNING | READY / BLOCKED_HUMAN / FAILED |
+| `PROPOSED` | Agent 提议的子工作，尚未被当前 Goal 授权 | READY / WAITING / REJECTED / CANCELLED |
+| `WAITING` | 等待依赖、外部 CI / review、Goal 暂停或指定时间；不得虚称 RUNNING | READY / BLOCKED_HUMAN / FAILED / CANCELLED |
 | `READY` | 依赖已满足且已有授权，可领取 | CLAIMED / CANCELLED |
-| `CLAIMED` | 已原子授予某 worker 有限租约 | RUNNING / READY（租约失效） |
-| `RUNNING` | 存在实际在运行的 Agent/进程证据 | VERIFYING / WAITING / BLOCKED_HUMAN / RETRY_WAIT / FAILED |
-| `VERIFYING` | 正等待已定义的可验证证据 | SUCCEEDED / READY（需修复）/ WAITING / BLOCKED_HUMAN |
-| `BLOCKED_HUMAN` | 只等待用户不可替代的决定/授权 | READY / CANCELLED |
-| `RETRY_WAIT` | 短暂故障，按有界重试策略等待 | READY / FAILED |
-| `SUCCEEDED`, `FAILED`, `CANCELLED` | 终态；用户可新建后续项，但不可假装原项仍执行 | 无 |
+| `CLAIMED` | 已原子授予某 worker 有限租约 | RUNNING / READY（租约失效）/ WAITING（暂停）/ CANCELLED |
+| `RUNNING` | 存在实际在运行的 Agent/进程证据 | VERIFYING / WAITING（安全暂停）/ BLOCKED_HUMAN / RETRY_WAIT / FAILED / CANCELLED |
+| `VERIFYING` | 正等待已定义的可验证证据 | SUCCEEDED / READY（需修复）/ WAITING / BLOCKED_HUMAN / FAILED / CANCELLED |
+| `BLOCKED_HUMAN` | 只等待用户不可替代的决定/授权 | READY / WAITING（依赖未满足）/ FAILED / CANCELLED |
+| `RETRY_WAIT` | 短暂故障，按有界重试策略等待 | READY / WAITING（暂停）/ FAILED / CANCELLED |
+| `SUCCEEDED`, `FAILED`, `CANCELLED`, `REJECTED` | 终态；用户可新建后续项，但不可假装原项仍执行 | 无 |
+
+**初始态**：用户直接创建且已授权的 WorkItem，依赖满足则为 `READY`，否则为 `WAITING`；只有 Agent 自行提出的子项进入 `PROPOSED`。Goal `paused=true` 时禁止新领取，`CLAIMED/RUNNING` 经安全停止和检查点进入 `WAITING`（暂停原因），恢复后依依赖状态回到 `READY`；`cancel_requested` 必须先停止/确认进程与外部副作用边界，再转 `CANCELLED`，不能仅修改状态字符串。所有状态转移通过原子条件更新与审计事件记录。
 
 状态表示 WorkItem 的生命周期，不等于 Agent Session 状态，也不等于收件箱回执的 `PENDING/ACKED`。例如原生 Agent 已结束但 CI 未通过时 WorkItem 仍可在 VERIFYING/WAITING；完成回执未被用户 ACK 不会阻塞其他工作。
 
 ### 3.4 HumanAction
 
-`human_action_id`、`work_item_id`、`type`（批准受限命令/补足凭证/决策/外部不可代办步骤）、`request_scope`、`requested_by`、`context_ref`、`status`、`created_at`、`decided_at`、`resolution_ref`。
+`human_action_id`、`work_item_id`、`type`（批准受限命令/补足凭证/决策/外部不可代办步骤）、`request_scope`、`requested_by`、`context_ref`、**`attempt`、`fence`、`source_revision`（绑定 WorkItem `source_ref.revision` 或不可变内容哈希）**、`status`、`created_at`、`decided_at`、`resolution_ref`。
 
 - 只允许真正无法由当前授权和已配置能力完成的工作进入该列表；缺少权限不等于默许突破权限。
 - 一次明确操作（批准/拒绝/完成配置）后从**原 WorkItem**恢复，保留证据、历史和身份，不重复创建目标。
+- HumanAction 决策必须原子核对请求记录的 `attempt + fence + source_revision` 与当前 WorkItem；任一值已变化（例如租约重领、需求更新）则拒绝旧批准，标记该请求过期，并基于最新快照重新发起必要的人工请求。旧批准**不得**授权新尝试或新版本的外部副作用。
 - **不在网页、ChatGPT 或任务正文收集原始服务器密码/API Key**；通过用户自有机器上的受控凭证配置和现有 opaque handle/lease 机制来完成授权。
 - 人工决策可拒绝；拒绝后依既定策略取消、改派、缩减目标或终止受影响的项，不要求用户不停点击“继续”。
 
@@ -149,7 +152,7 @@
 3. Worker 周期心跳，绑定实际 Agent Session 活性与租约；心跳续期、进度写入、检查点和提交完成必须带有效 `work_item_id + fence`。
 4. 超时或进程失联时由后台核对后释放/重派；旧 Agent 的过期提交一律拒绝。不能仅靠延时未更新认定执行失败，应以 session/process 事实纠正状态。
 5. 对 Git push、发帖、部署、开 PR 等外部副作用，仅 `fence` 不够：还需在执行副作用前校验授权/租约，并使用可核验的幂等标识和已存在资源查询。**只承诺至少一次尝试 + 去重及幂等补偿，绝不承诺天然 exactly-once 外部副作用。**
-6. Item 真正 `SUCCEEDED` 才释放依赖后继工作；完成一项后 Connector 立即尝试下一项（可有短退避），不等每小时自动任务唤醒 ChatGPT。
+6. Item 真正 `SUCCEEDED` 才释放依赖后继工作；若前驱最终 `FAILED`/`CANCELLED`/`REJECTED`，其尚未开始的依赖项留在 `WAITING`，按 Goal 既定策略转 `BLOCKED_HUMAN` 请求取消/改派/替代依赖决定，或自动 `CANCELLED`（若策略已授权）；**绝不自动视作依赖满足，也不无限等待而无原因**。完成一项后 Connector 立即尝试下一项（可有短退避），不等每小时自动任务唤醒 ChatGPT。
 7. 多个 Agent/子 Agent 并行的前提：不同 WorkItem 或受控子任务，互斥资源无冲突；同一 Git worktree 不允许多个写入 Agent 无约束并发；PR 通过现有 CI、review、分支保护/merge queue 处理最终集成。
 
 建议 MVP 初值（均为待验证配置，不是硬编码架构）：每 30 秒 heartbeat，lease 180 秒，每设备并发上限 2，每 WorkItem 自动短暂重试不超过 2 次。先基于真故障注入调整，不扩大范围。
@@ -209,7 +212,7 @@
 ### Phase 1 — 可离开的共享工作闭环（MVP）
 
 - Relay 内新增最小共享 `Goal/WorkItem/WorkClaim/HumanAction` 存储和原子领取/续租/终态提交协议；复用已有用户/设备身份。
-- 单 Connector 的 Worker 能在原生 Agent 完成后自动领取下一项；同一 Item 不被两台主机错误同时认领。
+- **每台 Connector 运行一个持久 Worker；Phase 1 实测至少两台在线 Connector** 共同向同一个 Relay 原子领取。任一 Worker 能在原生 Agent 完成后自动领取下一项；同一 Item 不被两台主机错误同时认领。
 - 最小依赖与 exclusive_key、至少两个设备/两种 Agent 的任务分工、人工阻塞隔离、同一 Item 恢复。
 - 利用现有 MCP 控制台展示 Outbox / Workboard / Human Actions / Inbox 的最小有效界面；只增必需的数据能力，不先造大型 SaaS/PWA。
 - 外部源（例如 GitHub Issue）先**单向导入版本引用、只追加运行证据**；不做完整双向 issue 同步。
