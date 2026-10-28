@@ -157,6 +157,14 @@ def resume_claude(binary, interrupted, options, *, cwd, timeout, env, phase):
         raise ReviewError(
             f"{phase}: Claude remained interrupted after one resume "
             f"(stop_reason={second.stop_reason})") from second
+    except ReviewError as exc:
+        # Claude Code can lose its deferred-tool marker after an interrupted turn.
+        # That session cannot be resumed; require a fresh independent DeepSeek
+        # review instead of repeatedly failing the protected PR check.
+        if "No deferred tool marker found" in str(exc):
+            raise ReviewUnavailable(
+                f"{phase}: Claude resume marker missing") from exc
+        raise
 
 
 def api(gh, endpoint):
@@ -618,7 +626,7 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
                     candidates = ask_claude(
                         claude, directory, documentation_prompt(diff, pr.get("body") or ""),
                         timeout, "sonnet", max_turns=6)
-                except QuotaExceeded:
+                except (QuotaExceeded, ReviewUnavailable):
                     raise
                 except (ReviewError, subprocess.TimeoutExpired, json.JSONDecodeError):
                     # No rubber-stamp on exhausted turns: require the full R01–R18
@@ -630,7 +638,7 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
             else:
                 try:
                     candidates = native_review(claude, directory, baseline, sha, timeout)
-                except QuotaExceeded:
+                except (QuotaExceeded, ReviewUnavailable):
                     raise
                 except (ReviewError, subprocess.TimeoutExpired, json.JSONDecodeError):
                     # Invalid or missing native JSON is not an approval. Require
@@ -647,7 +655,7 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
                                    verify_prompt(candidates, diff), timeout, "sonnet")
                         if candidates else [])
             findings = filter_findings(verified, diff)
-        except QuotaExceeded:
+        except (QuotaExceeded, ReviewUnavailable):
             provider = "DeepSeek-V4.1-Flash-1017"
             findings = deepseek_review(
                 claude, directory, diff, pr.get("body") or "", timeout)
