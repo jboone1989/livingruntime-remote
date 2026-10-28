@@ -582,6 +582,78 @@ class ReviewerUnitTests(unittest.TestCase):
             reviewer.parse_native_review(json.dumps({
                 "is_error": True, "result": "You've hit your session limit"}))
 
+    def test_incomplete_claude_json_is_detected_before_truncation(self):
+        session_id = "0d01dcdb-fd91-484e-8175-25437b05f80e"
+        payload = json.dumps({
+            "duration_api_ms": 163186,
+            "usage": {"cache_read_input_tokens": 763008, "output_tokens": 30578},
+            "stop_reason": "tool_use",
+            "session_id": session_id,
+        })
+
+        class Process:
+            returncode = 1
+            stderr = ""
+            stdout = payload
+
+        with patch.object(reviewer.subprocess, "run", return_value=Process()):
+            with self.assertRaises(reviewer.ReviewInterrupted) as caught:
+                reviewer.run(["claude", "-p", "test"])
+        self.assertEqual(caught.exception.session_id, session_id)
+        self.assertEqual(caught.exception.stop_reason, "tool_use")
+
+    def test_prompt_review_resumes_same_interrupted_session_once(self):
+        session_id = "0d01dcdb-fd91-484e-8175-25437b05f80e"
+        interrupted = reviewer.ReviewInterrupted(session_id)
+        completed = json.dumps({
+            "subtype": "success", "is_error": False,
+            "result": "{\\\"findings\\\":[]}",
+        })
+        with patch.object(reviewer, "run",
+                          side_effect=[interrupted, completed]) as cli:
+            self.assertEqual(
+                reviewer.ask_claude("claude", Path("/tmp"), "review", 60), [])
+        self.assertEqual(cli.call_count, 2)
+        resumed = cli.call_args_list[1]
+        self.assertEqual(resumed.args[0][:4],
+                         ["claude", "-p", "--resume", session_id])
+        self.assertIsNone(resumed.kwargs.get("input_text"))
+        self.assertEqual(
+            resumed.kwargs["env"]["CLAUDE_CODE_RESUME_INTERRUPTED_TURN"], "1")
+        self.assertEqual(
+            resumed.kwargs["env"]["CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS"],
+            "600000")
+        self.assertIn("--tools", resumed.args[0])
+
+    def test_second_interruption_remains_error_and_never_changes_provider(self):
+        session_id = "0d01dcdb-fd91-484e-8175-25437b05f80e"
+        interrupted = reviewer.ReviewInterrupted(session_id)
+        with patch.object(reviewer, "run",
+                          side_effect=[interrupted, interrupted]) as cli:
+            with self.assertRaisesRegex(
+                    reviewer.ReviewError, "remained interrupted after one resume"):
+                reviewer.ask_claude(
+                    "claude", Path("/tmp"), "review", 60, phase="verification")
+        self.assertEqual(cli.call_count, 2)
+
+        pr = {"number": 2, "state": "open", "draft": False,
+              "head": {"sha": "e"*40, "repo": {"full_name": "org/repo"}},
+              "base": {"ref": "main"}, "body": ""}
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(reviewer, "checkout",
+                          return_value=(Path(tmp), DIFF, "a"*40)), \
+             patch.object(reviewer, "native_review",
+                          side_effect=reviewer.ReviewInterrupted(session_id)), \
+             patch.object(reviewer, "ask_claude",
+                          side_effect=reviewer.ReviewError("still incomplete")), \
+             patch.object(reviewer, "deepseek_review") as deepseek:
+            with self.assertRaisesRegex(reviewer.ReviewError, "still incomplete"):
+                reviewer.review(
+                    pr, repo="org/repo", gh="gh", claude="claude",
+                    work=Path(tmp), state={"prs": {}},
+                    state_path=Path(tmp)/"state", timeout=5)
+        deepseek.assert_not_called()
+
     def test_deepseek_env_is_scoped_and_uses_v41_flash(self):
         with patch.dict(reviewer.os.environ,
                         {"DEEPSEEK_API_KEY": "fake-review-only-key",
