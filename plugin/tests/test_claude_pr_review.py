@@ -607,7 +607,7 @@ class ReviewerUnitTests(unittest.TestCase):
         interrupted = reviewer.ReviewInterrupted(session_id)
         completed = json.dumps({
             "subtype": "success", "is_error": False,
-            "result": "{\\\"findings\\\":[]}",
+            "result": json.dumps({"findings": []}),
         })
         with patch.object(reviewer, "run",
                           side_effect=[interrupted, completed]) as cli:
