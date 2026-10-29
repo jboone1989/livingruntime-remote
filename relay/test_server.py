@@ -460,12 +460,14 @@ class RelayServerTests(unittest.TestCase):
                 observed.return_value = {"session_id": session,
                                          "agent_status": {"status": "RUNNING"}}
                 blocked = client.post("/device/pi-repair-result",
-                    json={"session_id": session, "manifest": manifest})
+                    json={"session_id": session, "manifest": manifest},
+                    headers={"authorization": "Bearer fixture-cn"})
                 self.assertEqual(blocked.status_code, 403)
                 observed.return_value = {"session_id": session,
                                          "agent_status": {"status": "SUCCEEDED"}}
                 accepted = client.post("/device/pi-repair-result",
-                    json={"session_id": session, "manifest": manifest})
+                    json={"session_id": session, "manifest": manifest},
+                    headers={"authorization": "Bearer fixture-cn"})
                 self.assertEqual(accepted.status_code, 200, accepted.text)
             pending = client.post("/device/pi-repair-inbox", json={"action": "pending"},
                                   headers=central_headers)
