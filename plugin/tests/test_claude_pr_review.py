@@ -441,29 +441,31 @@ class ReviewerUnitTests(unittest.TestCase):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "e"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "main"}, "body": ""}
-        with tempfile.TemporaryDirectory() as tmp, (
-            patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)),
+        with (
+            patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "a"*40)),
             patch.object(reviewer, "model_review",
                          side_effect=reviewer.ReviewError("Model provider unavailable")),
         ):
             with self.assertRaisesRegex(reviewer.ReviewError, "Model provider unavailable"):
-                reviewer.review(pr, repo="org/repo", gh="gh", work=Path(tmp),
-                                state={"prs": {}}, state_path=Path(tmp)/"state", timeout=5)
+                reviewer.review(pr, repo="org/repo", gh="gh", work=Path("/tmp"),
+                                state={"prs": {}}, state_path=Path("/tmp/unused"),
+                                timeout=5)
 
     def test_review_uses_only_the_configured_model_provider(self):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "main"}, "body": ""}
-        with tempfile.TemporaryDirectory() as tmp, (
-            patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)),
+        with (
+            patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "a"*40)),
             patch.object(reviewer, "model_review", return_value=[]) as model,
             patch.object(reviewer, "api", return_value=pr),
             patch.object(reviewer, "already_commented", return_value=True),
             patch.object(reviewer, "commit_status") as status,
             patch.object(reviewer, "save_state"),
         ):
-            result = reviewer.review(pr, repo="org/repo", gh="gh", work=Path(tmp),
-                                     state={"prs": {}}, state_path=Path(tmp)/"state", timeout=5)
+            result = reviewer.review(pr, repo="org/repo", gh="gh", work=Path("/tmp"),
+                                     state={"prs": {}}, state_path=Path("/tmp/unused"),
+                                     timeout=5)
         self.assertIn("provider=deepseek-flash", result)
         model.assert_called_once()
         self.assertEqual(status.call_args.args[3], "success")
@@ -472,16 +474,17 @@ class ReviewerUnitTests(unittest.TestCase):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "main"}, "body": ""}
-        with tempfile.TemporaryDirectory() as tmp, (
-            patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)),
+        with (
+            patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "a"*40)),
             patch.object(reviewer, "model_review", return_value=[]) as model,
             patch.object(reviewer, "api", return_value=pr),
             patch.object(reviewer, "already_commented", return_value=True),
             patch.object(reviewer, "commit_status") as status,
             patch.object(reviewer, "save_state"),
         ):
-            result = reviewer.review(pr, repo="org/repo", gh="gh", work=Path(tmp),
-                                     state={"prs": {}}, state_path=Path(tmp)/"state", timeout=5)
+            result = reviewer.review(pr, repo="org/repo", gh="gh", work=Path("/tmp"),
+                                     state={"prs": {}}, state_path=Path("/tmp/unused"),
+                                     timeout=5)
         self.assertIn("provider=deepseek-flash", result)
         model.assert_called_once()
         self.assertEqual(status.call_args.args[3], "success")
@@ -490,8 +493,8 @@ class ReviewerUnitTests(unittest.TestCase):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "main"}, "body": ""}
-        with tempfile.TemporaryDirectory() as tmp, (
-            patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)),
+        with (
+            patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "a"*40)),
             patch.object(reviewer, "model_review", return_value=[]) as model,
             patch.object(reviewer, "api", return_value=pr),
             patch.object(reviewer, "already_commented", return_value=False),
@@ -499,8 +502,9 @@ class ReviewerUnitTests(unittest.TestCase):
             patch.object(reviewer, "commit_status") as status,
             patch.object(reviewer, "save_state"),
         ):
-            result = reviewer.review(pr, repo="org/repo", gh="gh", work=Path(tmp),
-                                     state={"prs": {}}, state_path=Path(tmp)/"state", timeout=5)
+            result = reviewer.review(pr, repo="org/repo", gh="gh", work=Path("/tmp"),
+                                     state={"prs": {}}, state_path=Path("/tmp/unused"),
+                                     timeout=5)
         self.assertIn("provider=deepseek-flash", result)
         model.assert_called_once()
         self.assertIn("deepseek-flash", comment.call_args.args[3])
@@ -510,16 +514,17 @@ class ReviewerUnitTests(unittest.TestCase):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "d"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "main"}, "body": ""}
-        with tempfile.TemporaryDirectory() as tmp, (
-            patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)),
+        with (
+            patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "a"*40)),
             patch.object(reviewer, "model_review", return_value=[]) as model,
             patch.object(reviewer, "api", return_value=pr),
             patch.object(reviewer, "already_commented", return_value=True),
             patch.object(reviewer, "commit_status"),
             patch.object(reviewer, "save_state"),
         ):
-            result = reviewer.review(pr, repo="org/repo", gh="gh", work=Path(tmp),
-                                     state={"prs": {}}, state_path=Path(tmp)/"state", timeout=5)
+            result = reviewer.review(pr, repo="org/repo", gh="gh", work=Path("/tmp"),
+                                     state={"prs": {}}, state_path=Path("/tmp/unused"),
+                                     timeout=5)
         self.assertIn("provider=deepseek-flash", result)
         model.assert_called_once()
 
