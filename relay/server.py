@@ -30,6 +30,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from auth import verifier_from_env
 from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
+from workboard import Workboard
 from mcp_events import (
     CallbackEndpointError,
     COGNITION_EVENT_NAME,
@@ -3646,6 +3647,41 @@ def create_mcp(
     async def diagnostics() -> dict[str, Any]:
         return await relay.call(_principal("remote:read"), "diagnostics", {})
 
+    if os.environ.get("LIVINGRUNTIME_WORKBOARD_DRAFT") == "1":
+        board = Workboard(relay.store)
+
+        @server.tool(name="workboard_create", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+        async def workboard_create(device_id: str, agent_id: str, adapter_id: str, project: str,
+                                   local_device: str, goal: str, source_revision: str,
+                                   idempotency_key: str, exclusive_key: str,
+                                   depends_on: list[str] | None = None,
+                                   acceptance_argv: list[str] | None = None) -> dict[str, Any]:
+            """DRAFT: authorize one fixed-revision task on an explicit machine/agent placement."""
+            return board.create(_principal("remote:write"), device_id=device_id, agent_id=agent_id,
+                                adapter_id=adapter_id, project=project, local_device=local_device,
+                                goal=goal, source_revision=source_revision, idempotency_key=idempotency_key,
+                                exclusive_key=exclusive_key, depends_on=depends_on, acceptance_argv=acceptance_argv)
+
+        @server.tool(name="workboard_list", annotations=ToolAnnotations(readOnlyHint=True))
+        async def workboard_list() -> dict[str, Any]:
+            """Read this owner's draft work items and pending human actions."""
+            user = _principal("remote:read")
+            return {"items": board.list_items(user), "human_actions": board.human_actions(user)}
+
+        @server.tool(name="workboard_resolve", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+        async def workboard_resolve(action_id: str, decision: str, resolution: str,
+                                    stopped: bool = False) -> dict[str, Any]:
+            """Resolve a current human request after reconciling process and side effects; grants no CLI tool approval."""
+            return board.resolve(_principal("remote:write"), action_id, decision=decision,
+                                 resolution=resolution, stopped=stopped)
+
+        @server.tool(name="workboard_verify", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+        async def workboard_verify(item_id: str, fence: int, source_revision: str,
+                                   evidence_refs: list[str]) -> dict[str, Any]:
+            """Accept checked evidence for this exact revision/attempt and release dependent tasks."""
+            return board.verify(_principal("remote:write"), item_id, fence=fence,
+                                source_revision=source_revision, evidence_refs=evidence_refs)
+
     return server
 
 
@@ -3933,6 +3969,28 @@ nav a{{margin-right:18px}}
             return JSONResponse({"ok": True})
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
+
+    async def device_workboard(request: Request):
+        if os.environ.get("LIVINGRUNTIME_WORKBOARD_DRAFT") != "1":
+            return JSONResponse({"error": "draft workboard disabled"}, status_code=404)
+        try:
+            device = store.authenticate_device(_device_token(request))
+            body = await request.json()
+            board = Workboard(store)
+            operation = body.pop('operation')
+            agent_id = body.pop('agent_id')
+            if operation == 'claim':
+                if body:
+                    raise ValueError('unexpected claim arguments')
+                item = board.claim(device['user_sub'], device['device_id'], agent_id)
+            else:
+                item = board.update(device['user_sub'], device['device_id'], agent_id,
+                                    operation=operation, **body)
+            return JSONResponse({'item': item})
+        except PermissionError as exc:
+            return JSONResponse({'error': str(exc)}, status_code=403)
+        except (KeyError, TypeError, ValueError) as exc:
+            return JSONResponse({'error': str(exc)}, status_code=400)
 
     async def device_event(request: Request):
         try:
@@ -4223,6 +4281,7 @@ nav a{{margin-right:18px}}
         Route("/device/pair", pair, methods=["POST"]),
         Route("/device/poll", poll, methods=["POST"]),
         Route("/device/result", complete, methods=["POST"]),
+        Route("/device/workboard", device_workboard, methods=["POST"]),
         Route("/device/event", device_event, methods=["POST"]),
         Mount("/", app=mcp_app),
     ])

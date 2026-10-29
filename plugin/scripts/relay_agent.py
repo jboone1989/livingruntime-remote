@@ -49,6 +49,8 @@ def _request(base: str, path: str, body: dict[str, Any],
         with urllib.request.build_opener(NoRedirect).open(req, timeout=timeout) as response:
             payload = json.loads(response.read(1048576).decode())
     except urllib.error.HTTPError as exc:
+        if path == "/device/workboard" and exc.code == 403:
+            raise PermissionError("workboard device or lease authority rejected") from None
         # Relay returns an ordinary 401 JSON body for invalid/expired codes.
         # Do not dump a Python traceback or mistaken login instructions.
         if path == "/device/pair" and exc.code == 401:
@@ -244,6 +246,9 @@ def _handle_claimed_task(cfg: dict[str, Any], task: dict[str, Any]) -> None:
 
 def serve(config_path: Path, once: bool = False) -> None:
     cfg = _load(config_path)
+    from workboard_worker import configured_workers
+    workboard_workers = configured_workers(cfg, _request)
+    workboard_pending = {}
     max_workers = min(
         8,
         max(2, int(os.environ.get("LIVINGRUNTIME_CONNECTOR_WORKERS", "4"))),
@@ -265,6 +270,17 @@ def serve(config_path: Path, once: bool = False) -> None:
                 for future in finished:
                     pending.remove(future)
                     future.result()
+
+                for worker in workboard_workers:
+                    future = workboard_pending.get(worker)
+                    if future is not None and future.done():
+                        del workboard_pending[worker]
+                        try:
+                            future.result()
+                        except Exception as exc:
+                            print(f"workboard tick failed: {type(exc).__name__}: {exc}", flush=True)
+                    if worker not in workboard_pending:
+                        workboard_pending[worker] = pool.submit(worker.tick)
 
                 if event_future is not None and event_future.done():
                     delivered = bool(event_future.result())
