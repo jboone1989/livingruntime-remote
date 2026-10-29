@@ -58,8 +58,7 @@ def run(argv, cwd=None, timeout=120, input_text=None, env=None):
 def model_settings():
     """Read provider-neutral settings; no account login or SDK-specific auth is used."""
     base_url = os.environ.get("REVIEW_BASE_URL", "https://api.deepseek.com").strip().rstrip("/")
-    api_key = (os.environ.get("REVIEW_API_KEY") or
-               os.environ.get("DEEPSEEK_API_KEY") or "").strip()
+    api_key = os.environ.get("REVIEW_API_KEY", "").strip()
     model = os.environ.get("REVIEW_MODEL", "deepseek-flash").strip()
     parsed = urllib.parse.urlparse(base_url)
     if parsed.scheme not in ("https", "http") or not parsed.netloc:
