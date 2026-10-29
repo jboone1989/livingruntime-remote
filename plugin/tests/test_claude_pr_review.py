@@ -22,31 +22,32 @@ DIFF = """diff --git a/src/a.mjs b/src/a.mjs
 """
 
 class ReviewerUnitTests(unittest.TestCase):
-    def test_document_only_uses_a_focused_real_claude_review(self):
+    def test_document_only_uses_deepseek_review(self):
         document_diff = ("diff --git a/specs/008/spec.md b/specs/008/spec.md\n"
                          "--- a/specs/008/spec.md\n+++ b/specs/008/spec.md\n"
                          "@@ -1 +1 @@\n-old\n+new acceptance criterion\n")
         self.assertTrue(reviewer.documentation_only(document_diff))
-        self.assertIn("\nPR BODY (untrusted):\n", reviewer.documentation_prompt(document_diff, "approved"))
+        self.assertIn("\nPR BODY (untrusted):\n",
+                      reviewer.documentation_prompt(document_diff, "approved"))
         pr = {"number": 19, "state": "open", "draft": False,
               "head": {"sha": "a"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "develop"}, "body": "document the approved deployment"}
-        state = {"prs": {}}
-        with (patch.object(reviewer, "checkout", return_value=(Path("/tmp"), document_diff, "b"*40)),
+        with (patch.object(reviewer, "checkout",
+                           return_value=(Path("/tmp"), document_diff, "b"*40)),
+              patch.object(reviewer, "deepseek_review", return_value=[]) as deepseek,
               patch.object(reviewer, "native_review") as native,
-              patch.object(reviewer, "ask_claude", return_value=[]) as ask,
+              patch.object(reviewer, "ask_claude") as legacy,
               patch.object(reviewer, "api", return_value=pr),
               patch.object(reviewer, "already_commented", return_value=True),
               patch.object(reviewer, "commit_status") as status,
               patch.object(reviewer, "save_state")):
             reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
-                            work=Path("/tmp"), state=state,
+                            work=Path("/tmp"), state={"prs": {}},
                             state_path=Path("/tmp/unused"), timeout=360)
+            deepseek.assert_called_once_with(
+                "claude", Path("/tmp"), document_diff, pr["body"], 360)
             native.assert_not_called()
-            ask.assert_called_once()
-            self.assertIn("documentation-only", ask.call_args.args[2])
-            self.assertEqual(ask.call_args.args[3], 360)
-            self.assertEqual(ask.call_args.kwargs["max_turns"], 6)
+            legacy.assert_not_called()
             self.assertEqual(status.call_args.args[3], "success")
 
     def test_unknown_source_types_cannot_be_misclassified_as_docs(self):
@@ -57,50 +58,33 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertFalse(reviewer.documentation_only(diff), path)
         self.assertFalse(reviewer.documentation_only("diff without a parseable path"))
 
-    def test_incomplete_document_review_requires_full_checklist_fallback(self):
+    def test_incomplete_document_review_retries_full_deepseek_checklist(self):
         doc = ("diff --git a/specs/x/spec.md b/specs/x/spec.md\n"
                "--- a/specs/x/spec.md\n+++ b/specs/x/spec.md\n"
                "@@ -1 +1 @@\n-old\n+new\n")
-        pr = {"number": 19, "state": "open", "draft": False,
-              "head": {"sha": "a"*40, "repo": {"full_name": "org/repo"}},
-              "base": {"ref": "develop"}, "body": "approved document"}
-        with (patch.object(reviewer, "checkout", return_value=(Path("/tmp"), doc, "b"*40)),
-              patch.object(reviewer, "native_review") as native,
-              patch.object(reviewer, "ask_claude", side_effect=[reviewer.ReviewError("Missing Claude result"), []]) as ask,
-              patch.object(reviewer, "api", return_value=pr),
-              patch.object(reviewer, "already_commented", return_value=True),
-              patch.object(reviewer, "commit_status") as status,
-              patch.object(reviewer, "save_state")):
-            reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
-                            work=Path("/tmp"), state={"prs": {}},
-                            state_path=Path("/tmp/unused"), timeout=360)
-            native.assert_not_called()
+        with (patch.dict(reviewer.os.environ, {"DEEPSEEK_API_KEY": "fake"}, clear=True),
+              patch.object(reviewer, "ask_claude",
+                           side_effect=[reviewer.ReviewError("Missing model result"), []]) as ask):
+            self.assertEqual(
+                reviewer.deepseek_review("claude", Path("/tmp"), doc,
+                                         "approved document", 360), [])
             self.assertEqual(ask.call_count, 2)
             self.assertIn("documentation-only", ask.call_args_list[0].args[2])
             self.assertIn("TRUSTED REVIEW CHECKLIST", ask.call_args_list[1].args[2])
-            self.assertEqual(status.call_args.args[3], "success")
+            self.assertEqual(ask.call_args_list[0].kwargs["model"], "deepseek-flash[1m]")
 
-    def test_malformed_document_json_uses_full_checklist_fallback(self):
+    def test_malformed_document_review_retries_full_deepseek_checklist(self):
         diff = ("diff --git a/specs/x/spec.md b/specs/x/spec.md\n"
                 "--- a/specs/x/spec.md\n+++ b/specs/x/spec.md\n"
                 "@@ -1 +1 @@\n-old\n+new\n")
-        pr = {"number": 20, "state": "open", "draft": False,
-              "head": {"sha": "a"*40, "repo": {"full_name": "org/repo"}},
-              "base": {"ref": "develop"}, "body": "spec"}
-        with (patch.object(reviewer, "checkout", return_value=(Path("/tmp"), diff, "b"*40)),
-              patch.object(reviewer, "native_review") as native,
-              patch.object(reviewer, "ask_claude", side_effect=[json.JSONDecodeError("bad", "{", 0), []]) as ask,
-              patch.object(reviewer, "api", return_value=pr),
-              patch.object(reviewer, "already_commented", return_value=True),
-              patch.object(reviewer, "commit_status") as status,
-              patch.object(reviewer, "save_state")):
-            reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
-                            work=Path("/tmp"), state={"prs": {}},
-                            state_path=Path("/tmp/unused"), timeout=360)
-            native.assert_not_called()
+        malformed = json.JSONDecodeError("bad", "{", 0)
+        with (patch.dict(reviewer.os.environ, {"DEEPSEEK_API_KEY": "fake"}, clear=True),
+              patch.object(reviewer, "ask_claude",
+                           side_effect=[malformed, []]) as ask):
+            self.assertEqual(
+                reviewer.deepseek_review("claude", Path("/tmp"), diff, "spec", 360), [])
             self.assertEqual(ask.call_count, 2)
             self.assertIn("TRUSTED REVIEW CHECKLIST", ask.call_args_list[1].args[2])
-            self.assertEqual(status.call_args.args[3], "success")
 
     def test_trusted_agent_instructions_still_get_deep_review(self):
         for path in ("docs/claude-review-checklist.md", "plugin/skills/deploy/SKILL.md",
@@ -161,9 +145,11 @@ class ReviewerUnitTests(unittest.TestCase):
         state = {"prs": {"2": {"reviewed": ["s1", "s2", "s3"],
                                 "outcomes": {"s1": True, "s2": True, "s3": True},
                                 "limited": ["a"*40], "failures": {"a"*40: 2}}}}
-        with (patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "b"*40)) as checkout,
-              patch.object(reviewer, "native_review", return_value=[]),
-              patch.object(reviewer, "ask_claude", return_value=[]),
+        with (patch.object(reviewer, "checkout",
+                           return_value=(Path("/tmp"), DIFF, "b"*40)) as checkout,
+              patch.object(reviewer, "deepseek_review", return_value=[]) as deepseek,
+              patch.object(reviewer, "native_review") as native,
+              patch.object(reviewer, "ask_claude") as legacy,
               patch.object(reviewer, "api", return_value=pr),
               patch.object(reviewer, "already_commented", return_value=True),
               patch.object(reviewer, "commit_status") as status,
@@ -174,10 +160,11 @@ class ReviewerUnitTests(unittest.TestCase):
                 state_path=Path("/tmp/unused"), timeout=5)
             self.assertIn("reviewed:", result)
             checkout.assert_called_once()
+            deepseek.assert_called_once()
+            native.assert_not_called()
+            legacy.assert_not_called()
             self.assertEqual(status.call_args.args[3], "success")
             self.assertIn("a"*40, state["prs"]["2"]["reviewed"])
-
-            # Re-dispatching the same SHA still cannot fabricate a second review.
             again = reviewer.review(
                 pr, repo="org/repo", gh="gh", claude="claude",
                 work=Path("/tmp"), state=state,
@@ -338,51 +325,48 @@ class ReviewerUnitTests(unittest.TestCase):
         finding = {"path": "src/a.mjs", "line": 4, "confidence": 96,
                    "severity": "important", "reason": "silenced error",
                    "evidence": "catch returns success", "fix": "propagate error"}
-        state = {"prs": {}}
         with patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "a"*40)), \
-             patch.object(reviewer, "native_review", return_value=[]), \
-             patch.object(reviewer, "ask_claude", side_effect=[[finding], [finding]]) as qa, \
+             patch.object(reviewer, "deepseek_review", return_value=[finding]) as deepseek, \
+             patch.object(reviewer, "native_review") as native, \
+             patch.object(reviewer, "ask_claude") as legacy, \
              patch.object(reviewer, "api", return_value=pr), \
              patch.object(reviewer, "already_commented", return_value=True), \
              patch.object(reviewer, "commit_status") as status, \
              patch.object(reviewer, "save_state"):
             reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
-                            work=Path("/tmp"), state=state,
+                            work=Path("/tmp"), state={"prs": {}},
                             state_path=Path("/tmp/unused"), timeout=5)
-            self.assertEqual(qa.call_count, 2)
+            deepseek.assert_called_once()
+            native.assert_not_called()
+            legacy.assert_not_called()
             self.assertEqual(status.call_args.args[3], "failure")
 
-    def test_native_invalid_json_requires_real_claude_fallback(self):
-        pr = {"number": 2, "state": "open", "draft": False,
-              "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
-              "base": {"ref": "main"}, "body": "approved spec"}
-        state = {"prs": {}}
-        malformed = json.JSONDecodeError("empty native result", "", 0)
-        with patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "a"*40)), \
-             patch.object(reviewer, "native_review", side_effect=malformed), \
-             patch.object(reviewer, "ask_claude", return_value=[]) as ask, \
-             patch.object(reviewer, "api", return_value=pr), \
-             patch.object(reviewer, "already_commented", return_value=True), \
-             patch.object(reviewer, "commit_status") as status, \
-             patch.object(reviewer, "save_state"):
-            reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
-                            work=Path("/tmp"), state=state,
-                            state_path=Path("/tmp/unused"), timeout=5)
-            # Approval cannot come from malformed native output: Claude must
-            # actually run the full trusted quality checklist.
-            self.assertEqual(ask.call_count, 1)
-            self.assertIn("R01", ask.call_args.args[2])
-            self.assertEqual(status.call_args.args[3], "success")
+    def test_deepseek_review_verifies_candidates_with_the_same_provider(self):
+        candidate = {"path": "src/a.mjs", "line": 4, "confidence": 96,
+                     "severity": "important", "reason": "silenced error",
+                     "evidence": "catch returns success", "fix": "propagate error"}
+        with (patch.dict(reviewer.os.environ, {"DEEPSEEK_API_KEY": "fake"}, clear=True),
+              patch.object(reviewer, "ask_claude",
+                           side_effect=[[candidate], [candidate]]) as ask):
+            findings = reviewer.deepseek_review(
+                "claude", Path("/tmp"), DIFF, "approved spec", 60)
+        self.assertEqual(findings, [candidate])
+        self.assertEqual(ask.call_count, 2)
+        for call in ask.call_args_list:
+            self.assertEqual(call.kwargs["model"], "deepseek-flash[1m]")
+            self.assertEqual(
+                call.kwargs["env"]["ANTHROPIC_BASE_URL"],
+                "https://api.deepseek.com/anthropic")
+            self.assertEqual(call.kwargs["env"]["ANTHROPIC_AUTH_TOKEN"], "fake")
 
     def test_clean_review_resets_round_counter(self):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "main"}}
         state = {"prs": {"2": {"reviewed": ["s1", "s2", "s3"],
-                                  "outcomes": {"s1": True, "s2": False, "s3": False}}}}
+                                "outcomes": {"s1": True, "s2": False, "s3": False}}}}
         with patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "a"*40)), \
-             patch.object(reviewer, "native_review", return_value=[]), \
-             patch.object(reviewer, "ask_claude", return_value=[]), \
+             patch.object(reviewer, "deepseek_review", return_value=[]), \
              patch.object(reviewer, "api", return_value=pr), \
              patch.object(reviewer, "already_commented", return_value=True), \
              patch.object(reviewer, "commit_status"), \
@@ -457,7 +441,7 @@ class ReviewerUnitTests(unittest.TestCase):
                 self.assertEqual(git("--git-dir", cache, "for-each-ref",
                                      "--format=%(refname)", "refs/heads"), "")
 
-    def test_temporary_review_checkout_cleaned_when_claude_fails(self):
+    def test_temporary_review_checkout_cleaned_when_deepseek_fails(self):
         pr = {"number": 17, "state": "open", "draft": False,
               "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "develop"}}
@@ -465,11 +449,9 @@ class ReviewerUnitTests(unittest.TestCase):
             work = Path(tmp) / "reviews"
             with patch.object(reviewer, "checkout", return_value=(
                      work / "source", DIFF, "a"*40)), \
-                 patch.object(reviewer, "native_review",
-                              side_effect=reviewer.ReviewError("Claude unavailable")), \
-                 patch.object(reviewer, "ask_claude",
-                              side_effect=reviewer.ReviewError("Claude unavailable")):
-                with self.assertRaisesRegex(reviewer.ReviewError, "Claude unavailable"):
+                 patch.object(reviewer, "deepseek_review",
+                              side_effect=reviewer.ReviewError("DeepSeek unavailable")):
+                with self.assertRaisesRegex(reviewer.ReviewError, "DeepSeek unavailable"):
                     reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
                                     work=work, state={"prs": {}},
                                     state_path=Path(tmp) / "state.json", timeout=5)
@@ -625,34 +607,23 @@ class ReviewerUnitTests(unittest.TestCase):
             "600000")
         self.assertIn("--tools", resumed.args[0])
 
-    def test_second_interruption_remains_error_and_never_changes_provider(self):
-        session_id = "0d01dcdb-fd91-484e-8175-25437b05f80e"
-        interrupted = reviewer.ReviewInterrupted(session_id)
-        with patch.object(reviewer, "run",
-                          side_effect=[interrupted, interrupted]) as cli:
-            with self.assertRaisesRegex(
-                    reviewer.ReviewError, "remained interrupted after one resume"):
-                reviewer.ask_claude(
-                    "claude", Path("/tmp"), "review", 60, phase="verification")
-        self.assertEqual(cli.call_count, 2)
-
+    def test_deepseek_failure_never_falls_back_to_claude(self):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "e"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "main"}, "body": ""}
         with tempfile.TemporaryDirectory() as tmp, \
-             patch.object(reviewer, "checkout",
-                          return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "native_review",
-                          side_effect=reviewer.ReviewInterrupted(session_id)), \
-             patch.object(reviewer, "ask_claude",
-                          side_effect=reviewer.ReviewError("still incomplete")), \
-             patch.object(reviewer, "deepseek_review") as deepseek:
-            with self.assertRaisesRegex(reviewer.ReviewError, "still incomplete"):
+             patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
+             patch.object(reviewer, "deepseek_review",
+                          side_effect=reviewer.ReviewError("DeepSeek unavailable")), \
+             patch.object(reviewer, "native_review") as native, \
+             patch.object(reviewer, "ask_claude") as legacy:
+            with self.assertRaisesRegex(reviewer.ReviewError, "DeepSeek unavailable"):
                 reviewer.review(
                     pr, repo="org/repo", gh="gh", claude="claude",
                     work=Path(tmp), state={"prs": {}},
                     state_path=Path(tmp)/"state", timeout=5)
-        deepseek.assert_not_called()
+        native.assert_not_called()
+        legacy.assert_not_called()
 
     def test_deepseek_env_is_scoped_and_uses_v41_flash(self):
         with patch.dict(reviewer.os.environ,
@@ -660,14 +631,15 @@ class ReviewerUnitTests(unittest.TestCase):
                          "ANTHROPIC_API_KEY": "old-claude-key",
                          "ANTHROPIC_BASE_URL": "old"}, clear=True):
             env = reviewer.deepseek_environment()
-        self.assertEqual(env["ANTHROPIC_MODEL"], "claude-sonnet-4-5-20250929")
-        self.assertEqual(env["ANTHROPIC_DEFAULT_SONNET_MODEL"], "claude-sonnet-4-5-20250929")
+        self.assertEqual(env["ANTHROPIC_MODEL"], "deepseek-flash[1m]")
+        self.assertEqual(env["ANTHROPIC_DEFAULT_SONNET_MODEL"], "deepseek-flash[1m]")
         self.assertEqual(env["CLAUDE_CODE_SUBAGENT_MODEL"], "deepseek-flash")
         self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic")
         # DeepSeek Anthropic endpoint maps native claude-sonnet* to Flash.
         self.assertEqual(env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "786432")
         self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "fake-review-only-key")
         self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", env)
         self.assertNotIn("DEEPSEEK_API_KEY", env)
         with patch.dict(reviewer.os.environ, {}, clear=True):
             with self.assertRaises(reviewer.ReviewUnavailable):
@@ -695,16 +667,15 @@ class ReviewerUnitTests(unittest.TestCase):
                     "claude", first, [], cwd=Path("/tmp"), timeout=5,
                     env={}, phase="native-review")
 
-    def test_stale_resume_marker_uses_deepseek_not_claude_retry(self):
+    def test_review_never_retries_with_claude_after_a_stale_resume_error(self):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "main"}, "body": ""}
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "native_review",
-                          side_effect=reviewer.ReviewUnavailable("resume marker missing")), \
              patch.object(reviewer, "deepseek_review", return_value=[]) as deepseek, \
-             patch.object(reviewer, "ask_claude") as claude, \
+             patch.object(reviewer, "native_review") as native, \
+             patch.object(reviewer, "ask_claude") as legacy, \
              patch.object(reviewer, "api", return_value=pr), \
              patch.object(reviewer, "already_commented", return_value=True), \
              patch.object(reviewer, "commit_status") as status, \
@@ -715,19 +686,19 @@ class ReviewerUnitTests(unittest.TestCase):
                 state_path=Path(tmp)/"state", timeout=5)
         self.assertIn("provider=DeepSeek-V4.1-Flash-1017", result)
         deepseek.assert_called_once()
-        claude.assert_not_called()
+        native.assert_not_called()
+        legacy.assert_not_called()
         self.assertEqual(status.call_args.args[3], "success")
 
-    def test_claude_timeout_uses_full_independent_deepseek_review(self):
+    def test_code_review_uses_deepseek_as_the_primary_provider(self):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "main"}, "body": ""}
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "native_review",
-                          side_effect=subprocess.TimeoutExpired(["claude"], 180)), \
              patch.object(reviewer, "deepseek_review", return_value=[]) as deepseek, \
-             patch.object(reviewer, "ask_claude") as claude, \
+             patch.object(reviewer, "native_review") as native, \
+             patch.object(reviewer, "ask_claude") as legacy, \
              patch.object(reviewer, "api", return_value=pr), \
              patch.object(reviewer, "already_commented", return_value=True), \
              patch.object(reviewer, "commit_status") as status, \
@@ -738,43 +709,43 @@ class ReviewerUnitTests(unittest.TestCase):
                 state_path=Path(tmp)/"state", timeout=5)
         self.assertIn("provider=DeepSeek-V4.1-Flash-1017", result)
         deepseek.assert_called_once()
-        claude.assert_not_called()
+        native.assert_not_called()
+        legacy.assert_not_called()
         self.assertEqual(status.call_args.args[3], "success")
 
-    def test_quota_falls_back_to_actual_deepseek_review(self):
+    def test_deepseek_is_primary_without_waiting_for_claude_quota(self):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "main"}, "body": ""}
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "native_review",
-                          side_effect=reviewer.QuotaExceeded("session limit")), \
-             patch.object(reviewer, "ask_claude", return_value=[]) as ask, \
+             patch.object(reviewer, "deepseek_review", return_value=[]) as deepseek, \
+             patch.object(reviewer, "native_review") as native, \
+             patch.object(reviewer, "ask_claude") as legacy, \
              patch.object(reviewer, "api", return_value=pr), \
              patch.object(reviewer, "already_commented", return_value=False), \
              patch.object(reviewer, "post_comment") as comment, \
              patch.object(reviewer, "commit_status") as status, \
-             patch.object(reviewer, "save_state"), \
-             patch.dict(reviewer.os.environ, {"DEEPSEEK_API_KEY": "fake"}):
+             patch.object(reviewer, "save_state"):
             result = reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
                                      work=Path(tmp), state={"prs": {}},
                                      state_path=Path(tmp)/"state", timeout=5)
         self.assertIn("provider=DeepSeek-V4.1-Flash-1017", result)
-        self.assertEqual(ask.call_count, 1)
-        self.assertEqual(ask.call_args.kwargs["model"], "claude-sonnet-4-5-20250929")
-        self.assertIn("ANTHROPIC_AUTH_TOKEN", ask.call_args.kwargs["env"])
+        deepseek.assert_called_once()
+        native.assert_not_called()
+        legacy.assert_not_called()
         self.assertIn("DeepSeek", comment.call_args.args[3])
         self.assertEqual(status.call_args.args[3], "success")
 
-    def test_claude_returns_on_next_review_without_deepseek(self):
+    def test_each_new_review_sha_uses_deepseek(self):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "d"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "main"}, "body": ""}
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "native_review", return_value=[]), \
-             patch.object(reviewer, "ask_claude", return_value=[]), \
-             patch.object(reviewer, "deepseek_review") as deepseek, \
+             patch.object(reviewer, "deepseek_review", return_value=[]) as deepseek, \
+             patch.object(reviewer, "native_review") as native, \
+             patch.object(reviewer, "ask_claude") as legacy, \
              patch.object(reviewer, "api", return_value=pr), \
              patch.object(reviewer, "already_commented", return_value=True), \
              patch.object(reviewer, "commit_status"), \
@@ -782,8 +753,10 @@ class ReviewerUnitTests(unittest.TestCase):
             result = reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
                                      work=Path(tmp), state={"prs": {}},
                                      state_path=Path(tmp)/"state", timeout=5)
-        self.assertIn("provider=Claude", result)
-        deepseek.assert_not_called()
+        self.assertIn("provider=DeepSeek-V4.1-Flash-1017", result)
+        deepseek.assert_called_once()
+        native.assert_not_called()
+        legacy.assert_not_called()
 
     def test_quota_without_key_does_not_consume_retry_budget(self):
         with tempfile.TemporaryDirectory() as tmp:
