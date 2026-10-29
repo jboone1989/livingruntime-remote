@@ -39,7 +39,7 @@ For each finding supply **file and changed line, evidence, consequence, and the 
 ## Process
 
 1. Read the prior approved Spec, the actual diff and the existing implementation.
-2. Use the configured model for both candidate generation and independent verification; no account subscription or provider-specific CLI is used.
+2. Use Claude Code's read-only harness with the configured model for candidate generation and independent verification; no Anthropic account login or subscription is used.
 3. Independently verify each candidate with a second read-only model pass.
 4. Record only reproducible, changed-line findings; `model-review` is canonical; `deepseek-review` and `claude-review` are temporary compatibility aliases for existing branch rules and EventGraph consumers.
 5. A green CI or mocked test is not proof of deployment or user-observable behavior.
