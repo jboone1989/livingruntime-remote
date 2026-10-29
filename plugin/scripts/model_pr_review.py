@@ -601,7 +601,7 @@ def format_report(repo, sha, round_number, findings, *, manual_rereview=False, p
     return "\n".join(lines), bool(blocking)
 
 
-def review(pr, *, repo, gh, claude="/home/ubuntu/.local/bin/claude", work=None, state=None, state_path=None, timeout=180, manual_approval=None):
+def review(pr, *, repo, gh, work, state, state_path, timeout, claude="/home/ubuntu/.local/bin/claude", manual_approval=None):
     number, sha = pr["number"], pr["head"]["sha"]
     if pr["state"] != "open" or pr.get("draft"):
         return "skip:draft/closed"
