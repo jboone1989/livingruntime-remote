@@ -12,8 +12,12 @@ permissions:
   issues: write
   statuses: write
 
+# The native GitHub queue preserves independent PR reviews instead of making
+# each PR compete for the one claude-review self-hosted runner.
+# queue: max (up to 100 pending) is essential: default single evicts older pending runs.
 concurrency:
-  group: claude-review-${{ github.event.client_payload.repository || github.repository }}-${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
+  group: central-claude-pr-review
+  queue: max
   cancel-in-progress: false
 
 jobs:
