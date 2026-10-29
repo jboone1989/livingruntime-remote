@@ -51,8 +51,9 @@ def is_claude_quota(message):
     return any(phrase in text for phrase in (
         "session limit", "usage limit", "weekly limit", "plan limit",
         "quota exceeded", "you've hit your limit", "you have hit your limit",
-        "5-hour limit", "five-hour limit",
-    ))
+        "5-hour limit", "five-hour limit", "insufficient balance",
+        "balance insufficient", "credit balance too low",
+    )) or ("402" in text and any(term in text for term in ("balance", "billing", "credit")))
 
 
 def _claude_failure_metadata(*outputs):
@@ -96,7 +97,7 @@ def run(argv, cwd=None, timeout=120, input_text=None, env=None):
         output = (result.stderr or "") + "\n" + (result.stdout or "")
         is_claude = Path(argv[0]).name == "claude"
         if is_claude and is_claude_quota(output):
-            raise QuotaExceeded("Claude subscription usage limit reached")
+            raise QuotaExceeded("Model review provider quota/balance exhausted")
         if is_claude:
             metadata = _claude_failure_metadata(result.stdout, result.stderr)
             if (metadata.get("stop_reason") == "tool_use"
@@ -667,8 +668,10 @@ def run_once(args):
                         print(f"Failed to save retry state: {save_exc}", file=sys.stderr)
                 if re.fullmatch(r"[0-9a-f]{40}", sha):
                     try:
-                        commit_status(args.gh, args.repo, sha, "error",
-                                      "Reviewer failed; human check required after 2 attempts")
+                        description = ("Model provider quota/balance exhausted; review not run"
+                                       if isinstance(exc, QuotaExceeded) else
+                                       "Reviewer failed; human check required after 2 attempts")
+                        commit_status(args.gh, args.repo, sha, "error", description)
                     except Exception as status_exc:
                         print(f"Failed posting error status: {status_exc}", file=sys.stderr)
         return had_error
