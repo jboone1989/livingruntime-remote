@@ -30,6 +30,24 @@ class PiRepairDispatchTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "not a verified failure"):
                         router.validate_failure(PR, SHA, "check", 123)
 
+    def test_check_run_must_belong_to_current_pr_when_associations_exist(self):
+        good = {"head_sha": SHA, "event": "pull_request", "conclusion": "failure",
+                "name": "Check", "head_repository": {"full_name": router.REPOSITORY},
+                "pull_requests": [{"number": 175}]}
+        with patch.object(router, "api", return_value=good):
+            router.validate_failure(PR, SHA, "check", 123)
+        for delta in [
+            {"pull_requests": [{"number": 176}]},
+            {"head_repository": {"full_name": "attacker/other"}},
+        ]:
+            with patch.object(router, "api", return_value={**good, **delta}):
+                with self.assertRaisesRegex(ValueError, "not a verified failure"):
+                    router.validate_failure(PR, SHA, "check", 123)
+        # GitHub sometimes omits workflow_run.pull_requests; exact SHA and
+        # repository checks still apply without inventing an association.
+        with patch.object(router, "api", return_value={**good, "pull_requests": []}):
+            router.validate_failure(PR, SHA, "check", 123)
+
     def test_claude_failure_must_be_latest_status(self):
         with patch.object(router, "api", return_value={
             "statuses": [{"context": "claude-review", "state": "failure"}],
