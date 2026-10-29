@@ -63,7 +63,7 @@ def model_settings():
         "REVIEW_BASE_URL", "https://api.deepseek.com/anthropic").strip().rstrip("/")
     api_key = (os.environ.get("REVIEW_API_KEY") or
                os.environ.get("DEEPSEEK_API_KEY") or "").strip()
-    model = os.environ.get("REVIEW_MODEL", "deepseek-flash").strip()
+    model = os.environ.get("REVIEW_MODEL", "deepseek-flash[1m]").strip()
     parsed = urllib.parse.urlparse(base_url)
     if parsed.scheme not in ("https", "http") or not parsed.netloc:
         raise ReviewUnavailable("REVIEW_BASE_URL must be an absolute HTTP(S) URL")
@@ -575,7 +575,7 @@ def verify_prompt(candidates, diff):
     )
 
 
-def format_report(repo, sha, round_number, findings, *, manual_rereview=False, provider="deepseek-flash"):
+def format_report(repo, sha, round_number, findings, *, manual_rereview=False, provider="deepseek-flash[1m]"):
     blocking = sum(f["severity"] == "important" for f in findings)
     lines = [f"{MARKER}{sha} -->",
              f"### {provider} Code review",
@@ -642,7 +642,7 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
             work / f"pr-{number}-objects.git")
         # Claude Code remains the read-only harness; inference goes only to the
         # configured model endpoint and never uses an Anthropic account login.
-        provider = os.environ.get("REVIEW_MODEL", "deepseek-flash").strip() or "deepseek-flash"
+        provider = os.environ.get("REVIEW_MODEL", "deepseek-flash[1m]").strip() or "deepseek-flash[1m]"
         findings = model_review(
             claude, directory, diff, pr.get("body") or "", timeout)
         fresh = api(gh, f"repos/{repo}/pulls/{number}")
