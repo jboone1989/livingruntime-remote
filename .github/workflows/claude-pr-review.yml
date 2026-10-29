@@ -32,7 +32,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REVIEW_BASE_URL: ${{ vars.REVIEW_BASE_URL || 'https://api.deepseek.com/anthropic' }}
           REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY || secrets.DEEPSEEK_API_KEY }}
-          REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'deepseek-flash' }}
+          REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'deepseek-flash[1m]' }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GIT_CONFIG_COUNT: "1"
@@ -62,7 +62,7 @@ jobs:
         env:
           REVIEW_BASE_URL: ${{ vars.REVIEW_BASE_URL || 'https://api.deepseek.com/anthropic' }}
           REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY || secrets.DEEPSEEK_API_KEY }}
-          REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'deepseek-flash' }}
+          REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'deepseek-flash[1m]' }}
           REPO: ${{ github.event.client_payload.repository }}
           PR_NUMBER: ${{ github.event.client_payload.pr_number }}
           EXPECTED_SHA: ${{ github.event.client_payload.sha }}
