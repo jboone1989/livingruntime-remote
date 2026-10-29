@@ -56,7 +56,7 @@ def validate_failure(pr: dict, sha: str, kind: str, run_id: int | None):
     elif kind == "claude-review":
         statuses = api(f"repos/{REPOSITORY}/commits/{sha}/status").get("statuses", [])
         recent = next((s for s in statuses if s.get("context") == "claude-review"), None)
-        if not recent or recent.get("state") != "failure":
+        if not recent or recent.get("state") not in {"failure", "error"}:
             raise ValueError("latest independent review is not blocking at this SHA")
     else:
         raise ValueError("unrecognized failure type")

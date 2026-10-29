@@ -48,16 +48,18 @@ class PiRepairDispatchTests(unittest.TestCase):
         with patch.object(router, "api", return_value={**good, "pull_requests": []}):
             router.validate_failure(PR, SHA, "check", 123)
 
-    def test_claude_failure_must_be_latest_status(self):
-        with patch.object(router, "api", return_value={
-            "statuses": [{"context": "claude-review", "state": "failure"}],
-        }):
-            router.validate_failure(PR, SHA, "claude-review", None)
-        with patch.object(router, "api", return_value={
-            "statuses": [{"context": "claude-review", "state": "success"}],
-        }):
-            with self.assertRaisesRegex(ValueError, "not blocking"):
+    def test_claude_failure_or_error_must_be_latest_status(self):
+        for state in ("failure", "error"):
+            with self.subTest(state=state), patch.object(router, "api", return_value={
+                "statuses": [{"context": "claude-review", "state": state}],
+            }):
                 router.validate_failure(PR, SHA, "claude-review", None)
+        for state in ("success", "pending"):
+            with self.subTest(state=state), patch.object(router, "api", return_value={
+                "statuses": [{"context": "claude-review", "state": state}],
+            }):
+                with self.assertRaisesRegex(ValueError, "not blocking"):
+                    router.validate_failure(PR, SHA, "claude-review", None)
 
     def test_reject_wrong_head_base_forks_and_drafts(self):
         for delta in [
