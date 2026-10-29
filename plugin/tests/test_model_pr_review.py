@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-PATH = Path(__file__).resolve().parents[2] / "plugin" / "scripts" / "model_pr_review.py
+PATH = Path(__file__).resolve().parents[2] / "plugin" / "scripts" / "model_pr_review.py"
 spec = importlib.util.spec_from_file_location("review_worker", PATH)
 reviewer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(reviewer)
