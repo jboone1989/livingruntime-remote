@@ -1,4 +1,5 @@
 """Workboard native Pi terminal lifecycle without Relay or model access."""
+import json
 import os
 from pathlib import Path
 import sys
@@ -80,6 +81,56 @@ class WorkboardNativeTerminalTests(unittest.TestCase):
         self.assertFalse(any(x[0] in {"blocked", "finished"} for x in self.calls))
         self.assertEqual(self.state, "RUNNING")
         self.assertEqual(len(self.launches), 1)
+
+    def enable_acceptance(self):
+        current = json.loads(self.worker.path.read_text())
+        current['item']['acceptance_json'] = json.dumps(['node', '--version'])
+        self.worker.save(current)
+        self.native = 'SUCCEEDED'
+
+    def test_transient_acceptance_transport_failure_retries_without_relaunch(self):
+        self.enable_acceptance()
+        attempts = []
+
+        def check(**kwargs):
+            attempts.append(kwargs)
+            if len(attempts) == 1:
+                raise ConnectionError('temporary Relay outage')
+            return {'returncode': 0}
+
+        self.worker.check = check
+        self.worker.tick()
+        self.assertTrue(self.worker.path.exists())
+        self.assertEqual(json.loads(self.worker.path.read_text())['verification_failures'], 1)
+        self.assertFalse(any(op == 'blocked' for op, _ in self.calls))
+        self.worker.tick()
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(len(self.launches), 1)
+        self.assertEqual(len([op for op, _ in self.calls if op == 'finished']), 1)
+        self.assertFalse(self.worker.path.exists())
+
+    def test_persistent_acceptance_transport_failure_blocks_and_handoffs(self):
+        self.enable_acceptance()
+        attempts = []
+
+        def unavailable(**kwargs):
+            attempts.append(kwargs)
+            raise ConnectionError('Relay unavailable')
+
+        self.worker.check = unavailable
+        for attempt in range(3):
+            self.worker.tick()
+            if attempt < 2:
+                self.assertTrue(self.worker.path.exists())
+        blocked = [fields for op, fields in self.calls if op == 'blocked']
+        self.assertEqual(len(blocked), 1)
+        self.assertTrue(blocked[0]['execution_done'])
+        self.assertIn('Acceptance check unavailable after 3 attempts', blocked[0]['reason'])
+        self.assertEqual(self.state, 'BLOCKED_HUMAN')
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(len(self.launches), 1)
+        self.assertFalse(self.worker.path.exists())
+        self.assertEqual(len(list(Path(self.temp.name).glob('*.receipt.json'))), 1)
 
 
 if __name__ == "__main__":
