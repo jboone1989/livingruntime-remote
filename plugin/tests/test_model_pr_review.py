@@ -71,7 +71,7 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertEqual(ask.call_count, 2)
             self.assertIn("documentation-only", ask.call_args_list[0].args[2])
             self.assertIn("TRUSTED REVIEW CHECKLIST", ask.call_args_list[1].args[2])
-            self.assertEqual(ask.call_args_list[0].kwargs["model"], "deepseek-flash")
+            self.assertEqual(ask.call_args_list[0].kwargs["model"], "deepseek-flash[1m]")
 
     def test_malformed_document_review_retries_full_deepseek_checklist(self):
         diff = ("diff --git a/specs/x/spec.md b/specs/x/spec.md\n"
