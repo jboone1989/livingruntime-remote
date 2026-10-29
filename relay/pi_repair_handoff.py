@@ -9,6 +9,7 @@ from contextlib import closing
 import json
 import re
 import time
+import uuid
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
 MAX_RECEIPT_BYTES = 220_000
@@ -27,6 +28,41 @@ class RepairHandoff:
                 new_sha TEXT, created_at REAL NOT NULL,
                 UNIQUE(user_sub, pr_number, original_sha)
               )""")
+
+    def reserve(self, user, connector, number, sha):
+        """Atomically claim an original PR HEAD before invoking remote Pi.
+
+        An ambiguous network timeout is deliberately not retried as a second
+        native Pi launch. The operator must reconcile the existing attempt.
+        """
+        if (not isinstance(sha, str) or not SHA.fullmatch(sha) or
+            type(number) is not int or not 1 <= number <= 100000):
+            raise ValueError("invalid repair launch identity")
+        reservation = "lrclaim_" + uuid.uuid4().hex
+        with closing(self.store.db()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute(
+                "SELECT session_id FROM pi_repair_handoffs "
+                "WHERE user_sub=? AND pr_number=? AND original_sha=?",
+                (user, number, sha)).fetchone()
+            if existing:
+                raise PermissionError("repair already claimed for this PR HEAD")
+            db.execute("""INSERT INTO pi_repair_handoffs
+              (session_id,user_sub,connector_id,pr_number,original_sha,state,created_at)
+              VALUES(?,?,?,?,?,'LAUNCHING',?)""",
+              (reservation, user, connector, number, sha, time.time()))
+        return reservation
+
+    def activate(self, user, connector, reservation, session):
+        if not isinstance(session, str) or not re.fullmatch(r"lra_[0-9a-f]{32}", session):
+            raise ValueError("invalid native Pi session ID")
+        with closing(self.store.db()) as db, db:
+            updated = db.execute("""UPDATE pi_repair_handoffs
+              SET session_id=?,state='RUNNING'
+              WHERE session_id=? AND user_sub=? AND connector_id=? AND state='LAUNCHING'""",
+              (session, reservation, user, connector))
+            if updated.rowcount != 1:
+                raise PermissionError("repair reservation missing or consumed")
 
     def record(self, user, connector, number, sha, session):
         if not SHA.fullmatch(sha) or not 1 <= number <= 100000 or not session.startswith("lra_"):
