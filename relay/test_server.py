@@ -435,6 +435,53 @@ class RelayServerTests(unittest.TestCase):
                 self.assertEqual(res.status_code, 503)
                 self.assertNotIn("ok", res.json())
 
+    def test_pi_repair_result_inbox_requires_completed_owner_session_and_acks_once(self):
+        from unittest.mock import AsyncMock
+        from pi_repair_handoff import RepairHandoff
+
+        sha, updated = "a" * 40, "b" * 40
+        session = "lra_" + "c" * 32
+        device_id = "e21c871f-317b-4f3e-95bf-8d4299547a40"
+        owner = "owner-a"
+        board = RepairHandoff(self.store)
+        board.record(owner, device_id, 175, sha, session)
+        manifest = {"repository": "jboone1989/EventGraph", "pr_number": 175,
+                    "expected_head_sha": sha, "changes": [
+                        {"path": "packages/backend/src/editorial/explain.ts",
+                         "expected_blob_sha": "d" * 40, "content": "export const fix = true;"}]}
+        code = self.store.create_pairing_code(owner)["code"]
+        with TestClient(self.app) as client:
+            central = client.post("/device/pair",
+                                  json={"code": code, "name": "owner-main"}).json()
+            central_headers = {"authorization": "Bearer " + central["device_token"]}
+            pretend_cn = {"name": "cn-dev", "user_sub": owner, "device_id": device_id}
+            with patch.object(self.store, "authenticate_device", return_value=pretend_cn), \
+                 patch.object(server.Relay, "call", new_callable=AsyncMock) as observed:
+                observed.return_value = {"session_id": session,
+                                         "agent_status": {"status": "RUNNING"}}
+                blocked = client.post("/device/pi-repair-result",
+                    json={"session_id": session, "manifest": manifest})
+                self.assertEqual(blocked.status_code, 403)
+                observed.return_value = {"session_id": session,
+                                         "agent_status": {"status": "SUCCEEDED"}}
+                accepted = client.post("/device/pi-repair-result",
+                    json={"session_id": session, "manifest": manifest})
+                self.assertEqual(accepted.status_code, 200, accepted.text)
+            pending = client.post("/device/pi-repair-inbox", json={"action": "pending"},
+                                  headers=central_headers)
+            self.assertEqual(pending.status_code, 200, pending.text)
+            self.assertEqual(pending.json()["items"][0]["manifest"], manifest)
+            ack = {"action": "ack", "session_id": session,
+                   "original_sha": sha, "new_sha": updated}
+            self.assertEqual(client.post("/device/pi-repair-inbox",
+                                         json=ack, headers=central_headers).status_code, 200)
+            replay = client.post("/device/pi-repair-inbox",
+                                 json=ack, headers=central_headers)
+            self.assertEqual(replay.status_code, 403)
+            self.assertEqual(client.post("/device/pi-repair-inbox",
+                              json={"action": "pending"}, headers=central_headers
+                              ).json()["items"], [])
+
     def test_idle_long_poll_does_not_spin_on_sqlite(self):
         class CountingStore(RelayStore):
             def __init__(self, path: str) -> None:
