@@ -518,6 +518,35 @@ class ReviewerUnitTests(unittest.TestCase):
             reviewer.parse_native_review(json.dumps({
                 "is_error": True, "result": "You've hit your session limit"}))
 
+    def test_provider_402_balance_failure_keeps_review_unapproved_and_retryable(self):
+        payload = json.dumps({
+            "type": "result", "subtype": "success", "is_error": True,
+            "result": "API Error: 402 Insufficient Balance",
+            "num_turns": 1, "stop_reason": "stop_sequence"})
+        class Process:
+            returncode = 1
+            stderr = ""
+            stdout = payload
+        with patch.object(reviewer.subprocess, "run", return_value=Process()):
+            with self.assertRaises(reviewer.QuotaExceeded):
+                reviewer.run(["claude", "-p", "review"])
+        self.assertFalse(reviewer.is_claude_quota("403 insufficient permissions"))
+        with tempfile.TemporaryDirectory() as tmp:
+            pr = {"number": 7, "state": "open", "draft": False,
+                  "head": {"sha": "c"*40, "repo": {"full_name": "org/repo"}},
+                  "base": {"ref": "main"}}
+            args = argparse.Namespace(repo="org/repo", gh="gh", claude="claude",
+                        pr_number=7, expected_sha=pr["head"]["sha"],
+                        work=Path(tmp), timeout=5, state=Path(tmp)/"state")
+            with patch.object(reviewer, "api", return_value=pr), \
+                 patch.object(reviewer, "review",
+                              side_effect=reviewer.QuotaExceeded("balance exhausted")), \
+                 patch.object(reviewer, "commit_status") as status:
+                self.assertTrue(reviewer.run_once(args))
+            self.assertFalse(args.state.exists())
+            self.assertEqual(status.call_args.args[3], "error")
+            self.assertIn("quota/balance", status.call_args.args[4])
+
     def test_incomplete_claude_json_is_detected_before_truncation(self):
         session_id = "0d01dcdb-fd91-484e-8175-25437b05f80e"
         payload = json.dumps({
