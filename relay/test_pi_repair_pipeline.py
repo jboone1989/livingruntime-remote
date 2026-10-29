@@ -48,6 +48,7 @@ class PiPipelineTests(unittest.TestCase):
             number = 175
             target = worktrees / f"pi-repair-{number}-{sha[:12]}"
             checkout.rename(target)
+            checkout = target
             (target / PATH).write_text("export const x = 2;\n")
             task = {"tool": "start_agent", "args": {
                 "adapter_id": "pi", "project": "aihot-dev",
