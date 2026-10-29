@@ -293,6 +293,10 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertEqual(proc.call_args.kwargs["env"]["ANTHROPIC_AUTH_TOKEN"], "provider-review-key")
             self.assertEqual(proc.call_args.kwargs["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "deepseek-flash")
             self.assertEqual(proc.call_args.kwargs["env"]["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"], "1")
+            self.assertEqual(args[args.index("--tools") + 1], "Read,Glob,Grep")
+            self.assertEqual(args[args.index("--model") + 1], "deepseek-flash")
+            self.assertIn("--safe-mode", args)
+            self.assertNotIn("Bash", args[args.index("--tools") + 1])
             self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", proc.call_args.kwargs["env"])
 
     def test_quality_prompt_explicitly_challenges_bad_shortcuts(self):
