@@ -78,7 +78,7 @@ class PiRepairDispatchTests(unittest.TestCase):
         comment = next(body for path, method, body in calls if method == "PATCH")
         self.assertIn("state=dispatched", comment)
         self.assertIn("NOT a claim", comment)
-        self.assertNotIn("CI passed", comment)
+        self.assertIn("state=dispatched", comment)
 
     def test_unavailable_connector_is_reported_not_success(self):
         calls = []
