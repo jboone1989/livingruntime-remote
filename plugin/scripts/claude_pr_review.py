@@ -380,10 +380,15 @@ def deepseek_environment():
     if not key:
         raise ReviewUnavailable("DEEPSEEK_API_KEY is missing from the review runner")
     env = os.environ.copy()
-    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-                 "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
-                 "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
-                 "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"):
+    for name in (
+        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_CUSTOM_HEADERS", "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
+        "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+    ):
         env.pop(name, None)
     # Claude CLI recognizes its own Sonnet ID; DeepSeek officially maps
     # claude-sonnet* to the current Flash model at its Anthropic endpoint.
@@ -395,6 +400,7 @@ def deepseek_environment():
         "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-5-20250929",
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-sonnet-4-5-20250929",
         "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash",
+        "CLAUDE_CODE_SUBAGENT_MODEL_FORCE": "1",
         "CLAUDE_CODE_EFFORT_LEVEL": "max",
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "786432",
     })
