@@ -31,7 +31,7 @@ jobs:
   review:
     if: github.repository == 'jboone1989/EventGraph'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     permissions:
       actions: read
       contents: read
@@ -154,15 +154,36 @@ jobs:
             Return the schema findings list; return [] only after a real review.
           claude_args: >-
             --model ${{ vars.GLM_REVIEW_MODEL || 'glm-5.3' }}
-            --max-turns 32
             --tools Read,Glob,Grep
             --disallowedTools mcp__*
             --strict-mcp-config
             --json-schema '{"type":"object","properties":{"findings":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"line":{"type":"integer"},"severity":{"type":"string","enum":["important","nit"]},"confidence":{"type":"integer","minimum":80,"maximum":100},"reason":{"type":"string"},"evidence":{"type":"string"},"fix":{"type":"string"}},"required":["path","line","severity","confidence","reason","evidence","fix"]}}},"required":["findings"]}'
 
+      - name: Check review output and select independent verification
+        id: candidates
+        if: steps.target.outputs.run == 'true' && steps.review.outcome == 'success'
+        shell: bash
+        env:
+          REVIEW_JSON: ${{ steps.review.outputs.structured_output }}
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          let result;
+          try { result = JSON.parse(process.env.REVIEW_JSON || 'null'); }
+          catch { throw new Error('Invalid structured GLM review JSON'); }
+          if (!result || !Array.isArray(result.findings)) {
+            throw new Error('GLM review did not return a findings array');
+          }
+          const needed = result.findings.length > 0;
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,
+            'needs_verification=' + needed + '\n');
+          console.log(needed ? 'Verify reported findings independently' :
+            'Independent review found no candidates; no candidate verification needed');
+          NODE
+
       - name: Independently verify GLM findings
         id: verify
-        if: steps.target.outputs.run == 'true' && steps.review.outcome == 'success'
+        if: steps.candidates.outputs.needs_verification == 'true'
         uses: anthropics/claude-code-action@v1
         env:
           ANTHROPIC_BASE_URL: ${{ vars.GLM_BASE_URL || 'https://open.bigmodel.cn/api/anthropic' }}
@@ -185,7 +206,6 @@ jobs:
             only if the independent verification genuinely finds no valid findings.
           claude_args: >-
             --model ${{ vars.GLM_REVIEW_MODEL || 'glm-5.3' }}
-            --max-turns 16
             --tools Read,Glob,Grep
             --disallowedTools mcp__*
             --strict-mcp-config
@@ -198,8 +218,11 @@ jobs:
           PR_NUMBER: ${{ steps.target.outputs.number }}
           CHECK_SHA: ${{ steps.target.outputs.sha }}
           REVIEW_OUTCOME: ${{ steps.review.outcome }}
+          CANDIDATE_OUTCOME: ${{ steps.candidates.outcome }}
+          NEEDS_VERIFICATION: ${{ steps.candidates.outputs.needs_verification }}
           VERIFY_OUTCOME: ${{ steps.verify.outcome }}
-          REVIEW_JSON: ${{ steps.verify.outputs.structured_output }}
+          REVIEW_JSON: ${{ steps.review.outputs.structured_output }}
+          VERIFIED_JSON: ${{ steps.verify.outputs.structured_output }}
         with:
           github-token: ${{ github.token }}
           script: |
@@ -214,9 +237,13 @@ jobs:
             let state = 'error';
             let description = 'GLM review did not produce verified structured output';
             try {
-              if (process.env.REVIEW_OUTCOME !== 'success' || process.env.VERIFY_OUTCOME !== 'success')
-                throw new Error('GLM review or independent verification did not complete successfully');
-              const result = JSON.parse(process.env.REVIEW_JSON || 'null');
+              if (process.env.REVIEW_OUTCOME !== 'success' || process.env.CANDIDATE_OUTCOME !== 'success')
+                throw new Error('GLM review did not finish with valid structured findings');
+              const needsVerification = process.env.NEEDS_VERIFICATION === 'true';
+              if (needsVerification && process.env.VERIFY_OUTCOME !== 'success')
+                throw new Error('Independent verification of reported findings failed');
+              const reviewOutput = needsVerification ? process.env.VERIFIED_JSON : process.env.REVIEW_JSON;
+              const result = JSON.parse(reviewOutput || 'null');
               if (!result || !Array.isArray(result.findings))
                 throw new Error('Missing valid structured findings');
               const diff = require('fs').readFileSync(process.env.GITHUB_WORKSPACE + '/pr-review.diff', 'utf8');
