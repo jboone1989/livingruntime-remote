@@ -16,6 +16,7 @@ from typing import Any
 import bridge
 import cognition
 import jobs
+import eventgraph_pi_repair_completion as pi_repair_completion
 from contract import PLUGIN_VERSION, REMOTE_TOOLS
 
 TOOLS = set(REMOTE_TOOLS)
@@ -228,11 +229,16 @@ def _forward_cognition_events(cfg: dict[str, Any]) -> bool:
 def _forward_events(cfg: dict[str, Any]) -> bool:
     completion_delivered = _forward_completion_events(cfg)
     cognition_delivered = _forward_cognition_events(cfg)
-    return completion_delivered or cognition_delivered
+    repair_delivered = pi_repair_completion.deliver(cfg, _request)
+    return completion_delivered or cognition_delivered or repair_delivered
 
 
 def _handle_claimed_task(cfg: dict[str, Any], task: dict[str, Any]) -> None:
     result = _dispatch(task)
+    # Journal this specifically marked Pi repair before acknowledging launch.
+    # Relay completion is separate from the ordinary MCP task result.
+    if cfg.get("name") == "cn-dev":
+        pi_repair_completion.register(task, result)
     _request(
         cfg["url"],
         "/device/result",
