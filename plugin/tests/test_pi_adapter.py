@@ -149,7 +149,7 @@ class PiAdapterTests(unittest.TestCase):
                 official = settings["providers"]["bigmodel-official"]
                 self.assertEqual(official["baseUrl"], "https://open.bigmodel.cn/api/paas/v4")
                 self.assertEqual(official["api"], "openai-completions")
-                self.assertEqual(official["apiKey"], "$BIGMODEL_API_KEY")
+                self.assertEqual(official["apiKey"], "BIGMODEL_API_KEY")
                 self.assertEqual(official["models"][0]["id"], "glm-5.3")
                 self.assertNotIn("placeholder", json.dumps(settings))
                 self.assertFalse((workspace / ".pi/agent/models.json").exists())
