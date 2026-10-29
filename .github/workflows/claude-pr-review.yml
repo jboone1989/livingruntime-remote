@@ -1,4 +1,4 @@
-name: Model PR review (OpenAI-compatible API)
+name: Model PR review (Claude Code harness)
 
 on:
   pull_request_target:
@@ -27,10 +27,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Review PR with configured OpenAI-compatible model API
+      - name: Review PR with Claude Code harness and configured Messages API
         env:
           GH_TOKEN: ${{ github.token }}
-          REVIEW_BASE_URL: ${{ vars.REVIEW_BASE_URL || 'https://api.deepseek.com' }}
+          REVIEW_BASE_URL: ${{ vars.REVIEW_BASE_URL || 'https://api.deepseek.com/anthropic' }}
           REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY || secrets.DEEPSEEK_API_KEY }}
           REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'deepseek-flash' }}
           REPO: ${{ github.repository }}
@@ -45,6 +45,7 @@ jobs:
           python3 plugin/scripts/model_pr_review.py \
             --repo "$REPO" --pr-number "$PR_NUMBER" \
             --gh /home/ubuntu/.local/bin/gh \
+            --harness /home/ubuntu/.local/bin/claude \
             --state "$state" --work "$work" --timeout 360
 
   dispatched-review:
@@ -57,7 +58,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Review EventGraph PR with configured model API
+      - name: Review EventGraph PR with Claude Code harness and configured Messages API
         env:
           REVIEW_BASE_URL: ${{ vars.REVIEW_BASE_URL || 'https://api.deepseek.com' }}
           REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY || secrets.DEEPSEEK_API_KEY }}
@@ -87,11 +88,12 @@ jobs:
           python3 plugin/scripts/model_pr_review.py \
             --repo "$REPO" --pr-number "$PR_NUMBER" \
             --gh /home/ubuntu/.local/bin/gh \
+            --harness /home/ubuntu/.local/bin/claude \
             --state "$state" --work "$work" --timeout 360 \
             --expected-sha "$EXPECTED_SHA" "${manual_args[@]}"
 
   low-risk-merge:
-    # GitHub itself enforces check/docker/e2e/deepseek-review before the merge.
+    # GitHub itself enforces check/docker/e2e/claude-review (legacy alias) before the merge.
     # Only this bounded, docs-only slice is eligible for immediate SHA-guarded merge.
     needs: [dispatched-review]
     if: >-
