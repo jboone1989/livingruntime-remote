@@ -69,7 +69,13 @@ def read_markers(number: int):
             f"repos/{REPOSITORY}/issues/{number}/comments?per_page=100&page={page}"
         )
         for item in comments:
-            match = MARKER.search(str(item.get("body", "")))
+            # PR comments are untrusted: a forged ledger marker must not exhaust
+            # repair rounds or suppress dispatch for a real failing HEAD.
+            author = item.get("user") or {}
+            trusted = item.get("author_association") in ("OWNER", "MEMBER", "COLLABORATOR")
+            if not trusted and author.get("login") != "github-actions[bot]":
+                continue
+            match = MARKER.match(str(item.get("body", "")))
             if match:
                 markers.append((match.group(1), int(match.group(2)), match.group(3)))
         if len(comments) < 100:
