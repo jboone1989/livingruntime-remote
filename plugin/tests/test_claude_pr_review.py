@@ -22,6 +22,14 @@ DIFF = """diff --git a/src/a.mjs b/src/a.mjs
 """
 
 class ReviewerUnitTests(unittest.TestCase):
+    def test_full_diff_budget_allows_100kb_pr_but_still_rejects_oversize(self):
+        reviewer.ensure_review_budget("x" * 100_000)
+        reviewer.ensure_review_budget("x" * 128_000)
+        with self.assertRaisesRegex(reviewer.ReviewError, "128KB"):
+            reviewer.ensure_review_budget("x" * 128_001)
+        with self.assertRaisesRegex(reviewer.ReviewError, "128KB"):
+            reviewer.ensure_review_budget("中" * 43_000)
+
     def test_document_only_uses_a_focused_real_claude_review(self):
         document_diff = ("diff --git a/specs/008/spec.md b/specs/008/spec.md\n"
                          "--- a/specs/008/spec.md\n+++ b/specs/008/spec.md\n"
