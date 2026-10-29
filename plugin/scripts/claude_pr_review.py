@@ -56,31 +56,8 @@ def is_claude_quota(message):
 
 
 def claude_subscription_environment():
-    """Always use Claude Code's on-disk subscription login, not inherited API auth.
-
-    The same self-hosted Runner also invokes DeepSeek through ANTHROPIC_AUTH_TOKEN.
-    The ordinary Claude invocation must not inherit any conflicting model routing
-    or authentication setting from that process, service, or host.
-    """
-    env = os.environ.copy()
-    for name in (
-        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS",
-        "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-        "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_SUBAGENT_MODEL",
-        "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
-        "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_EFFORT_LEVEL",
-        "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
-    ):
-        env.pop(name, None)
-    # Keep the existing Claude subscription login. --bare disables OAuth and
-    # is not suitable here; safe-mode and empty setting sources discard ambient
-    # user/project customizations that may reintroduce API-key auth.
-    # The PR reviewer must not inherit Opus defaults, including in subagents.
-    env["CLAUDE_CODE_SUBAGENT_MODEL"] = "sonnet"
-    env["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"] = "1"
-    return env
+    """Keep Claude Code as the harness, but route all model calls to DeepSeek."""
+    return deepseek_environment()
 
 
 def _claude_failure_metadata(*outputs):
