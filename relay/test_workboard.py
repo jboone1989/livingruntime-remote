@@ -182,6 +182,21 @@ class WorkboardTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.board.acknowledge('owner', first['id'], active['fence'], 'a'*40)
 
+    def test_late_attached_receipt_cannot_downgrade_running_session(self):
+        self.create(acceptance_argv=['node', '--version'])
+        claimed = self.claim()
+        identity = dict(session_id='session1', runtime_job_id='job1')
+        self.assertEqual(self.update(claimed, 'attached', **identity)['status'], 'CLAIMED')
+        self.assertEqual(self.update(claimed, 'started', **identity)['status'], 'RUNNING')
+        # A duplicate attachment can arrive after started.
+        # It must not make a completed native run impossible to accept.
+        self.assertEqual(self.update(claimed, 'attached', **identity)['status'], 'RUNNING')
+        finished = self.update(claimed, 'finished', checks_passed=True,
+                               evidence_refs=['runtime-job:job1'])
+        self.assertEqual(finished['status'], 'SUCCEEDED')
+        self.assertEqual(len(self.board.inbox('owner')), 1)
+
+
     def test_machine_checked_success_creates_single_inbox_receipt(self):
         item = self.create(acceptance_argv=['node','--version'])
         claimed = self.claim()
