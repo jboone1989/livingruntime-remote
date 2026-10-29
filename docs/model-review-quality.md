@@ -6,7 +6,7 @@ This is the review policy for the existing workflow, implemented in `plugin/scri
 
 - `REVIEW_BASE_URL`: defaults to `https://api.deepseek.com/anthropic`. It must point to an endpoint compatible with Claude Code's Anthropic Messages protocol.
 - `REVIEW_API_KEY`: API key issued by the selected model provider; the legacy `DEEPSEEK_API_KEY` secret remains a migration fallback.
-- `REVIEW_MODEL`: optional model ID; defaults to `deepseek-flash`.
+- `REVIEW_MODEL`: optional model ID; defaults to `deepseek-flash[1m]`.
 
 For DeepSeek, the official Anthropic-compatible endpoint is `https://api.deepseek.com/anthropic`. To switch to another provider that supports this protocol and accepts the same model ID, change only `REVIEW_BASE_URL` and `REVIEW_API_KEY`. If the provider requires a different model ID, set `REVIEW_MODEL` too. A provider that exposes only OpenAI Chat Completions cannot be connected directly to Claude Code's harness; use its Anthropic-compatible endpoint or a protocol gateway rather than replacing the harness with a raw HTTP prompt call.
 
