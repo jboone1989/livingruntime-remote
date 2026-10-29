@@ -205,76 +205,6 @@ class ReviewerUnitTests(unittest.TestCase):
 """
         self.assertEqual(reviewer.changed_lines(diff), {"src/a.mjs": {1, 2, 3}})
 
-    def test_claude_subscription_uses_clean_auth_environment(self):
-        overrides = {
-            "ANTHROPIC_API_KEY": "wrong-api",
-            "ANTHROPIC_AUTH_TOKEN": "wrong-token",
-            "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
-            "ANTHROPIC_MODEL": "deepseek-flash",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-flash",
-            "CLAUDE_CODE_OAUTH_TOKEN": "wrong-override",
-            "CLAUDE_CODE_USE_BEDROCK": "1",
-            "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash",
-            "DEEPSEEK_API_KEY": "fallback-key",
-            "GH_TOKEN": "runner-github-token",
-        }
-        with patch.dict(reviewer.os.environ, overrides, clear=True):
-            env = reviewer.claude_subscription_environment()
-            self.assertEqual(env["GH_TOKEN"], "runner-github-token")
-            self.assertEqual(env["CLAUDE_CODE_SUBAGENT_MODEL"], "sonnet")
-            self.assertEqual(env["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"], "1")
-            self.assertEqual(env["DEEPSEEK_API_KEY"], "fallback-key")
-            for name in overrides:
-                if name not in ("GH_TOKEN", "DEEPSEEK_API_KEY",
-                                "CLAUDE_CODE_SUBAGENT_MODEL"):
-                    self.assertNotIn(name, env)
-
-    def test_both_claude_review_paths_ignore_inherited_provider_overrides(self):
-        original = {
-            "ANTHROPIC_API_KEY": "api-override",
-            "ANTHROPIC_AUTH_TOKEN": "token-override",
-            "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
-            "CLAUDE_CODE_OAUTH_TOKEN": "oauth-override",
-        }
-        native_response = json.dumps({
-            "subtype": "success", "is_error": False,
-            "result": "[]",
-        })
-        with patch.dict(reviewer.os.environ, original), \
-             patch.object(reviewer, "run", return_value=native_response) as native:
-            self.assertEqual(reviewer.native_review(
-                "claude", Path("/tmp"), "a"*40, "b"*40, 30), [])
-            env = native.call_args.kwargs["env"]
-            self.assertTrue(all(name not in env for name in original))
-            args = native.call_args.args[0]
-            self.assertIn("--safe-mode", args)
-            self.assertEqual(args[args.index("--setting-sources") + 1], "user")
-            self.assertNotIn("--bare", args)
-        with patch.dict(reviewer.os.environ, original), \
-             patch.object(reviewer, "run",
-                          return_value=json.dumps({"result": json.dumps({"findings": []}), "is_error": False})) as ask:
-            self.assertEqual(reviewer.ask_claude(
-                "claude", Path("/tmp"), "review", 30), [])
-            env = ask.call_args.kwargs["env"]
-            self.assertTrue(all(name not in env for name in original))
-            args = ask.call_args.args[0]
-            self.assertIn("--safe-mode", args)
-            self.assertEqual(args[args.index("--setting-sources") + 1], "user")
-            self.assertNotIn("--bare", args)
-
-    def test_deepseek_review_still_uses_own_api_token(self):
-        with patch.dict(reviewer.os.environ, {
-            "ANTHROPIC_API_KEY": "wrong",
-            "DEEPSEEK_API_KEY": "fallback-key",
-        }), patch.object(reviewer, "run",
-                         return_value=json.dumps({"result": json.dumps({"findings": []}), "is_error": False})) as run:
-            self.assertEqual(reviewer.ask_claude(
-                "claude", Path("/tmp"), "review", 30,
-                env=reviewer.deepseek_environment()), [])
-            env = run.call_args.kwargs["env"]
-            self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "fallback-key")
-            self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic")
-
     def test_claude_prompt_via_stdin_no_project_hooks(self):
         class Result:
             returncode = 0
@@ -284,8 +214,7 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertEqual(reviewer.ask_claude("claude", Path("/tmp"), "prompt", 30), [])
             args = proc.call_args.args[0]
             self.assertEqual(proc.call_args.kwargs["input"], "prompt")
-            self.assertEqual(proc.call_args.kwargs["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "sonnet")
-            self.assertEqual(proc.call_args.kwargs["env"]["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"], "1")
+            self.assertNotIn("env", proc.call_args.kwargs)
             self.assertNotIn("prompt", args)
             self.assertIn("--setting-sources", args)
             self.assertIn('{"disableAllHooks": true}', args)
@@ -521,9 +450,8 @@ class ReviewerUnitTests(unittest.TestCase):
             argv = cli.call_args.args[0]
             self.assertIn("/code-review high " + "a"*40 + ".." + "b"*40, argv)
             self.assertIn("--permission-mode", argv)
-            self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
-            self.assertEqual(cli.call_args.kwargs["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "sonnet")
-            self.assertEqual(cli.call_args.kwargs["env"]["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"], "1")
+            self.assertNotIn("--model", argv)
+            self.assertNotIn("env", cli.call_args.kwargs)
             self.assertIn("--disallowedTools", argv)
             self.assertNotIn("--bare", argv)
 
@@ -621,8 +549,7 @@ class ReviewerUnitTests(unittest.TestCase):
         self.assertIn("Continue the interrupted prompt review", resumed.args[0][-1])
         self.assertIn("return the complete result requested by the original prompt",
                       resumed.args[0][-1])
-        self.assertNotIn("CLAUDE_CODE_RESUME_INTERRUPTED_TURN", resumed.kwargs["env"])
-        self.assertNotIn("CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS", resumed.kwargs["env"])
+        self.assertNotIn("env", resumed.kwargs)
         self.assertIn("--tools", resumed.args[0])
 
     def test_second_interruption_remains_error_and_never_changes_provider(self):
@@ -653,50 +580,6 @@ class ReviewerUnitTests(unittest.TestCase):
                     work=Path(tmp), state={"prs": {}},
                     state_path=Path(tmp)/"state", timeout=5)
         deepseek.assert_not_called()
-
-    def test_deepseek_env_is_scoped_and_uses_v41_flash(self):
-        with patch.dict(reviewer.os.environ,
-                        {"DEEPSEEK_API_KEY": "fake-review-only-key",
-                         "ANTHROPIC_API_KEY": "old-claude-key",
-                         "ANTHROPIC_BASE_URL": "old"}, clear=True):
-            env = reviewer.deepseek_environment()
-        self.assertEqual(env["ANTHROPIC_MODEL"], "claude-sonnet-4-5-20250929")
-        self.assertEqual(env["ANTHROPIC_DEFAULT_SONNET_MODEL"], "claude-sonnet-4-5-20250929")
-        self.assertEqual(env["CLAUDE_CODE_SUBAGENT_MODEL"], "deepseek-flash")
-        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic")
-        # DeepSeek Anthropic endpoint maps native claude-sonnet* to Flash.
-        self.assertEqual(env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "786432")
-        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "fake-review-only-key")
-        self.assertNotIn("ANTHROPIC_API_KEY", env)
-        self.assertNotIn("DEEPSEEK_API_KEY", env)
-        with patch.dict(reviewer.os.environ, {}, clear=True):
-            with self.assertRaises(reviewer.ReviewUnavailable):
-                reviewer.deepseek_environment()
-
-    def test_quota_falls_back_to_actual_deepseek_review(self):
-        pr = {"number": 2, "state": "open", "draft": False,
-              "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
-              "base": {"ref": "main"}, "body": ""}
-        with tempfile.TemporaryDirectory() as tmp, \
-             patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "native_review",
-                          side_effect=reviewer.QuotaExceeded("session limit")), \
-             patch.object(reviewer, "ask_claude", return_value=[]) as ask, \
-             patch.object(reviewer, "api", return_value=pr), \
-             patch.object(reviewer, "already_commented", return_value=False), \
-             patch.object(reviewer, "post_comment") as comment, \
-             patch.object(reviewer, "commit_status") as status, \
-             patch.object(reviewer, "save_state"), \
-             patch.dict(reviewer.os.environ, {"DEEPSEEK_API_KEY": "fake"}):
-            result = reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
-                                     work=Path(tmp), state={"prs": {}},
-                                     state_path=Path(tmp)/"state", timeout=5)
-        self.assertIn("provider=DeepSeek-V4.1-Flash-1017", result)
-        self.assertEqual(ask.call_count, 1)
-        self.assertEqual(ask.call_args.kwargs["model"], "claude-sonnet-4-5-20250929")
-        self.assertIn("ANTHROPIC_AUTH_TOKEN", ask.call_args.kwargs["env"])
-        self.assertIn("DeepSeek", comment.call_args.args[3])
-        self.assertEqual(status.call_args.args[3], "success")
 
     def test_claude_returns_on_next_review_without_deepseek(self):
         pr = {"number": 2, "state": "open", "draft": False,
