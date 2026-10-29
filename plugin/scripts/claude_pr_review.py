@@ -58,9 +58,7 @@ def is_claude_quota(message):
 def claude_subscription_environment():
     """Always use Claude Code's on-disk subscription login, not inherited API auth.
 
-    The same self-hosted Runner also invokes DeepSeek through ANTHROPIC_AUTH_TOKEN.
-    The ordinary Claude invocation must not inherit any conflicting model routing
-    or authentication setting from that process, service, or host.
+    The Claude Code user's settings.json selects the GLM provider.\n    Do not inherit conflicting authentication or model overrides from CI.
     """
     env = os.environ.copy()
     for name in (
@@ -74,10 +72,7 @@ def claude_subscription_environment():
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
     ):
         env.pop(name, None)
-    # Keep the existing Claude subscription login. --bare disables OAuth and
-    # is not suitable here; safe-mode and empty setting sources discard ambient
-    # user/project customizations that may reintroduce API-key auth.
-    # The PR reviewer must not inherit Opus defaults, including in subagents.
+    # Preserve the Claude Code harness and its GLM provider configuration.\n    # Keep subagents on the configured Sonnet alias.
     env["CLAUDE_CODE_SUBAGENT_MODEL"] = "sonnet"
     env["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"] = "1"
     return env
@@ -405,45 +400,6 @@ def ask_claude(binary, cwd, prompt, timeout, model="sonnet", env=None,
 
 
 
-def deepseek_environment():
-    """Scope the fallback token to DeepSeek's CLI subprocess only."""
-    key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-    if not key:
-        raise ReviewUnavailable("DEEPSEEK_API_KEY is missing from the review runner")
-    env = os.environ.copy()
-    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-                 "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
-                 "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
-                 "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"):
-        env.pop(name, None)
-    # Claude CLI recognizes its own Sonnet ID; DeepSeek officially maps
-    # claude-sonnet* to the current Flash model at its Anthropic endpoint.
-    env.update({
-        "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
-        "ANTHROPIC_AUTH_TOKEN": key,
-        "ANTHROPIC_MODEL": "claude-sonnet-4-5-20250929",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-sonnet-4-5-20250929",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-5-20250929",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-sonnet-4-5-20250929",
-        "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash",
-        "CLAUDE_CODE_EFFORT_LEVEL": "max",
-        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "786432",
-    })
-    env.pop("DEEPSEEK_API_KEY", None)
-    return env
-
-
-def deepseek_review(binary, directory, diff, pr_body, timeout):
-    """Perform a full independent review rather than reusing partial Claude findings."""
-    env = deepseek_environment()
-    candidates = ask_claude(binary, directory, quality_prompt(diff, pr_body),
-                            timeout, model="claude-sonnet-4-5-20250929", env=env)
-    verified = (ask_claude(binary, directory, verify_prompt(candidates, diff),
-                           timeout, model="claude-sonnet-4-5-20250929", env=env)
-                if candidates else [])
-    return filter_findings(verified, diff)
-
-
 def needs_quality_review(diff):
     """Inspect executable changes plus live configuration/prompt text."""
     paths = changed_lines(diff)
@@ -655,10 +611,6 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
                                    verify_prompt(candidates, diff), timeout, "sonnet")
                         if candidates else [])
             findings = filter_findings(verified, diff)
-        except QuotaExceeded:
-            provider = "DeepSeek-V4.1-Flash-1017"
-            findings = deepseek_review(
-                claude, directory, diff, pr.get("body") or "", timeout)
         fresh = api(gh, f"repos/{repo}/pulls/{number}")
         if fresh["head"]["sha"] != sha:
             return "skip:head updated during review"
