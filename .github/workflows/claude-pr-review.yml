@@ -42,7 +42,7 @@ jobs:
           set -eu
           state="$HOME/.local/state/model-review/${REPO//\//_}-pr-$PR_NUMBER.json"
           work="$HOME/.local/share/model-review/${REPO//\//_}/$PR_NUMBER"
-          python3 plugin/scripts/model_pr_review.py \
+          python3 plugin/scripts/claude_pr_review.py \
             --repo "$REPO" --pr-number "$PR_NUMBER" \
             --gh /home/ubuntu/.local/bin/gh \
             --harness /home/ubuntu/.local/bin/claude \
@@ -85,7 +85,7 @@ jobs:
           if [[ -n "$MANUAL_REREVIEW_COMMENT_ID" ]]; then
             manual_args=(--manual-rereview-comment-id "$MANUAL_REREVIEW_COMMENT_ID")
           fi
-          python3 plugin/scripts/model_pr_review.py \
+          python3 plugin/scripts/claude_pr_review.py \
             --repo "$REPO" --pr-number "$PR_NUMBER" \
             --gh /home/ubuntu/.local/bin/gh \
             --harness /home/ubuntu/.local/bin/claude \
