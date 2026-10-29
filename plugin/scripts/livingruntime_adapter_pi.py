@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import uuid
 from pathlib import Path
 
@@ -98,6 +99,41 @@ def official_glm_agent_dir():
     return str(directory)
 
 
+_REPAIR_MARKER = re.compile(r"^\\[eventgraph-pi-repair pr=([1-9][0-9]*) sha=([0-9a-f]{40})\\] ")
+_CN_DEV = "e21c871f-317b-4f3e-95bf-8d4299547a40"
+
+
+def _git(root, *args):
+    return subprocess.run(["git", "-C", str(root), *args], check=True,
+                          capture_output=True, text=True, timeout=45).stdout.strip()
+
+
+def prepare_repair_worktree(goal, *, project, device, workspace):
+    match = _REPAIR_MARKER.match(goal)
+    if not match:
+        return workspace
+    if project != "aihot-dev" or device != _CN_DEV:
+        raise PermissionError("EventGraph native Pi repair is only allowed on cn-dev aihot-dev")
+    number, sha = int(match.group(1)), match.group(2)
+    root = Path(workspace).resolve(strict=True)
+    if _git(root, "rev-parse", "--show-toplevel") != str(root):
+        raise ValueError("Pi repair project must be a Git worktree root")
+    path = root / ".worktrees" / f"pi-repair-{number}-{sha[:12]}"
+    if path.exists():
+        if (_git(path, "rev-parse", "HEAD") != sha or
+            _git(path, "status", "--porcelain")):
+            raise PermissionError("prior Pi repair worktree differs from the exact clean PR HEAD")
+        return str(path)
+    # Read-only fetch can update local Git objects, not the remote PR branch.
+    _git(root, "fetch", "origin", sha)
+    if _git(root, "rev-parse", sha + "^{commit}") != sha:
+        raise ValueError("target PR commit not available")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _git(root, "worktree", "add", "--detach", str(path), sha)
+    return str(path)
+
+
+
 class PiAdapter(ClaudeCodeAdapter):
     adapter_id = "pi"
 
@@ -122,7 +158,8 @@ class PiAdapter(ClaudeCodeAdapter):
         options = validate_options(options)
         provider = options.get("provider", "bigmodel-official")
         model = options.get("model", "glm-5.3")
-        cwd = pi_workspace(device, project)
+        cwd = prepare_repair_worktree(goal, project=project, device=device,
+                                      workspace=pi_workspace(device, project))
         default_env = Path.home() / ".livingruntime" / "official-glm.env"
         owner_env_selected = (provider == "bigmodel-official" and
                               "env_file" not in options and default_env.is_file())
