@@ -76,7 +76,7 @@ def official_glm_agent_dir():
             "bigmodel-official": {
                 "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
                 "api": "openai-completions",
-                "apiKey": "$BIGMODEL_API_KEY",
+                "apiKey": "BIGMODEL_API_KEY",
                 "models": [{
                     "id": "glm-5.3", "name": "GLM-5.3",
                     "input": ["text"], "reasoning": True,
