@@ -286,7 +286,8 @@ class Workboard:
                 if row['session_id'] and (row['session_id'] != session_id or row['runtime_job_id'] != runtime_job_id):
                     raise ValueError("attempt already attached to another native execution")
                 db.execute("UPDATE workboard_items SET status=?,session_id=?,runtime_job_id=? WHERE id=?",
-                           ('RUNNING' if operation == 'started' else 'CLAIMED', session_id, runtime_job_id, item_id))
+                           ('RUNNING' if operation == 'started' or row['status'] == 'RUNNING' else 'CLAIMED',
+                            session_id, runtime_job_id, item_id))
             elif operation == 'finished':
                 if row['status'] != 'RUNNING':
                     raise ValueError("cannot verify an execution that never started")
