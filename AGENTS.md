@@ -1,6 +1,6 @@
 # LivingRuntime Remote engineering workflow
 
-Keep the existing LivingRuntime Remote plugin tools, durable Pi jobs, host permissions, `plugin/skills/debug-and-repair`, `plugin/skills/deploy`, and central Claude R01–R18 independent reviewer. This repository is the Remote tool/runtime, not a second Spec/CI manager.
+Keep the existing LivingRuntime Remote plugin tools, durable Pi jobs, host permissions, `plugin/skills/debug-and-repair`, `plugin/skills/deploy`, and central DeepSeek R01–R18 independent reviewer. This repository is the Remote tool/runtime, not a second Spec/CI manager.
 
 ## Five selectively adopted engineering skills
 
@@ -14,4 +14,4 @@ Use these skills on demand rather than reading all five on every task:
 
 Native discovery: `.agents/skills/` for Pi/Codex and `.claude/skills/` for Claude; the Remote plugin distribution also has `plugin/skills/`. All three store matching upstream definitions. Read the tool-specific Remote skill for filesystem, approval, credentials and host-scope constraints before executing remote operations. Upstream general process text does not grant extra tool permissions, autonomous credential handling, or broad terminal execution.
 
-`docs/agent-skills-adoption.md` records upstream revision and license. Generic skill examples are **not** new CI workflows. For non-trivial engineering changes, retain the currently required Spec/PR/Claude review; within approved scope continue development autonomously without adding artificial human checkpoints.
+`docs/agent-skills-adoption.md` records upstream revision and license. Generic skill examples are **not** new CI workflows. For non-trivial engineering changes, retain the currently required Spec/PR/DeepSeek review; within approved scope continue development autonomously without adding artificial human checkpoints.
