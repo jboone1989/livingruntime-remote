@@ -833,9 +833,9 @@ textarea{min-height:72px;resize:vertical}
 .event{display:flex;justify-content:space-between;gap:12px;align-items:baseline;border-bottom:1px solid var(--stroke);padding:6px 0;font-size:12px}
 .event:last-child{border-bottom:0}
 .event span:last-child{color:var(--sub);font-size:11px;white-space:nowrap}
-#activity-view{display:none}
-body[data-view=activity] #activity-view{display:block}
-body[data-view=activity] #devices-view{display:none}
+#activity-view,#workboard-view{display:none}
+body[data-view=activity] #activity-view,body[data-view=workboard] #workboard-view{display:block}
+body[data-view=activity] #devices-view,body[data-view=workboard] #devices-view{display:none}
 .statusbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:space-between;margin-top:10px;font-size:11px;color:var(--sub)}
 section[hidden],div[hidden]{display:none!important}
 @media(prefers-color-scheme:dark){:root{--txt:var(--color-text-primary,#f1f2f5);--sub:var(--color-text-secondary,#b7bbc4);--action:#f1f2f5;--action-text:#181818}}
@@ -870,7 +870,7 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
   <div class="stat"><b id="sum-projects">—</b><span>项目</span></div>
   <div class="stat"><b id="sum-attention">—</b><span>默认设备待处理</span></div>
  </div>
- <nav class="tabs" aria-label="查看方式"><button class="tab" type="button" id="tab-devices" aria-selected="true">设备与 Agent</button><button class="tab" type="button" id="tab-activity" aria-selected="false">运行与审批</button></nav>
+ <nav class="tabs" aria-label="查看方式"><button class="tab" type="button" id="tab-devices" aria-selected="true">设备与 Agent</button><button class="tab" type="button" id="tab-activity" aria-selected="false">运行与审批</button><button class="tab" type="button" id="tab-workboard" aria-selected="false">共享任务</button></nav>
  <div id="devices-view" class="workspace">
   <aside class="panel"><h2 class="panel-title">我的设备</h2><input class="search" id="search" type="search" placeholder="搜索主机、Agent 或项目" aria-label="搜索设备"><div id="device-list" class="device-list"></div></aside>
   <main class="panel">
@@ -896,6 +896,16 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
   <hr class="rule"><h3 class="subhead">待处理审批与完成回执</h3><div id="attention" class="history"></div>
   <details><summary class="subhead">最近历史和诊断</summary><div id="recent-activity" class="history"></div></details>
  </div>
+ <div id="workboard-view" class="panel">
+  <h2 class="panel-title">共享任务 · Workboard（只读试验）</h2>
+  <p class="notice" id="workboard-status" role="status">仅显示 Relay 已授权的任务与回执；不代替 CI 或人工验收。</p>
+  <div class="agents">
+   <section class="agent"><h3 class="subhead">发件箱 · Goals</h3><div id="wb-goals" class="history"></div></section>
+   <section class="agent"><h3 class="subhead">任务表 · WorkItems</h3><div id="wb-items" class="history"></div></section>
+   <section class="agent"><h3 class="subhead">待我处理 · Human Actions</h3><div id="wb-actions" class="history"></div></section>
+   <section class="agent"><h3 class="subhead">收件箱 · Inbox</h3><div id="wb-inbox" class="history"></div></section>
+  </div>
+ </div>
  <footer class="statusbar"><span id="footer-note">读取设备清单中…</span><span id="updated"></span></footer>
 </div>
 <script>
@@ -903,6 +913,7 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
  const $ = id => document.getElementById(id);
  const pending = new Map(); let id = 1; let connected = false; let latest = {};
  let selected = null; let search = ""; let scheduled = null; let busy = false;
+ let board = null; let boardError = null;
  const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
  const txt = v => String(v ?? "");
  const array = value => Array.isArray(value) ? value : [];
@@ -979,10 +990,34 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
    const history=array(o.activity).slice(-8).reverse();
    $("recent-activity").innerHTML=history.length?history.map(a=>'<div class="event"><span>'+esc(a.tool||"远程操作")+'</span><span>'+esc(a.ok?"成功":"失败")+'</span></div>').join(""):'<div class="empty">暂无最近活动</div>';
  }
+ function renderWorkboard(){
+   $("workboard-status").textContent=boardError||"Relay 共享任务只读快照；完成回执不等于用户已确认。";
+   const empty='<div class="empty">暂无记录</div>';
+   if(!board){
+     for(const id of ["wb-goals","wb-items","wb-actions","wb-inbox"])$(id).innerHTML='<div class="empty">未能读取共享任务状态</div>';
+     return;
+   }
+   const goals=array(board.goals),items=array(board.items),actions=array(board.human_actions),inbox=array(board.inbox);
+   $("wb-goals").innerHTML=goals.length?goals.map(g=>'<div class="event"><span>'+esc(g.title)+'</span><span>'+esc(g.paused?"已暂停":g.succeeded_items+"/"+g.total_items+" 已完成")+'</span></div>').join(""):empty;
+   $("wb-items").innerHTML=items.length?items.slice(0,30).map(w=>'<div class="event"><span>'+esc(txt(w.goal).slice(0,100))+'<div class="tiny">'+esc(w.agent_id)+" · "+esc(w.project)+'</div></span><span>'+esc(w.status)+'</span></div>').join(""):empty;
+   $("wb-actions").innerHTML=actions.length?actions.map(a=>'<div class="event"><span>'+esc(txt(a.reason).slice(0,120))+'<div class="tiny">'+esc(a.item_id)+'</div></span><span>需核对后处理</span></div>').join(""):empty;
+   $("wb-inbox").innerHTML=inbox.length?inbox.map(x=>'<div class="event"><span>'+esc(x.item_id)+'<div class="tiny">revision '+esc(txt(x.source_revision).slice(0,12))+'</div></span><span>未确认</span></div>').join(""):empty;
+ }
+ async function loadWorkboard(){
+   try{
+     const result=window.openai?.callTool
+       ?await window.openai.callTool("workboard_list",{})
+       :await request("tools/call",{name:"workboard_list",arguments:{}});
+     const data=value(result);
+     if(!["goals","items","human_actions","inbox"].every(k=>Array.isArray(data[k])))throw new Error("未返回完整任务快照");
+     board=data;boardError=null;
+   }catch(e){board=null;boardError="共享任务试验尚不可用："+txt(e?.message||e);}
+   renderWorkboard();
+ }
  function render(snapshot) {
    if(!snapshot||typeof snapshot!=="object")return;
    latest=snapshot;
-   renderStats();renderDevices();renderActivity();
+   renderStats();renderDevices();renderActivity();renderWorkboard();
    $("updated").textContent="更新于 "+new Date().toLocaleTimeString();
  }
  async function refresh(){
@@ -992,6 +1027,7 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
        ?await window.openai.callTool("remote_overview",{include_resources:false})
        :await request("tools/call",{name:"remote_overview",arguments:{include_resources:false}});
      render(value(result));
+     if(document.body.dataset.view==="workboard")await loadWorkboard();
    } catch(e){$("footer-note").textContent="刷新失败："+txt(e?.message||e);}
    finally{$("refresh").disabled=false;busy=false;}
  }
@@ -999,6 +1035,8 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
    document.body.dataset.view=name;
    $("tab-devices").setAttribute("aria-selected",name==="devices"?"true":"false");
    $("tab-activity").setAttribute("aria-selected",name==="activity"?"true":"false");
+   $("tab-workboard").setAttribute("aria-selected",name==="workboard"?"true":"false");
+   if(name==="workboard")void loadWorkboard();
  }
  $("device-list").addEventListener("click",e=>{
    const el=e.target.closest("button[data-device]");if(!el)return;
@@ -1026,6 +1064,7 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
  });
  $("tab-devices").addEventListener("click",()=>selectTab("devices"));
  $("tab-activity").addEventListener("click",()=>selectTab("activity"));
+ $("tab-workboard").addEventListener("click",()=>selectTab("workboard"));
  $("refresh").addEventListener("click",refresh);
  const syncMode=()=>{document.body.dataset.mode=window.openai?.displayMode||"inline";};
  window.addEventListener("openai:set_globals",syncMode,{passive:true});
@@ -1039,7 +1078,11 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
      const p=pending.get(m.id);pending.delete(m.id);
      m.error?p.reject(m.error):p.resolve(m.result);return;
    }
-   if(m.method==="ui/notifications/tool-result")render(m.params?.structuredContent||null);
+   if(m.method==="ui/notifications/tool-result"){
+     const payload=m.params?.structuredContent||null;
+     if(payload&&Array.isArray(payload.goals)&&Array.isArray(payload.items)){board=payload;boardError=null;renderWorkboard();}
+     else render(payload);
+   }
    if(m.method==="ui/notifications/request-teardown"){connected=false;if(scheduled)clearInterval(scheduled);}
  },{passive:true});
  window.addEventListener("pagehide",()=>{connected=false;if(scheduled)clearInterval(scheduled);},{once:true});
