@@ -16,14 +16,14 @@ class PatchExportTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.run("init", "-q")
+        self.git("init", "-q")
         self.make(PATH, "export const x = 1;\n")
-        self.run("add", ".")
-        self.run("-c", "user.email=test@example.invalid", "-c",
+        self.git("add", ".")
+        self.git("-c", "user.email=test@example.invalid", "-c",
                  "user.name=Test", "commit", "-qm", "base")
-        self.head = self.run("rev-parse", "HEAD").strip()
+        self.head = self.git("rev-parse", "HEAD").strip()
 
-    def run(self, *args):
+    def git(self, *args):
         return subprocess.run(["git", "-C", str(self.root), *args],
                               check=True, capture_output=True, text=True).stdout
 
@@ -41,7 +41,7 @@ class PatchExportTests(unittest.TestCase):
         self.assertEqual([r["path"] for r in result["changes"]],
                          [ "packages/backend/src/editorial/explain.ts", "tests/explain-fix.test.ts" ])
         self.assertEqual(result["changes"][0]["expected_blob_sha"],
-                         self.run("rev-parse", "HEAD:" + PATH).strip())
+                         self.git("rev-parse", "HEAD:" + PATH).strip())
         self.assertIsNone(result["changes"][1]["expected_blob_sha"])
         self.assertEqual(result["changes"][0]["content"], "export const x = 2;\n")
 
@@ -73,8 +73,8 @@ class PatchExportTests(unittest.TestCase):
 
     def test_committed_child_changes_are_exported_but_not_unrelated_history(self):
         self.make(PATH, "export const x = 4;\n")
-        self.run("add", PATH)
-        self.run("-c", "user.email=test@example.invalid", "-c",
+        self.git("add", PATH)
+        self.git("-c", "user.email=test@example.invalid", "-c",
                  "user.name=Test", "commit", "-qm", "local Pi patch")
         self.assertEqual(export(self.root, 175, self.head)["changes"][0]["content"],
                          "export const x = 4;\n")
