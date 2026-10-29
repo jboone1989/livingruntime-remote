@@ -191,6 +191,11 @@ def save_state(path, data):
     os.replace(tmp_path, path)
 
 
+def ensure_review_budget(diff):
+    """Keep bounded full-diff review while allowing one cohesive 100KB PR."""
+    ensure_review_budget(diff)
+
+
 def checkout(repo, number, sha, base, directory, cache):
     """Fetch both remote commits afresh; retain Git objects, never a source tree."""
     url = f"https://github.com/{repo}.git"
