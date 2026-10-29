@@ -39,6 +39,14 @@ def safe_path(raw):
     if not isinstance(raw, str) or not raw.isascii() or len(raw) > 240:
         raise ValueError("invalid UTF-8 file path")
     parts = PurePosixPath(raw).parts
+    # Reject non-canonical paths instead of letting PurePosixPath normalize away
+    # a dot component supplied by an untrusted agent.
+    if raw != "/".join(parts):
+        raise ValueError("non-canonical patch path")
+    name = parts[-1].lower()
+    if any(re.search(r"(?:^|[-_.])" + token + r"(?:$|[-_.])", name)
+           for token in FORBIDDEN):
+        raise ValueError("protected business-code path")
     if (not raw.startswith(ALLOWED) or not parts or
         any(part in ("", ".", "..") or part.lower() in FORBIDDEN for part in parts) or
         "\\" in raw or raw.startswith("/") or any(part.startswith(".") for part in parts) or
@@ -115,6 +123,8 @@ def prepare_tree(sha, changes):
         entries.append({"path": path, "mode": "100644", "type": "blob", "sha": blob["sha"]})
     new_tree = api("git/trees", method="POST", body={
         "base_tree": base_tree, "tree": entries})
+    if new_tree["sha"] == base_tree:
+        raise ValueError("repair did not change any bytes")
     return new_tree["sha"]
 
 
