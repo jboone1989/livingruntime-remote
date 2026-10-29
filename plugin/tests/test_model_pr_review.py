@@ -87,7 +87,7 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertIn("TRUSTED REVIEW CHECKLIST", ask.call_args_list[1].args[2])
 
     def test_trusted_agent_instructions_still_get_deep_review(self):
-        for path in ("docs/claude-review-checklist.md", "plugin/skills/deploy/SKILL.md",
+        for path in ("docs/model-review-checklist.md", "plugin/skills/deploy/SKILL.md",
                      "AGENTS.md", "plugin/README.md", "docs/AGENTS.md",
                      "docs/CLAUDE.md", "specs/a/AGENTS.md", "specs/a/SKILL.md"):
             patch = (f"diff --git a/{path} b/{path}\n"
