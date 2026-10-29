@@ -1,4 +1,4 @@
-name: DeepSeek PR review (API-backed CLI)
+name: Model PR review (OpenAI-compatible API)
 
 on:
   pull_request_target:
@@ -27,10 +27,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Review PR with DeepSeek through the Anthropic-compatible CLI
+      - name: Review PR with configured OpenAI-compatible model API
         env:
           GH_TOKEN: ${{ github.token }}
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          REVIEW_BASE_URL: ${{ vars.REVIEW_BASE_URL || 'https://api.deepseek.com' }}
+          REVIEW_API_KEY: ${{ secrets.REVIEW_API_KEY || secrets.DEEPSEEK_API_KEY }}
+          REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'deepseek-flash' }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GIT_CONFIG_COUNT: "1"
@@ -38,12 +40,11 @@ jobs:
           GIT_CONFIG_VALUE_0: "!/home/ubuntu/.local/bin/gh auth git-credential"
         run: |
           set -eu
-          state="$HOME/.local/state/claude-review/${REPO//\//_}-pr-$PR_NUMBER.json"
-          work="$HOME/.local/share/claude-review/${REPO//\//_}/$PR_NUMBER"
+          state="$HOME/.local/state/model-review/${REPO//\//_}-pr-$PR_NUMBER.json"
+          work="$HOME/.local/share/model-review/${REPO//\//_}/$PR_NUMBER"
           python3 plugin/scripts/claude_pr_review.py \
             --repo "$REPO" --pr-number "$PR_NUMBER" \
             --gh /home/ubuntu/.local/bin/gh \
-            --claude /home/ubuntu/.local/bin/claude \
             --state "$state" --work "$work" --timeout 360
 
   dispatched-review:
@@ -56,7 +57,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Review EventGraph PR
+      - name: Review EventGraph PR with configured model API
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           REPO: ${{ github.event.client_payload.repository }}
@@ -84,7 +85,6 @@ jobs:
           python3 plugin/scripts/claude_pr_review.py \
             --repo "$REPO" --pr-number "$PR_NUMBER" \
             --gh /home/ubuntu/.local/bin/gh \
-            --claude /home/ubuntu/.local/bin/claude \
             --state "$state" --work "$work" --timeout 360 \
             --expected-sha "$EXPECTED_SHA" "${manual_args[@]}"
 
