@@ -31,11 +31,11 @@ class ReviewError(Exception):
 
 
 class QuotaExceeded(ReviewError):
-    """DeepSeek provider quota exhausted (not a code review finding)."""
+    """Model provider quota exhausted (not a code review finding)."""
 
 
 class ReviewUnavailable(ReviewError):
-    """DeepSeek review unavailable; do not exhaust the PR retry budget."""
+    """Model review unavailable; do not exhaust the PR retry budget."""
 
 
 def run(argv, cwd=None, timeout=120, input_text=None, env=None):
@@ -360,7 +360,7 @@ def needs_quality_review(diff):
 def quality_prompt(diff, pr_body, source_context=""):
     """Apply every relevant item of the trusted, versioned R01–R18 checklist."""
     checklist = (Path(__file__).resolve().parents[2]
-                 / "docs" / "claude-review-checklist.md").read_text(encoding="utf-8")
+                 / "docs" / "model-review-checklist.md").read_text(encoding="utf-8")
     return (
         "You are the independent adversarial code reviewer. "
         "Do not execute or change source code. "
@@ -396,7 +396,7 @@ def documentation_only(diff):
         path = header.group(2)
         if path.startswith(("industry/prompts/", "prompts/", "config/prompts/")):
             return False
-        if path.rsplit("/", 1)[-1].lower() in ("agents.md", "claude.md", "skill.md", "claude-review-checklist.md"):
+        if path.rsplit("/", 1)[-1].lower() in ("agents.md", "claude.md", "skill.md", "model-review-checklist.md"):
             return False
         if not (path.startswith(("specs/", "docs/")) and path.endswith((".md", ".mdx", ".rst", ".txt"))
                 or path in ("README.md", "CHANGELOG.md", "CONTRIBUTING.md")):
