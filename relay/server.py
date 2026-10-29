@@ -3666,7 +3666,19 @@ def create_mcp(
         async def workboard_list() -> dict[str, Any]:
             """Read this owner's draft work items and pending human actions."""
             user = _principal("remote:read")
-            return {"items": board.list_items(user), "human_actions": board.human_actions(user)}
+            return {"items": board.list_items(user), "human_actions": board.human_actions(user),
+                    "inbox": board.inbox(user)}
+
+        @server.tool(name="workboard_inbox", annotations=ToolAnnotations(readOnlyHint=True))
+        async def workboard_inbox(include_acknowledged: bool = False) -> dict[str, Any]:
+            """Durable completed-work receipts; unread state is independent of next task claims."""
+            return {"receipts": board.inbox(_principal("remote:read"),
+                                           include_acknowledged=include_acknowledged)}
+
+        @server.tool(name="workboard_ack", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+        async def workboard_ack(item_id: str, fence: int, source_revision: str) -> dict[str, Any]:
+            """Acknowledge exactly one receipt for the same owner, attempt and frozen revision."""
+            return board.acknowledge(_principal("remote:write"), item_id, fence, source_revision)
 
         @server.tool(name="workboard_resolve", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
         async def workboard_resolve(action_id: str, decision: str, resolution: str,
