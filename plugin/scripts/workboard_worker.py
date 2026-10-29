@@ -121,17 +121,30 @@ class Worker:
                             check = bridge.exec
                         # Fixed owner-authored, repeatable acceptance checks use
                         # the existing exact-command policy, never a shell eval.
-                        result = check(argv=argv, project=item['project'], device=item['local_device'], timeout_seconds=30)
-                        current['verification'] = {'argv': argv, 'returncode': result.get('returncode'),
-                                                   'approval_required': result.get('approval_required', False)}
-                        self.save(current)
-                        if result.get('approval_required') or result.get('returncode') != 0:
+                        try:
+                            result = check(argv=argv, project=item['project'],
+                                           device=item['local_device'], timeout_seconds=30)
+                        except Exception:
+                            # A transient check transport failure is not a failed
+                            # acceptance, but it must not renew the lease forever.
+                            current['verification_failures'] = current.get('verification_failures', 0) + 1
+                            self.save(current)
+                            if current['verification_failures'] < 3:
+                                return
                             self.call('blocked', **identity, execution_done=True,
-                                      reason='Acceptance check failed or requires existing command approval')
+                                      reason='Acceptance check unavailable after 3 attempts; reconcile before retry')
                         else:
-                            self.call('finished', **identity, checks_passed=True,
-                                      evidence_refs=['runtime-job:'+session['runtime_job_id'],
-                                                     'connector-journal:'+self.path.stem+':'+item['id']+':'+str(item['fence'])])
+                            current.pop('verification_failures', None)
+                            current['verification'] = {'argv': argv, 'returncode': result.get('returncode'),
+                                                       'approval_required': result.get('approval_required', False)}
+                            self.save(current)
+                            if result.get('approval_required') or result.get('returncode') != 0:
+                                self.call('blocked', **identity, execution_done=True,
+                                          reason='Acceptance check failed or requires existing command approval')
+                            else:
+                                self.call('finished', **identity, checks_passed=True,
+                                          evidence_refs=['runtime-job:'+session['runtime_job_id'],
+                                                         'connector-journal:'+self.path.stem+':'+item['id']+':'+str(item['fence'])])
                     else:
                         self.call('finished', **identity)
                 elif native in {'FAILED', 'CANCELLED', 'STALLED', 'BLOCKED', 'BLOCKED_HUMAN'}:
