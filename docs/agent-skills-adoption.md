@@ -10,7 +10,7 @@ Owner-approved five skills from [jboone1989/agent-skills](https://github.com/jbo
 
 **Single canonical Skill body per name:** `plugin/skills/<name>/SKILL.md`, also used by the Remote plugin package. Discovery adapters at `.agents/skills/<name>/SKILL.md` (Pi/Codex) and `.claude/skills/<name>/SKILL.md` (Claude) must load that full local canonical body before doing work. The constraint Skill's `references/floor-guard.md` sits by its canonical body.
 
-`.agents/CONSTRAINTS.md` is the quality baseline. The existing `plugin/skills/debug-and-repair` still governs authorized host work; the DeepSeek R01–R18 review remains the independent merge gate. New skills do not grant host permissions, create new CI jobs, or insert extra human confirmations for approved work.
+`.agents/CONSTRAINTS.md` is the quality baseline. The existing `plugin/skills/debug-and-repair` still governs authorized host work; the R01–R18 review through the configured model provider remains the independent merge gate. New skills do not grant host permissions, create new CI jobs, or insert extra human confirmations for approved work.
 
 Adoption is split across two focused PRs to respect the existing **80KB PR review diff budget** without enlarging/bypassing that review rule. Installing the files in Git does not prove a deployed Remote plugin is updated.
 
