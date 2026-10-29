@@ -131,6 +131,41 @@ class RepairCompletionTests(unittest.TestCase):
         self.assertEqual(called, [])
         self.assertEqual(json.loads(self.path.read_text())["state"], "BLOCKED")
 
+    def test_stalled_native_pi_is_a_terminal_human_blocker(self):
+        sent = []
+        with patch.object(completion.agent_sessions, "status",
+                          return_value={"agent_status": {"status": "STALLED"}}), \
+             patch.object(completion, "export") as exported:
+            cfg = {"name": "cn-dev", "url": "https://relay.test", "device_token": "device"}
+            self.assertFalse(completion.deliver(cfg, lambda *a: sent.append(a)))
+            self.assertFalse(completion.deliver(cfg, lambda *a: sent.append(a)))
+            exported.assert_not_called()
+        self.assertEqual(sent, [])
+        item = json.loads(self.path.read_text())
+        self.assertEqual(item["state"], "BLOCKED")
+        self.assertEqual(item["reason"], "native-STALLED")
+
+    def test_invalid_pi_patch_is_blocked_instead_of_retried(self):
+        cfg = {"name": "cn-dev", "url": "https://relay.test", "device_token": "device"}
+        with patch.object(completion.agent_sessions, "status",
+                          return_value={"agent_status": {"status": "SUCCEEDED"}}), \
+             patch.object(completion, "export", side_effect=ValueError("no changes")) as exported:
+            self.assertFalse(completion.deliver(cfg, lambda *a: self.fail("invalid patch sent")))
+            self.assertFalse(completion.deliver(cfg, lambda *a: self.fail("invalid patch retried")))
+        exported.assert_called_once()
+        item = json.loads(self.path.read_text())
+        self.assertEqual(item["state"], "BLOCKED")
+        self.assertEqual(item["reason"], "invalid-patch:ValueError")
+
+    def test_invalid_relay_response_remains_retryable(self):
+        cfg = {"name": "cn-dev", "url": "https://relay.test", "device_token": "device"}
+        with patch.object(completion.agent_sessions, "status",
+                          return_value={"agent_status": {"status": "SUCCEEDED"}}), \
+             patch.object(completion, "export", return_value={"changes": [{"path": "x"}]}):
+            self.assertFalse(completion.deliver(cfg,
+                lambda *a, **kw: (_ for _ in ()).throw(ValueError("invalid Relay JSON"))))
+        self.assertEqual(json.loads(self.path.read_text())["state"], "RUNNING")
+
     def test_other_connector_must_not_forward_repair(self):
         self.assertFalse(completion.deliver({"name": "owner-main"}, lambda *a: self.fail("not allowed")))
         self.assertEqual(json.loads(self.path.read_text())["state"], "RUNNING")
