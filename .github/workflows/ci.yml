@@ -20,7 +20,7 @@ jobs:
             plugin/scripts/bridge.py \
             plugin/scripts/livingruntime_adapter_claude.py \
             plugin/scripts/claude_worker.py \
-            plugin/scripts/claude_pr_review.py \
+            plugin/scripts/model_pr_review.py \
             plugin/scripts/cognition.py \
             plugin/scripts/cognitionctl.py \
             plugin/scripts/launcher.py \
