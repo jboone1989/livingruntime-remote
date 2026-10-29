@@ -732,7 +732,7 @@ class ReviewerUnitTests(unittest.TestCase):
                 pr, repo="org/repo", gh="gh", claude="claude",
                 work=Path(tmp), state={"prs": {}},
                 state_path=Path(tmp)/"state", timeout=5)
-        self.assertIn("provider=deepseek-flash", result)
+        self.assertIn("provider=deepseek-flash[1m]", result)
         deepseek.assert_called_once()
         native.assert_not_called()
         legacy.assert_not_called()
@@ -755,7 +755,7 @@ class ReviewerUnitTests(unittest.TestCase):
                 pr, repo="org/repo", gh="gh", claude="claude",
                 work=Path(tmp), state={"prs": {}},
                 state_path=Path(tmp)/"state", timeout=5)
-        self.assertIn("provider=deepseek-flash", result)
+        self.assertIn("provider=deepseek-flash[1m]", result)
         deepseek.assert_called_once()
         native.assert_not_called()
         legacy.assert_not_called()
@@ -778,7 +778,7 @@ class ReviewerUnitTests(unittest.TestCase):
             result = reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
                                      work=Path(tmp), state={"prs": {}},
                                      state_path=Path(tmp)/"state", timeout=5)
-        self.assertIn("provider=deepseek-flash", result)
+        self.assertIn("provider=deepseek-flash[1m]", result)
         deepseek.assert_called_once()
         native.assert_not_called()
         legacy.assert_not_called()
@@ -801,7 +801,7 @@ class ReviewerUnitTests(unittest.TestCase):
             result = reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
                                      work=Path(tmp), state={"prs": {}},
                                      state_path=Path(tmp)/"state", timeout=5)
-        self.assertIn("provider=deepseek-flash", result)
+        self.assertIn("provider=deepseek-flash[1m]", result)
         deepseek.assert_called_once()
         native.assert_not_called()
         legacy.assert_not_called()
