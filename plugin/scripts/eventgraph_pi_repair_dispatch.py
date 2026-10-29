@@ -140,7 +140,7 @@ def run(number: int, sha: str, kind: str, run_id: int | None):
         raise
     api(f"repos/{REPOSITORY}/issues/comments/{comment['id']}", method="PATCH",
         body=f"<!-- eventgraph-pi-repair sha={sha} attempt={attempt} state=dispatched -->\n"
-             + f"cn-dev native Pi session \`{session}\` accepted the repair request. "
+             + f"cn-dev native Pi session {session} accepted the repair request. "
              + "This is NOT a claim that a patch was pushed or CI passed.")
     print("Dispatched cn-dev Pi for EventGraph PR #", number)
 
