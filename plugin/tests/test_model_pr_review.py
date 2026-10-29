@@ -543,7 +543,7 @@ class ReviewerUnitTests(unittest.TestCase):
         with patch.dict(reviewer.os.environ, config, clear=True), \
              patch.object(reviewer, "run", return_value=json.dumps({
                  "subtype": "success", "is_error": False,
-                 "result": "```json\\n[]\\n```"})) as cli:
+                 "result": "```json\n[]\n```"})) as cli:
             self.assertEqual(reviewer.native_review("claude", Path("/tmp"), "a"*40, "b"*40, 60), [])
             argv = cli.call_args.args[0]
             self.assertIn("/code-review high " + "a"*40 + ".." + "b"*40, argv)
@@ -636,8 +636,13 @@ class ReviewerUnitTests(unittest.TestCase):
             "subtype": "success", "is_error": False,
             "result": json.dumps({"findings": []}),
         })
-        with patch.object(reviewer, "run",
-                          side_effect=[interrupted, completed]) as cli:
+        config = {
+            "REVIEW_API_KEY": "fake-review-key",
+            "REVIEW_BASE_URL": "https://api.deepseek.com/anthropic",
+            "REVIEW_MODEL": "deepseek-flash",
+        }
+        with patch.dict(reviewer.os.environ, config, clear=True), \
+             patch.object(reviewer, "run", side_effect=[interrupted, completed]) as cli:
             self.assertEqual(
                 reviewer.ask_claude("claude", Path("/tmp"), "review", 60), [])
         self.assertEqual(cli.call_count, 2)
@@ -794,7 +799,7 @@ class ReviewerUnitTests(unittest.TestCase):
         deepseek.assert_called_once()
         native.assert_not_called()
         legacy.assert_not_called()
-        self.assertIn("DeepSeek", comment.call_args.args[3])
+        self.assertIn("deepseek-flash[1m]", comment.call_args.args[3])
         self.assertEqual(status.call_args.args[3], "success")
 
     def test_each_new_review_sha_uses_deepseek(self):
