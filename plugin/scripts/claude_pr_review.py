@@ -21,8 +21,8 @@ import urllib.request
 from datetime import datetime, timezone
 
 MARKER = "<!-- claude-review-worker:v1 sha="
-CONTEXT = "deepseek-review"
-LEGACY_CONTEXT = "claude-review"
+CONTEXT = "model-review"
+COMPAT_CONTEXTS = ("deepseek-review", "claude-review")
 MAX_ROUNDS = 3
 
 
@@ -141,10 +141,9 @@ def api(gh, endpoint):
 
 
 def commit_status(gh, repo, sha, state, description):
-    # Publish the real DeepSeek check and a temporary legacy alias so existing
-    # branch rules remain enforced during migration. Both reflect the same result.
-    contexts = (CONTEXT, LEGACY_CONTEXT) if CONTEXT != LEGACY_CONTEXT else (CONTEXT,)
-    for context in contexts:
+    # The model-neutral context is canonical. Compatibility aliases keep existing
+    # EventGraph merge gates enforced while its branch rules and consumers migrate.
+    for context in dict.fromkeys((CONTEXT, *COMPAT_CONTEXTS)):
         run(["gh", "api", f"repos/{repo}/statuses/{sha}", "-X", "POST",
              "-f", f"state={state}", "-f", f"context={context}",
              "-f", f"description={description[:140]}"], timeout=40)
@@ -597,7 +596,7 @@ def run_once(args):
                 if re.fullmatch(r"[0-9a-f]{40}", sha):
                     try:
                         commit_status(args.gh, args.repo, sha, "error",
-                                      "DeepSeek review failed; this PR remains blocked")
+                                      "Model review failed; this PR remains blocked")
                     except Exception as status_exc:
                         print(f"Failed posting error status: {status_exc}", file=sys.stderr)
         return had_error
