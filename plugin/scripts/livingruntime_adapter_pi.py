@@ -99,7 +99,7 @@ def official_glm_agent_dir():
     return str(directory)
 
 
-_REPAIR_MARKER = re.compile(r"^\\[eventgraph-pi-repair pr=([1-9][0-9]*) sha=([0-9a-f]{40})\\] ")
+_REPAIR_MARKER = re.compile(r"^\[eventgraph-pi-repair pr=([1-9][0-9]*) sha=([0-9a-f]{40})\] ")
 _CN_DEV = "e21c871f-317b-4f3e-95bf-8d4299547a40"
 
 
