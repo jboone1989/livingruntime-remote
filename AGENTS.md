@@ -1,6 +1,6 @@
 # LivingRuntime Remote engineering workflow
 
-Keep the existing LivingRuntime Remote plugin tools, durable Pi jobs, host permissions, `plugin/skills/debug-and-repair`, `plugin/skills/deploy`, and central R01–R18 independent reviewer using the configured OpenAI-compatible model API. This repository is the Remote tool/runtime, not a second Spec/CI manager.
+Keep the existing LivingRuntime Remote plugin tools, durable Pi jobs, host permissions, `plugin/skills/debug-and-repair`, `plugin/skills/deploy`, and central R01–R18 independent reviewer using Claude Code as a read-only harness with a configurable Anthropic Messages-compatible model endpoint. This repository is the Remote tool/runtime, not a second Spec/CI manager.
 
 ## Five selectively adopted engineering skills
 
