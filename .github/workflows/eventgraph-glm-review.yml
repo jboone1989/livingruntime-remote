@@ -72,6 +72,11 @@ jobs:
             echo 'PR is stale, draft, forked or not targeting develop.'
             exit 0
           fi
+          # Publish the target identity before operations that can fail, so the
+          # always-run status step can report an execution error on this exact SHA.
+          echo "run=true" >> "$GITHUB_OUTPUT"
+          echo "number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "sha=$CHECK_SHA" >> "$GITHUB_OUTPUT"
           git fetch --no-tags origin refs/heads/develop:refs/remotes/origin/develop
           base="$(git merge-base refs/remotes/origin/develop "$CHECK_SHA")"
           git diff --no-ext-diff --unified=3 "$base" "$CHECK_SHA" -- > "$GITHUB_WORKSPACE/pr-review.diff"
@@ -84,10 +89,7 @@ jobs:
           git clone --depth 1 https://github.com/jboone1989/livingruntime-remote.git "$GITHUB_WORKSPACE/central-reviewer"
           cp "$GITHUB_WORKSPACE/central-reviewer/docs/claude-review-checklist.md" "$GITHUB_WORKSPACE/review-checklist.md"
           test -s "$GITHUB_WORKSPACE/review-checklist.md"
-          echo "run=true" >> "$GITHUB_OUTPUT"
-          echo "number=$pr_number" >> "$GITHUB_OUTPUT"
-          echo "sha=$CHECK_SHA" >> "$GITHUB_OUTPUT"
-
+      
       - name: Require configured GLM key
         if: steps.target.outputs.run == 'true'
         env:
