@@ -160,11 +160,11 @@ class PiAdapterTests(unittest.TestCase):
             agent_dir = root / "trusted-models"
             agent_dir.mkdir()
             fake = root / "pi"
-            fake.write_text('#!/usr/bin/env python3\\n'
-                'import json,os\\n'
+            fake.write_text('#!/usr/bin/env python3\n'
+                'import json,os\n'
                 'print(json.dumps({"type":"message_end","message":{"role":"assistant",'
-                '"content":[{"type":"text","text":os.environ.get("PI_CODING_AGENT_DIR","")}]}}))\\n'
-                'print(json.dumps({"type":"agent_settled"}))\\n', encoding="utf-8")
+                '"content":[{"type":"text","text":os.environ.get("PI_CODING_AGENT_DIR","")}]}}))\n'
+                'print(json.dumps({"type":"agent_settled"}))\n', encoding="utf-8")
             fake.chmod(0o700)
             record = root / (str(uuid.uuid4()) + ".json")
             record.write_text(json.dumps({
