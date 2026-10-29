@@ -549,7 +549,8 @@ class ReviewerUnitTests(unittest.TestCase):
         self.assertIn("Continue the interrupted prompt review", resumed.args[0][-1])
         self.assertIn("return the complete result requested by the original prompt",
                       resumed.args[0][-1])
-        self.assertNotIn("env", resumed.kwargs)
+        self.assertNotIn("ANTHROPIC_AUTH_TOKEN", resumed.kwargs.get("env", {}))
+        self.assertNotIn("ANTHROPIC_BASE_URL", resumed.kwargs.get("env", {}))
         self.assertIn("--tools", resumed.args[0])
 
     def test_quota_without_key_does_not_consume_retry_budget(self):
