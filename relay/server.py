@@ -3991,15 +3991,20 @@ nav a{{margin-right:18px}}
                 "If offline, quota-limited, unsafe, auth missing, or SHA stale, "
                 "return a precise blocker without claiming a successful fix."
             )
+            # Serialize concurrent Check/Claude failure notifications *before*
+            # remote launch. A lost relay response must not launch a second Pi
+            # against the same original PR SHA on a later notification.
+            owner = str(caller["user_sub"])
+            reservation = repair_handoff.reserve(owner, target_id, number, sha)
             result = await relay.call(
-                str(caller["user_sub"]), "start_agent",
+                owner, "start_agent",
                 {"adapter_id": "pi", "project": "aihot-dev",
                  "device": None, "goal": goal},
                 connector=target_id,
             )
             if not isinstance(result, dict) or not isinstance(result.get("session_id"), str):
                 return JSONResponse({"error": "cn-dev Pi did not start"}, status_code=503)
-            repair_handoff.record(str(caller["user_sub"]), target_id, number, sha, result["session_id"])
+            repair_handoff.activate(owner, target_id, reservation, result["session_id"])
             return JSONResponse({
                 "ok": True, "connector_id": target_id,
                 "session_id": result["session_id"],
