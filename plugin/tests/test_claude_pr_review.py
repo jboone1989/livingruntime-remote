@@ -457,6 +457,14 @@ class ReviewerUnitTests(unittest.TestCase):
                                     state_path=Path(tmp) / "state.json", timeout=5)
             self.assertEqual(list(work.iterdir()), [])
 
+    def test_commit_status_publishes_deepseek_and_legacy_gate_contexts(self):
+        with patch.object(reviewer, "run") as run:
+            reviewer.commit_status("gh", "org/repo", "a"*40, "success", "review passed")
+        calls = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(any("context=deepseek-review" in args for args in calls))
+        self.assertTrue(any("context=claude-review" in args for args in calls))
+
     def test_comment_marker_and_blocking(self):
         finding = {"path": "src/a.mjs", "line": 4,
                    "severity": "important", "confidence": 96,
@@ -629,7 +637,10 @@ class ReviewerUnitTests(unittest.TestCase):
         with patch.dict(reviewer.os.environ,
                         {"DEEPSEEK_API_KEY": "fake-review-only-key",
                          "ANTHROPIC_API_KEY": "old-claude-key",
-                         "ANTHROPIC_BASE_URL": "old"}, clear=True):
+                         "ANTHROPIC_BASE_URL": "old",
+                         "ANTHROPIC_DEFAULT_OPUS_MODEL": "old-opus",
+                         "CLAUDE_CODE_OAUTH_TOKEN": "old-oauth",
+                         "CLAUDE_CODE_USE_BEDROCK": "1"}, clear=True):
             env = reviewer.deepseek_environment()
         self.assertEqual(env["ANTHROPIC_MODEL"], "deepseek-flash[1m]")
         self.assertEqual(env["ANTHROPIC_DEFAULT_SONNET_MODEL"], "deepseek-flash[1m]")
