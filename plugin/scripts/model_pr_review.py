@@ -493,7 +493,7 @@ def needs_quality_review(diff):
 def quality_prompt(diff, pr_body):
     """Apply every relevant item of the trusted, versioned R01–R18 checklist."""
     checklist = (Path(__file__).resolve().parents[2]
-                 / "docs" / "claude-review-checklist.md").read_text(encoding="utf-8")
+                 / "docs" / "model-review-checklist.md").read_text(encoding="utf-8")
     return (
         "You are the independent adversarial code reviewer. "
         "Use Read/Glob/Grep only; do not execute or change source code. "
