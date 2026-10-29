@@ -7,8 +7,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "model_pr_review.py
-spec = importlib.util.spec_from_file_location("claude_pr_review_under_test", SCRIPT)
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "model_pr_review.py"
+spec = importlib.util.spec_from_file_location("model_pr_review_under_test", SCRIPT)
 reviewer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(reviewer)
 SHA = "ed2563db25e058f00edafc86ef46d6be830a643d"
