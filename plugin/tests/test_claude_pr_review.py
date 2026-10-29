@@ -618,11 +618,11 @@ class ReviewerUnitTests(unittest.TestCase):
         self.assertEqual(resumed.args[0][:4],
                          ["claude", "-p", "--resume", session_id])
         self.assertIsNone(resumed.kwargs.get("input_text"))
-        self.assertEqual(
-            resumed.kwargs["env"]["CLAUDE_CODE_RESUME_INTERRUPTED_TURN"], "1")
-        self.assertEqual(
-            resumed.kwargs["env"]["CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS"],
-            "600000")
+        self.assertIn("Continue the interrupted prompt review", resumed.args[0][-1])
+        self.assertIn("return the complete result requested by the original prompt",
+                      resumed.args[0][-1])
+        self.assertNotIn("CLAUDE_CODE_RESUME_INTERRUPTED_TURN", resumed.kwargs["env"])
+        self.assertNotIn("CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS", resumed.kwargs["env"])
         self.assertIn("--tools", resumed.args[0])
 
     def test_second_interruption_remains_error_and_never_changes_provider(self):

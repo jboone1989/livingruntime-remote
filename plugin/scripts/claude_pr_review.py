@@ -146,11 +146,19 @@ def run(argv, cwd=None, timeout=120, input_text=None, env=None):
 
 
 def resume_claude(binary, interrupted, options, *, cwd, timeout, env, phase):
-    """Continue one persisted interrupted turn once; never synthesize a review."""
+    """Continue one interrupted turn with an explicit prompt, once."""
     resume_env = (env or os.environ.copy()).copy()
-    resume_env["CLAUDE_CODE_RESUME_INTERRUPTED_TURN"] = "1"
-    resume_env["CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS"] = "600000"
-    argv = [binary, "-p", "--resume", interrupted.session_id, *options]
+    # Claude Code requires a deferred-tool marker in interrupted-turn mode.
+    # At plan/deferred-tool boundaries that marker may be absent; its documented
+    # recovery is --resume SESSION_ID with a continuation prompt instead.
+    resume_env.pop("CLAUDE_CODE_RESUME_INTERRUPTED_TURN", None)
+    resume_env.pop("CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS", None)
+    continuation = (
+        f"Continue the interrupted {phase.replace('-', ' ')} from this conversation. "
+        "Finish the current task and return the complete result requested by the original prompt. "
+        "Do not restart completed work or repeat tool calls that already completed."
+    )
+    argv = [binary, "-p", "--resume", interrupted.session_id, *options, continuation]
     try:
         return run(argv, cwd=cwd, timeout=timeout, env=resume_env)
     except ReviewInterrupted as second:
