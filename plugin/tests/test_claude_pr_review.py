@@ -248,7 +248,7 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertTrue(all(name not in env for name in original))
             args = native.call_args.args[0]
             self.assertIn("--safe-mode", args)
-            self.assertEqual(args[args.index("--setting-sources") + 1], "")
+            self.assertEqual(args[args.index("--setting-sources") + 1], "user")
             self.assertNotIn("--bare", args)
         with patch.dict(reviewer.os.environ, original), \
              patch.object(reviewer, "run",
@@ -259,7 +259,7 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertTrue(all(name not in env for name in original))
             args = ask.call_args.args[0]
             self.assertIn("--safe-mode", args)
-            self.assertEqual(args[args.index("--setting-sources") + 1], "")
+            self.assertEqual(args[args.index("--setting-sources") + 1], "user")
             self.assertNotIn("--bare", args)
 
     def test_deepseek_review_still_uses_own_api_token(self):
