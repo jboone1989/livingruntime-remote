@@ -1,17 +1,16 @@
 # Model Reviewer: adversarial code quality contract
 
-This is the review policy for the existing PR review workflow, implemented in `plugin/scripts/model_pr_review.py`. Inference uses the standard OpenAI-compatible Chat Completions API; no interactive model-account login or provider-specific CLI is used. This is not a new agent service.
+This is the review policy for the existing workflow, implemented in `plugin/scripts/model_pr_review.py`. **Claude Code CLI is the harness; the configured model is the inference backend.** The harness reads and searches the checked-out repository with its read-only tools and runs multi-turn tool-use review passes. The workflow does not use Claude/Anthropic account login, OAuth, subscription quota, or an Anthropic-issued credential.
 
 ## Provider configuration
 
-- `REVIEW_BASE_URL`: defaults to `https://api.deepseek.com`; point it at any compatible Chat Completions endpoint.
-- `REVIEW_API_KEY`: bearer token for that endpoint.
-- `REVIEW_MODEL`: defaults to `deepseek-flash`; set it when the target provider uses a different model identifier.
+- `REVIEW_BASE_URL`: defaults to `https://api.deepseek.com/anthropic`. It must point to an endpoint compatible with Claude Code's Anthropic Messages protocol.
+- `REVIEW_API_KEY`: API key issued by the selected model provider; the legacy `DEEPSEEK_API_KEY` secret remains a migration fallback.
+- `REVIEW_MODEL`: optional model ID; defaults to `deepseek-flash`.
 
-The workflow reads the URL from the GitHub Actions variable `REVIEW_BASE_URL` and the key from the `REVIEW_API_KEY` secret. It temporarily accepts `DEEPSEEK_API_KEY` as a key-name migration fallback. Model identifiers are part of the OpenAI-compatible request protocol, so changing only URL/key works when the new endpoint accepts the configured model alias; otherwise change the `REVIEW_MODEL` variable too.
+For DeepSeek, the official Anthropic-compatible endpoint is `https://api.deepseek.com/anthropic`. To switch to another provider that supports this protocol and accepts the same model ID, change only `REVIEW_BASE_URL` and `REVIEW_API_KEY`. If the provider requires a different model ID, set `REVIEW_MODEL` too. A provider that exposes only OpenAI Chat Completions cannot be connected directly to Claude Code's harness; use its Anthropic-compatible endpoint or a protocol gateway rather than replacing the harness with a raw HTTP prompt call.
 
 The configured model must challenge whether each new piece of code is necessary. An author saying "safer" or "tests pass" is not evidence.
-
 | Failure mode to detect | Review question | Required evidence |
 | --- | --- | --- |
 | Overengineering | Is there a smaller implementation using the existing subsystem? | Compare with actual owners and callers |
