@@ -29,6 +29,9 @@ class PatchWriterTests(unittest.TestCase):
             "packages/backend/src/editorial/../auth.ts",
             "apps/web/app/features/../config.ts",
             "apps/web/app/features/config/adapter.ts",
+            "apps/web/app/features/auth.ts",
+            "apps/web/app/features/session-secret.ts",
+            "apps/web/app/features/./okay.ts",
             "apps/web/app/features/.hidden.ts",
             "apps/web/app/features/build.sh",
             "apps/web/app/features/out.json",
@@ -112,6 +115,21 @@ class PatchWriterTests(unittest.TestCase):
         self.assertEqual(sum(x[0] == "pulls/175" for x in commands), 2)
         self.assertEqual([x[0] for x in commands][-1], "git/refs/heads/fix/explain")
         self.assertTrue(all(x[2] is None or "force" not in x[2] or x[2]["force"] is False for x in commands))
+
+    def test_no_op_tree_is_rejected(self):
+        def fake(path, *, method="GET", body=None):
+            if path == "git/commits/" + SHA:
+                return {"tree": {"sha": TREE}}
+            if path == "git/trees/" + TREE + "?recursive=1":
+                return {"truncated": False, "tree": [BASE]}
+            if path == "git/blobs":
+                return {"sha": "e" * 40}
+            if path == "git/trees":
+                return {"sha": TREE}
+            self.fail("no-op manifest must not create commit or update ref")
+        with patch.object(writer, "api", side_effect=fake):
+            with self.assertRaisesRegex(ValueError, "did not change"):
+                writer.prepare_tree(SHA, manifest()["changes"])
 
     def test_pre_commit_race_fails_without_pushing(self):
         pr = {"state": "open", "draft": False, "base": {"ref": "develop"},
