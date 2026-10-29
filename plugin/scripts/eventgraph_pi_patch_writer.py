@@ -7,6 +7,7 @@ entrypoint; it must be called by an authenticated trusted handoff.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -128,9 +129,37 @@ def prepare_tree(sha, changes):
     return new_tree["sha"]
 
 
+def committed_receipt(number, sha, changes):
+    """Recover a write that succeeded but whose Relay acknowledgement was lost."""
+    pr = api("pulls/" + str(number))
+    if (pr.get("state") != "open" or pr.get("draft") or
+        pr.get("base", {}).get("ref") != "develop" or
+        pr.get("head", {}).get("repo", {}).get("full_name") != REPOSITORY):
+        raise PermissionError("repair PR is no longer eligible")
+    now = pr["head"]["sha"]
+    commit = api("git/commits/" + now)
+    if ([p.get("sha") for p in commit.get("parents", [])] != [sha] or
+        commit.get("message") != f"fix(pr-{number}): Pi repair of verified failure at {sha[:12]}"):
+        raise PermissionError("PR changed outside this repair; refusing acknowledgement")
+    tree = api("git/trees/" + commit["tree"]["sha"] + "?recursive=1")
+    if tree.get("truncated"):
+        raise RuntimeError("cannot reconcile truncated committed tree")
+    blobs = {r["path"]: r for r in tree["tree"] if r.get("type") == "blob"}
+    for item in changes:
+        raw = item["content"].encode("utf-8")
+        expected = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\\x00" + raw).hexdigest()
+        actual = blobs.get(item["path"])
+        if not actual or actual["sha"] != expected or actual["mode"] != "100644":
+            raise PermissionError("committed patch bytes differ from the claimed result")
+    return {"pr_number": number, "previous_sha": sha, "new_sha": now}
+
+
 def write(manifest):
     number, sha, changes = validate(manifest)
-    branch = current_pr(number, sha)
+    try:
+        branch = current_pr(number, sha)
+    except PermissionError:
+        return committed_receipt(number, sha, changes)
     tree_sha = prepare_tree(sha, changes)
     commit = api("git/commits", method="POST", body={
         "message": f"fix(pr-{number}): Pi repair of verified failure at {sha[:12]}",
