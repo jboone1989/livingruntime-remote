@@ -193,7 +193,8 @@ def save_state(path, data):
 
 def ensure_review_budget(diff):
     """Keep bounded full-diff review while allowing one cohesive 100KB PR."""
-    ensure_review_budget(diff)
+    if len(diff.encode("utf-8")) > 128_000:
+        raise ReviewError("Diff exceeds 128KB review budget; human review required")
 
 
 def checkout(repo, number, sha, base, directory, cache):
@@ -224,8 +225,7 @@ def checkout(repo, number, sha, base, directory, cache):
                 "--unified=3", baseline, sha, "--"], timeout=60)
     if not diff.strip():
         raise ReviewError("Empty PR diff")
-    if len(diff.encode("utf-8")) > 128_000:
-        raise ReviewError("Diff exceeds 128KB review budget; human review required")
+    ensure_review_budget(diff)
     return directory, diff, baseline
 
 
