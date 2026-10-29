@@ -94,8 +94,20 @@ class Worker:
                 self.call('blocked', **identity, reason='Ambiguous launch; reconcile local native process before retry')
             else:
                 session = current['session']
-                observed = self.status(session['session_id'])['agent_status']
-                native = str(observed.get('status', 'UNKNOWN')).upper()
+                try:
+                    observed = self.status(session['session_id'])['agent_status']
+                except Exception:
+                    # A transient native status outage must not crash the poller
+                    # forever or keep renewing a false RUNNING claim indefinitely.
+                    current['status_failures'] = current.get('status_failures', 0) + 1
+                    self.save(current)
+                    if current['status_failures'] < 3:
+                        return
+                    native = 'UNKNOWN'
+                else:
+                    native = str(observed.get('status', 'UNKNOWN')).upper()
+                    if current.pop('status_failures', 0):
+                        self.save(current)
                 # A returned session handle or PENDING/WAITING native state is
                 # not running-process evidence. Retain the claim without lying.
                 operation = 'started' if native in {'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'STALLED', 'BLOCKED', 'BLOCKED_HUMAN'} else 'attached'
