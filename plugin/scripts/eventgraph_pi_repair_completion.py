@@ -83,7 +83,13 @@ def deliver(cfg, request):
             if status != "SUCCEEDED":
                 save(path, {**item, "state": "BLOCKED", "reason": "native-" + status})
                 continue
-            payload = export(item["worktree"], item["pr_number"], item["sha"])
+            try:
+                payload = export(item["worktree"], item["pr_number"], item["sha"])
+            except (ValueError, PermissionError, UnicodeError) as exc:
+                # A deterministic invalid patch cannot become valid on replay.
+                save(path, {**item, "state": "BLOCKED",
+                            "reason": "invalid-patch:" + type(exc).__name__})
+                continue
             receipt = request(cfg["url"], "/device/pi-repair-result",
                               {"session_id": item["session_id"], "manifest": payload},
                               cfg["device_token"], timeout=30)
@@ -91,11 +97,6 @@ def deliver(cfg, request):
                 raise RuntimeError("Relay declined Pi repair handoff")
             save(path, {**item, "state": "DELIVERED"})
             delivered = True
-        except (ValueError, PermissionError, UnicodeError) as exc:
-            # A successful Pi session with an empty, forbidden or malformed
-            # patch cannot improve on retry. Preserve the receipt and expose
-            # a human blocker instead of retrying the same bad patch forever.
-            save(path, {**item, "state": "BLOCKED", "reason": "invalid-patch:" + type(exc).__name__})
         except Exception as exc:
             # Transport outages and transient Git failures remain retryable;
             # never convert either path into a green review/merge result.
