@@ -58,14 +58,14 @@ class OneTimeReviewTests(unittest.TestCase):
                   patch.object(reviewer, "commit_status") as status):
                 # A fourth distinct SHA must actually be reviewed, even if the old
                 # persistent state recorded it as escalated by the previous worker.
-                result = reviewer.review(pr, repo=REPO, gh="gh", 
+                result = reviewer.review(pr, repo=REPO, gh="gh", claude="claude", 
                     work=Path(d), state=state, state_path=path, timeout=60)
                 self.assertIn("blocking=False", result)
                 deepseek.assert_called_once()
                 comment.assert_called_once()
                 self.assertEqual(status.call_args.args[3], "success")
                 self.assertIn(SHA, reviewer.load_state(path)["prs"]["142"]["reviewed"])
-                self.assertEqual(reviewer.review(pr, repo=REPO, gh="gh", 
+                self.assertEqual(reviewer.review(pr, repo=REPO, gh="gh", claude="claude", 
                     work=Path(d), state=state, state_path=path, timeout=60),
                     "skip:already reviewed")
                 deepseek.assert_called_once()
