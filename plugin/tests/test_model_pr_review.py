@@ -519,16 +519,31 @@ class ReviewerUnitTests(unittest.TestCase):
                          reviewer.parse_native_review(output))
 
     def test_native_review_rejects_nonreview_or_failure(self):
-        for result in ({"result": "I couldn't run git diff", "is_error": False},
-                       {"result": "```json\n{}\n```", "is_error": False},
-                       {"result": "[]", "is_error": True}):
-            with self.subTest(result=result), self.assertRaises(reviewer.ReviewError):
-                reviewer.parse_native_review(json.dumps(result))
+        config = {
+            "REVIEW_API_KEY": "fake-review-key",
+            "REVIEW_BASE_URL": "https://api.deepseek.com/anthropic",
+            "REVIEW_MODEL": "deepseek-flash",
+        }
+        with patch.dict(reviewer.os.environ, config, clear=True):
+            for output in (
+                json.dumps({"subtype": "error", "is_error": True, "result": "failed"}),
+                json.dumps({"subtype": "success", "is_error": False, "result": "not JSON"}),
+                json.dumps({"subtype": "success", "is_error": False, "result": "{}"}),
+            ):
+                with patch.object(reviewer, "run", return_value=output):
+                    with self.assertRaises(reviewer.ReviewError):
+                        reviewer.native_review("claude", Path("/tmp"), "a"*40, "b"*40, 60)
 
     def test_native_invocation_uses_real_review_skill(self):
-        with patch.object(reviewer, "run", return_value=json.dumps({
-                "subtype": "success", "is_error": False,
-                "result": "```json\n[]\n```"})) as cli:
+        config = {
+            "REVIEW_API_KEY": "fake-review-key",
+            "REVIEW_BASE_URL": "https://api.deepseek.com/anthropic",
+            "REVIEW_MODEL": "deepseek-flash",
+        }
+        with patch.dict(reviewer.os.environ, config, clear=True), \
+             patch.object(reviewer, "run", return_value=json.dumps({
+                 "subtype": "success", "is_error": False,
+                 "result": "```json\\n[]\\n```"})) as cli:
             self.assertEqual(reviewer.native_review("claude", Path("/tmp"), "a"*40, "b"*40, 60), [])
             argv = cli.call_args.args[0]
             self.assertIn("/code-review high " + "a"*40 + ".." + "b"*40, argv)
