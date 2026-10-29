@@ -360,7 +360,7 @@ def native_review(binary, cwd, baseline, sha, timeout):
         "--model", "sonnet",
         "--output-format", "json", "--permission-mode", "plan",
         "--max-turns", "48", "--disallowedTools", "Edit,Write,NotebookEdit,mcp__*",
-        "--strict-mcp-config", "--safe-mode", "--setting-sources", "",
+        "--strict-mcp-config", "--safe-mode", "--setting-sources", "user",
         "--settings", '{"disableAllHooks":true}',
     ]
     env = claude_subscription_environment()
@@ -381,7 +381,7 @@ def ask_claude(binary, cwd, prompt, timeout, model="sonnet", env=None,
     options = [
         "--output-format", "json", "--permission-mode", "plan",
         "--tools", "Read,Glob,Grep", "--disallowedTools", "mcp__*",
-        "--strict-mcp-config", "--safe-mode", "--setting-sources", "",
+        "--strict-mcp-config", "--safe-mode", "--setting-sources", "user",
         "--settings", '{"disableAllHooks": true}',
         "--model", model, "--max-turns", str(max_turns),
     ]
