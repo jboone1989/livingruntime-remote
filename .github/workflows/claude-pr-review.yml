@@ -1,4 +1,4 @@
-name: Claude PR review (subscription CLI)
+name: DeepSeek PR review (API-backed CLI)
 
 on:
   pull_request_target:
@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Review PR with server's authenticated Claude Code
+      - name: Review PR with DeepSeek through the Anthropic-compatible CLI
         env:
           GH_TOKEN: ${{ github.token }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
@@ -89,7 +89,7 @@ jobs:
             --expected-sha "$EXPECTED_SHA" "${manual_args[@]}"
 
   low-risk-merge:
-    # GitHub itself enforces check/docker/e2e/claude-review before the merge.
+    # GitHub itself enforces check/docker/e2e/deepseek-review before the merge.
     # Only this bounded, docs-only slice is eligible for immediate SHA-guarded merge.
     needs: [dispatched-review]
     if: >-
@@ -123,9 +123,9 @@ jobs:
           fi
           # Explicit success is required; a skipped/failed review cannot merge.
           reviewed="$("$gh" api "repos/$REPO/commits/$REVIEWED_SHA/status" \
-            --jq '[.statuses[] | select(.context == "claude-review")][0].state // "missing"')"
+            --jq '[.statuses[] | select(.context == "deepseek-review")][0].state // "missing"')"
           if [[ "$reviewed" != success ]]; then
-            echo "Skip: Claude review is $reviewed"
+            echo "Skip: DeepSeek review is $reviewed"
             exit 0
           fi
           files="$("$gh" api "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100")"
