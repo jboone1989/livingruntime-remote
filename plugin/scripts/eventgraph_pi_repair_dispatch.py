@@ -45,9 +45,14 @@ def validate_failure(pr: dict, sha: str, kind: str, run_id: int | None):
         if not isinstance(run_id, int) or run_id < 1:
             raise ValueError("missing failed Check run ID")
         run = api(f"repos/{REPOSITORY}/actions/runs/{run_id}")
+        linked = run.get("pull_requests") or []
+        origin = run.get("head_repository")
         if (run.get("head_sha") != sha or run.get("event") != "pull_request" or
-            run.get("conclusion") != "failure" or run.get("name") != "Check"):
-            raise ValueError("Check run is not a verified failure for this SHA")
+            run.get("conclusion") != "failure" or run.get("name") != "Check" or
+            (origin and origin.get("full_name") != REPOSITORY) or
+            (linked and not any(item.get("number") == pr.get("number")
+                                for item in linked))):
+            raise ValueError("Check run is not a verified failure for this PR and SHA")
     elif kind == "claude-review":
         statuses = api(f"repos/{REPOSITORY}/commits/{sha}/status").get("statuses", [])
         recent = next((s for s in statuses if s.get("context") == "claude-review"), None)
