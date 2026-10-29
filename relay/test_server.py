@@ -349,6 +349,92 @@ class RelayServerTests(unittest.TestCase):
                                  headers={"authorization": "Bearer wrong"})
             self.assertEqual(denied.status_code, 401)
 
+    def test_eventgraph_pi_repair_routes_only_to_same_owner_cn_dev(self):
+        from unittest.mock import AsyncMock
+
+        central_code = self.store.create_pairing_code("owner-a")["code"]
+        cn_code = self.store.create_pairing_code("owner-a")["code"]
+        other_code = self.store.create_pairing_code("owner-b")["code"]
+        with TestClient(self.app) as client:
+            central = client.post("/device/pair", json={
+                "code": central_code, "name": "owner-main",
+            }).json()
+            cn = client.post("/device/pair", json={
+                "code": cn_code, "name": "cn-dev",
+            }).json()
+            other = client.post("/device/pair", json={
+                "code": other_code, "name": "cn-dev",
+            }).json()
+            # A paired connector with the right owner but wrong ID is forbidden.
+            selected = "e21c871f-317b-4f3e-95bf-8d4299547a40"
+            target = dict(cn, device_id=selected, name="cn-dev")
+            payload = {
+                "repository": "jboone1989/EventGraph", "pr_number": 175,
+                "sha": "a" * 40, "failure_kind": "check", "run_id": 12345,
+            }
+            headers = {"authorization": "Bearer " + central["device_token"]}
+            with patch.object(self.store, "device_for_user", return_value=target), \
+                 patch.object(server.Relay, "call", new_callable=AsyncMock) as routed:
+                routed.return_value = {
+                    "session_id": "lra_" + "b" * 32, "runtime_job_id": "lrjob_test",
+                }
+                accepted = client.post("/device/pi-repair", json=payload, headers=headers)
+                self.assertEqual(accepted.status_code, 200, accepted.text)
+                self.assertTrue(accepted.json()["ok"])
+                _, tool, args = routed.call_args.args
+                self.assertEqual(tool, "start_agent")
+                self.assertEqual(args["adapter_id"], "pi")
+                self.assertEqual(args["project"], "aihot-dev")
+                self.assertNotIn("secret", str(args).lower())
+                self.assertEqual(routed.call_args.kwargs["connector"], selected)
+                self.assertIn("175", args["goal"])
+                self.assertIn("a" * 40, args["goal"])
+                routed.reset_mock()
+                rejected = client.post("/device/pi-repair", json=payload, headers={
+                    "authorization": "Bearer " + other["device_token"],
+                })
+                self.assertEqual(rejected.status_code, 403)
+                self.assertEqual(routed.await_count, 0)
+                invalid = client.post("/device/pi-repair", json={
+                    **payload, "repository": "other/repo",
+                }, headers=headers)
+                self.assertEqual(invalid.status_code, 400)
+                stale = client.post("/device/pi-repair", json={
+                    **payload, "sha": "../../etc/passwd",
+                }, headers=headers)
+                self.assertEqual(stale.status_code, 400)
+                invalid_kind = client.post("/device/pi-repair", json={
+                    **payload, "failure_kind": "success",
+                }, headers=headers)
+                self.assertEqual(invalid_kind.status_code, 400)
+                self.assertEqual(routed.await_count, 0)
+            with patch.object(self.store, "device_for_user", return_value=dict(
+                    cn, device_id=selected, name="wrong-host")):
+                invalid_target = client.post("/device/pi-repair", json=payload, headers=headers)
+                self.assertEqual(invalid_target.status_code, 403)
+
+    def test_eventgraph_pi_repair_unavailable_is_not_reported_success(self):
+        from unittest.mock import AsyncMock
+
+        central_code = self.store.create_pairing_code("owner-a")["code"]
+        with TestClient(self.app) as client:
+            central = client.post("/device/pair", json={
+                "code": central_code, "name": "owner-main",
+            }).json()
+            headers = {"authorization": "Bearer " + central["device_token"]}
+            selected = "e21c871f-317b-4f3e-95bf-8d4299547a40"
+            with patch.object(self.store, "device_for_user", return_value={
+                    "device_id": selected, "name": "cn-dev"}), \
+                 patch.object(server.Relay, "call", new_callable=AsyncMock) as routed:
+                routed.side_effect = RuntimeError("Connector offline")
+                res = client.post("/device/pi-repair", json={
+                    "repository": "jboone1989/EventGraph",
+                    "pr_number": 175, "sha": "a" * 40,
+                    "failure_kind": "claude-review", "run_id": None,
+                }, headers=headers)
+                self.assertEqual(res.status_code, 503)
+                self.assertNotIn("ok", res.json())
+
     def test_idle_long_poll_does_not_spin_on_sqlite(self):
         class CountingStore(RelayStore):
             def __init__(self, path: str) -> None:
