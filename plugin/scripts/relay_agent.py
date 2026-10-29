@@ -17,6 +17,7 @@ import bridge
 import cognition
 import jobs
 import eventgraph_pi_repair_completion as pi_repair_completion
+import eventgraph_pi_repair_inbox as pi_repair_inbox
 from contract import PLUGIN_VERSION, REMOTE_TOOLS
 
 TOOLS = set(REMOTE_TOOLS)
@@ -230,7 +231,8 @@ def _forward_events(cfg: dict[str, Any]) -> bool:
     completion_delivered = _forward_completion_events(cfg)
     cognition_delivered = _forward_cognition_events(cfg)
     repair_delivered = pi_repair_completion.deliver(cfg, _request)
-    return completion_delivered or cognition_delivered or repair_delivered
+    patch_pushed = pi_repair_inbox.drain(cfg, _request)
+    return completion_delivered or cognition_delivered or repair_delivered or patch_pushed
 
 
 def _handle_claimed_task(cfg: dict[str, Any], task: dict[str, Any]) -> None:
