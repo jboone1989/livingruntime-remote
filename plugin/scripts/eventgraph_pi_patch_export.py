@@ -39,7 +39,10 @@ def export(root, pr_number, expected_sha):
     for raw in sorted(changed):
         path = safe_path(raw)
         candidate = root / path
-        if candidate.is_symlink() or not candidate.is_file():
+        if (not candidate.resolve().is_relative_to(root) or
+            any((root.joinpath(*Path(path).parts[:i])).is_symlink()
+                for i in range(1, len(Path(path).parts))) or
+            candidate.is_symlink() or not candidate.is_file()):
             raise ValueError("missing, deleted or symbolic-link repair file")
         # The only known legal existing mode is ordinary text, not executable.
         base = git(root, "ls-tree", expected_sha, "--", path).decode().strip()
