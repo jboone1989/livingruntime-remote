@@ -64,6 +64,56 @@ class RepairCompletionTests(unittest.TestCase):
         self.assertEqual(sent[0][1]["session_id"], SESSION)
         self.assertEqual(json.loads(self.path.read_text())["state"], "DELIVERED")
 
+    def test_old_receipts_and_active_sessions_cannot_starve_new_completion(self):
+        original = json.loads(self.path.read_text())
+        for index in range(3):
+            session = "lra_" + str(index) * 32
+            completion.save(completion.journal_dir() / (session + ".json"),
+                            {**original, "session_id": session, "state": "DELIVERED"})
+        active = "lra_" + "3" * 32
+        completion.save(completion.journal_dir() / (active + ".json"),
+                        {**original, "session_id": active, "state": "RUNNING"})
+        observed = []
+        sent = []
+
+        def status(session):
+            observed.append(session)
+            return {"agent_status": {"status": "RUNNING" if session == active else "SUCCEEDED"}}
+
+        def request(base, path, body, token, **kwargs):
+            sent.append(body["session_id"])
+            return {"ok": True}
+
+        with patch.object(completion.agent_sessions, "status", side_effect=status), \
+             patch.object(completion, "export", return_value={"changes": [{"path": "x"}]}):
+            self.assertTrue(completion.deliver(
+                {"name": "cn-dev", "url": "https://relay.test", "device_token": "token"}, request))
+        self.assertIn(SESSION, observed)
+        self.assertEqual(sent, [SESSION])
+        self.assertEqual(json.loads(self.path.read_text())["state"], "DELIVERED")
+
+    def test_completion_batch_limit_counts_actual_terminal_sessions(self):
+        original = json.loads(self.path.read_text())
+        for index in range(4):
+            session = "lra_" + str(index) * 32
+            completion.save(completion.journal_dir() / (session + ".json"),
+                            {**original, "session_id": session, "state": "RUNNING"})
+        sent = []
+
+        def request(base, path, body, token, **kwargs):
+            sent.append(body["session_id"])
+            return {"ok": True}
+
+        with patch.object(completion.agent_sessions, "status",
+                          return_value={"agent_status": {"status": "SUCCEEDED"}}), \
+             patch.object(completion, "export", return_value={"changes": [{"path": "x"}]}):
+            cfg = {"name": "cn-dev", "url": "https://relay.test", "device_token": "token"}
+            self.assertTrue(completion.deliver(cfg, request))
+            self.assertEqual(len(sent), 3)
+            self.assertTrue(completion.deliver(cfg, request))
+            self.assertEqual(len(sent), 5)
+            self.assertFalse(completion.deliver(cfg, request))
+
     def test_network_failure_retains_durable_journal_and_retries(self):
         def failed(*a, **kw):
             raise OSError("unreachable")
