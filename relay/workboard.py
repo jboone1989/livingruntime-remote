@@ -18,8 +18,14 @@ class Workboard:
         self.store = store
         with closing(store.db()) as db, db:
             db.executescript("""
+            CREATE TABLE IF NOT EXISTS workboard_goals(
+              id TEXT PRIMARY KEY, user_sub TEXT NOT NULL, title TEXT NOT NULL,
+              intent TEXT NOT NULL, source_revision TEXT NOT NULL,
+              idempotency_key TEXT NOT NULL, paused INTEGER NOT NULL DEFAULT 0,
+              created_at REAL NOT NULL, UNIQUE(user_sub,idempotency_key));
             CREATE TABLE IF NOT EXISTS workboard_items(
-              id TEXT PRIMARY KEY, user_sub TEXT NOT NULL, device_id TEXT NOT NULL,
+              id TEXT PRIMARY KEY, goal_id TEXT NOT NULL,
+              user_sub TEXT NOT NULL, device_id TEXT NOT NULL,
               agent_id TEXT NOT NULL, adapter_id TEXT NOT NULL, project TEXT NOT NULL,
               local_device TEXT NOT NULL, goal TEXT NOT NULL, source_revision TEXT NOT NULL,
               idempotency_key TEXT NOT NULL, exclusive_key TEXT NOT NULL,
@@ -93,9 +99,48 @@ class Workboard:
             raise KeyError("unknown work item")
         return dict(row)
 
-    def create(self, user, *, device_id, agent_id, adapter_id, project, local_device,
+    def create_goal(self, user, *, title, intent, source_revision, idempotency_key):
+        for name, value in dict(title=title, intent=intent, source_revision=source_revision,
+                                idempotency_key=idempotency_key).items():
+            self.text(value, name, 4000 if name == 'intent' else 256)
+        if not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', source_revision):
+            raise ValueError('goal source_revision must be immutable')
+        with self.transaction() as db:
+            existing = db.execute("""SELECT * FROM workboard_goals
+                WHERE user_sub=? AND idempotency_key=?""", (user, idempotency_key)).fetchone()
+            if existing:
+                if any(existing[k] != v for k, v in
+                       dict(title=title, intent=intent, source_revision=source_revision).items()):
+                    raise ValueError('goal idempotency key reused with changed request')
+                return dict(existing)
+            goal_id = 'lrgoal_' + uuid.uuid4().hex
+            db.execute("""INSERT INTO workboard_goals
+              (id,user_sub,title,intent,source_revision,idempotency_key,created_at)
+              VALUES (?,?,?,?,?,?,?)""",
+              (goal_id, user, title, intent, source_revision, idempotency_key, time.time()))
+            return dict(db.execute("SELECT * FROM workboard_goals WHERE id=?", (goal_id,)).fetchone())
+
+    def list_goals(self, user):
+        with closing(self.store.db()) as db:
+            return [dict(r) for r in db.execute("""SELECT g.*,
+              COUNT(w.id) AS total_items,
+              COUNT(CASE WHEN w.status='SUCCEEDED' THEN 1 END) AS succeeded_items
+              FROM workboard_goals g LEFT JOIN workboard_items w ON w.goal_id=g.id
+              WHERE g.user_sub=? GROUP BY g.id ORDER BY g.created_at,g.id""", (user,))]
+
+    def set_goal_paused(self, user, goal_id, paused):
+        if type(paused) is not bool:
+            raise ValueError('paused must be boolean')
+        with self.transaction() as db:
+            updated = db.execute("""UPDATE workboard_goals SET paused=?
+              WHERE id=? AND user_sub=?""", (int(paused), goal_id, user))
+            if updated.rowcount != 1:
+                raise PermissionError('unknown or foreign goal')
+            return dict(db.execute("SELECT * FROM workboard_goals WHERE id=?", (goal_id,)).fetchone())
+
+    def create(self, user, *, goal_id, device_id, agent_id, adapter_id, project, local_device,
                goal, source_revision, idempotency_key, exclusive_key, depends_on=None, acceptance_argv=None):
-        values = dict(device_id=device_id, agent_id=agent_id, adapter_id=adapter_id,
+        values = dict(goal_id=goal_id, device_id=device_id, agent_id=agent_id, adapter_id=adapter_id,
                       project=project, local_device=local_device, goal=goal,
                       source_revision=source_revision, idempotency_key=idempotency_key,
                       exclusive_key=exclusive_key)
@@ -113,6 +158,10 @@ class Workboard:
         if not isinstance(dependencies, list) or len(dependencies) > 100:
             raise ValueError("invalid dependencies")
         with self.transaction() as db:
+            goal_row = db.execute("SELECT id FROM workboard_goals WHERE id=? AND user_sub=?",
+                                  (goal_id, user)).fetchone()
+            if not goal_row:
+                raise PermissionError("work item requires an owned, explicit Goal")
             device = db.execute("SELECT 1 FROM devices WHERE device_id=? AND user_sub=? AND enabled=1",
                                 (device_id, user)).fetchone()
             if not device:
@@ -126,7 +175,9 @@ class Workboard:
                     raise ValueError("idempotency key reused with different request")
                 return dict(existing)
             for dep in dependencies:
-                self.row(db, user, dep)  # no cross-owner or unknown dependency
+                prior = self.row(db, user, dep)
+                if prior['goal_id'] != goal_id:
+                    raise PermissionError('work item dependency cannot cross Goal authority')
             item_id = 'lrwork_' + uuid.uuid4().hex
             columns = ','.join(values)
             db.execute(f"INSERT INTO workboard_items(id,user_sub,{columns},status,created_at) "
@@ -174,7 +225,9 @@ class Workboard:
                 return None
             row = db.execute("""
                 SELECT w.* FROM workboard_items w
+                JOIN workboard_goals g ON g.id=w.goal_id AND g.user_sub=w.user_sub
                 WHERE w.user_sub=? AND w.device_id=? AND w.agent_id=? AND w.status='READY'
+                AND g.paused=0
                 AND NOT EXISTS (
                   SELECT 1 FROM workboard_dependencies d JOIN workboard_items p ON p.id=d.predecessor_id
                   WHERE d.item_id=w.id AND p.status!='SUCCEEDED')
