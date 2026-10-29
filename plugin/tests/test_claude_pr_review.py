@@ -22,6 +22,14 @@ DIFF = """diff --git a/src/a.mjs b/src/a.mjs
 """
 
 class ReviewerUnitTests(unittest.TestCase):
+    def test_full_diff_budget_allows_100kb_pr_but_still_rejects_oversize(self):
+        reviewer.ensure_review_budget("x" * 100_000)
+        reviewer.ensure_review_budget("x" * 128_000)
+        with self.assertRaisesRegex(reviewer.ReviewError, "128KB"):
+            reviewer.ensure_review_budget("x" * 128_001)
+        with self.assertRaisesRegex(reviewer.ReviewError, "128KB"):
+            reviewer.ensure_review_budget("中" * 43_000)
+
     def test_document_only_uses_a_focused_real_claude_review(self):
         document_diff = ("diff --git a/specs/008/spec.md b/specs/008/spec.md\n"
                          "--- a/specs/008/spec.md\n+++ b/specs/008/spec.md\n"
@@ -509,6 +517,35 @@ class ReviewerUnitTests(unittest.TestCase):
         with self.assertRaises(reviewer.QuotaExceeded):
             reviewer.parse_native_review(json.dumps({
                 "is_error": True, "result": "You've hit your session limit"}))
+
+    def test_provider_402_balance_failure_keeps_review_unapproved_and_retryable(self):
+        payload = json.dumps({
+            "type": "result", "subtype": "success", "is_error": True,
+            "result": "API Error: 402 Insufficient Balance",
+            "num_turns": 1, "stop_reason": "stop_sequence"})
+        class Process:
+            returncode = 1
+            stderr = ""
+            stdout = payload
+        with patch.object(reviewer.subprocess, "run", return_value=Process()):
+            with self.assertRaises(reviewer.QuotaExceeded):
+                reviewer.run(["claude", "-p", "review"])
+        self.assertFalse(reviewer.is_claude_quota("403 insufficient permissions"))
+        with tempfile.TemporaryDirectory() as tmp:
+            pr = {"number": 7, "state": "open", "draft": False,
+                  "head": {"sha": "c"*40, "repo": {"full_name": "org/repo"}},
+                  "base": {"ref": "main"}}
+            args = argparse.Namespace(repo="org/repo", gh="gh", claude="claude",
+                        pr_number=7, expected_sha=pr["head"]["sha"],
+                        work=Path(tmp), timeout=5, state=Path(tmp)/"state")
+            with patch.object(reviewer, "api", return_value=pr), \
+                 patch.object(reviewer, "review",
+                              side_effect=reviewer.QuotaExceeded("balance exhausted")), \
+                 patch.object(reviewer, "commit_status") as status:
+                self.assertTrue(reviewer.run_once(args))
+            self.assertFalse(args.state.exists())
+            self.assertEqual(status.call_args.args[3], "error")
+            self.assertIn("quota/balance", status.call_args.args[4])
 
     def test_incomplete_claude_json_is_detected_before_truncation(self):
         session_id = "0d01dcdb-fd91-484e-8175-25437b05f80e"

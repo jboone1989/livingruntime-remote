@@ -32,11 +32,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          # Keep the original Claude Code harness; use the managed DeepSeek credential.
+          ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.DEEPSEEK_API_KEY }}
+          ANTHROPIC_API_KEY: ""
+          ANTHROPIC_MODEL: claude-sonnet-4-5
+          ANTHROPIC_DEFAULT_OPUS_MODEL: claude-sonnet-4-5
+          ANTHROPIC_DEFAULT_SONNET_MODEL: claude-sonnet-4-5
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku-4-5
+          CLAUDE_CODE_SUBAGENT_MODEL: claude-sonnet-4-5
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           GIT_CONFIG_COUNT: "1"
           GIT_CONFIG_KEY_0: "credential.helper"
           GIT_CONFIG_VALUE_0: "!/home/ubuntu/.local/bin/gh auth git-credential"
         run: |
           set -eu
+          if [[ -z "$ANTHROPIC_AUTH_TOKEN" ]]; then
+            echo "Review credential missing in repository secrets" >&2
+            exit 1
+          fi
           state="$HOME/.local/state/claude-review/${REPO//\//_}-pr-$PR_NUMBER.json"
           work="$HOME/.local/share/claude-review/${REPO//\//_}/$PR_NUMBER"
           python3 plugin/scripts/claude_pr_review.py \
@@ -61,11 +75,25 @@ jobs:
           PR_NUMBER: ${{ github.event.client_payload.pr_number }}
           EXPECTED_SHA: ${{ github.event.client_payload.sha }}
           MANUAL_REREVIEW_COMMENT_ID: ${{ github.event.client_payload.manual_rereview_comment_id || '' }}
+          # Keep the original Claude Code harness; use the managed DeepSeek credential.
+          ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.DEEPSEEK_API_KEY }}
+          ANTHROPIC_API_KEY: ""
+          ANTHROPIC_MODEL: claude-sonnet-4-5
+          ANTHROPIC_DEFAULT_OPUS_MODEL: claude-sonnet-4-5
+          ANTHROPIC_DEFAULT_SONNET_MODEL: claude-sonnet-4-5
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku-4-5
+          CLAUDE_CODE_SUBAGENT_MODEL: claude-sonnet-4-5
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           GIT_CONFIG_COUNT: "1"
           GIT_CONFIG_KEY_0: "credential.helper"
           GIT_CONFIG_VALUE_0: "!/home/ubuntu/.local/bin/gh auth git-credential"
         run: |
           set -eu
+          if [[ -z "$ANTHROPIC_AUTH_TOKEN" ]]; then
+            echo "Review credential missing in repository secrets" >&2
+            exit 1
+          fi
           [[ "$REPO" == 'jboone1989/EventGraph' ]]
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
