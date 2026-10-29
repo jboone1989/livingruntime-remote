@@ -48,7 +48,7 @@ class ReviewInterrupted(ReviewError):
         super().__init__(f"Review CLI session interrupted ({detail})")
 
 
-def is_claude_quota(message):
+def is_provider_quota(message):
     text = str(message).casefold()
     return any(phrase in text for phrase in (
         "session limit", "usage limit", "weekly limit", "plan limit",
@@ -96,7 +96,7 @@ def model_environment():
     ):
         env.pop(name, None)
     # Claude Code is retained as the read-only agent harness; only inference is
-    # redirected. DeepSeek documents this Anthropic-compatible Messages endpoint.
+    # redirected. The selected provider must implement Claude Code's Anthropic-compatible Messages protocol.
     env.update({
         "ANTHROPIC_BASE_URL": base_url,
         "ANTHROPIC_API_KEY": api_key,
@@ -155,7 +155,7 @@ def run(argv, cwd=None, timeout=120, input_text=None, env=None):
         message = result.stderr or result.stdout
         output = (result.stderr or "") + "\n" + (result.stdout or "")
         is_claude = Path(argv[0]).name == "claude"
-        if is_claude and is_claude_quota(output):
+        if is_claude and is_provider_quota(output):
             raise QuotaExceeded("Model provider usage limit reached")
         if is_claude:
             metadata = _claude_failure_metadata(result.stdout, result.stderr)
@@ -193,7 +193,7 @@ def resume_claude(binary, interrupted, options, *, cwd, timeout, env, phase):
             f"(stop_reason={second.stop_reason})") from second
     except ReviewError as exc:
         # Claude Code can lose its deferred-tool marker after an interrupted turn.
-        # That session cannot be resumed; require a fresh independent DeepSeek
+        # That session cannot be resumed; require a fresh independent model-harness
         # review instead of repeatedly failing the protected PR check.
         if "No deferred tool marker found" in str(exc):
             raise ReviewUnavailable(
@@ -350,7 +350,7 @@ def filter_findings(findings, diff):
 def parse_claude(stdout):
     data = json.loads(stdout)
     response = data.get("result")
-    if is_claude_quota(response):
+    if is_provider_quota(response):
         raise QuotaExceeded("Model provider usage limit reached")
     if data.get("is_error"):
         raise ReviewError("Review CLI reported an execution failure")
@@ -368,7 +368,7 @@ def parse_claude(stdout):
 def parse_native_review(stdout):
     """Normalize Claude Code's bundled /code-review findings, not a custom review prompt."""
     result = json.loads(stdout)
-    if isinstance(result, dict) and is_claude_quota(result.get("result")):
+    if isinstance(result, dict) and is_provider_quota(result.get("result")):
         raise QuotaExceeded("Claude subscription usage limit reached")
     if not isinstance(result, dict) or result.get("is_error") or str(result.get("subtype", "")).startswith("error_"):
         raise ReviewError("Native Claude Code review failed")
