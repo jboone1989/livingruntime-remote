@@ -260,6 +260,26 @@ class WorkboardTests(unittest.TestCase):
                       dict(agent_id='agent-a', adapter_id='test-native', project='demo', local_device='main'),
                       request, start=start, status=status)
 
+    def test_worker_rejected_placement_keeps_durable_receipt_and_advances(self):
+        rejected = self.create(project='different-project')
+        accepted = self.create()
+        launches = []
+        def start(*args, **kwargs):
+            launches.append((args, kwargs))
+            return {'session_id': 'next-session', 'runtime_job_id': 'next-job'}
+        with patch.dict(os.environ, {'LIVINGRUNTIME_WORKBOARD_JOURNALS': self.tmp.name+'/journal'}):
+            worker = self.worker(start, lambda sid: {'agent_status': {'status': 'RUNNING'}})
+            worker.tick()
+            self.assertEqual(launches, [])
+            self.assertFalse(worker.path.exists())
+            receipts = list(worker.path.parent.glob('*.receipt.json'))
+            self.assertEqual(len(receipts), 1)
+            self.assertEqual(__import__('json').loads(receipts[0].read_text())['item']['id'], rejected['id'])
+            self.assertEqual(self.board.list_items('owner')[0]['status'], 'BLOCKED_HUMAN')
+            worker.tick()
+            self.assertEqual(len(launches), 1)
+            self.assertEqual(__import__('json').loads(worker.path.read_text())['item']['id'], accepted['id'])
+
     def test_worker_crash_marker_blocks_without_duplicate_launch_and_dispatches_independent_item(self):
         self.create()
         next_item = self.create()
