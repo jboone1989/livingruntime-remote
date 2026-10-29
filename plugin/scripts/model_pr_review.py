@@ -642,7 +642,7 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
             work / f"pr-{number}-objects.git")
         # Claude Code remains the read-only harness; inference goes only to the
         # configured model endpoint and never uses an Anthropic account login.
-        provider = model_settings()[2]
+        provider = os.environ.get("REVIEW_MODEL", "deepseek-flash").strip() or "deepseek-flash"
         findings = model_review(
             claude, directory, diff, pr.get("body") or "", timeout)
         fresh = api(gh, f"repos/{repo}/pulls/{number}")
