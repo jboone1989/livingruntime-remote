@@ -279,7 +279,7 @@ class ReviewerUnitTests(unittest.TestCase):
     def test_harness_prompt_via_stdin_without_project_hooks_or_account_login(self):
         class Result:
             returncode = 0
-            stdout = '{"result":"{\\"findings\\":[]}","is_error":false}'
+            stdout = json.dumps({"result": json.dumps({"findings": []}), "is_error": False})
             stderr = ""
         with patch.dict(reviewer.os.environ, {
             "REVIEW_API_KEY": "provider-review-key",
@@ -600,8 +600,8 @@ class ReviewerUnitTests(unittest.TestCase):
         with patch.object(reviewer.subprocess, "run", return_value=Process()):
             with self.assertRaises(reviewer.QuotaExceeded):
                 reviewer.run(["claude", "-p", "test"])
-        self.assertFalse(reviewer.is_claude_quota("Rate limit: too many requests"))
-        self.assertFalse(reviewer.is_claude_quota("Invalid model name"))
+        self.assertFalse(reviewer.is_provider_quota("Rate limit: too many requests"))
+        self.assertFalse(reviewer.is_provider_quota("Invalid model name"))
         with self.assertRaises(reviewer.QuotaExceeded):
             reviewer.parse_claude(json.dumps({
                 "is_error": True, "result": "You've hit your session limit"}))
