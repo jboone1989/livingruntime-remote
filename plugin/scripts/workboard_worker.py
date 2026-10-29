@@ -98,7 +98,7 @@ class Worker:
                 native = str(observed.get('status', 'UNKNOWN')).upper()
                 # A returned session handle or PENDING/WAITING native state is
                 # not running-process evidence. Retain the claim without lying.
-                operation = 'started' if native in {'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'BLOCKED', 'BLOCKED_HUMAN'} else 'attached'
+                operation = 'started' if native in {'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'STALLED', 'BLOCKED', 'BLOCKED_HUMAN'} else 'attached'
                 self.call(operation, **identity, session_id=session['session_id'], runtime_job_id=session['runtime_job_id'])
                 if native == 'SUCCEEDED':
                     argv = json.loads(item['acceptance_json'])
@@ -122,7 +122,7 @@ class Worker:
                                                      'connector-journal:'+self.path.stem+':'+item['id']+':'+str(item['fence'])])
                     else:
                         self.call('finished', **identity)
-                elif native in {'FAILED', 'CANCELLED', 'BLOCKED', 'BLOCKED_HUMAN'}:
+                elif native in {'FAILED', 'CANCELLED', 'STALLED', 'BLOCKED', 'BLOCKED_HUMAN'}:
                     self.call('blocked', **identity, reason='Native '+native+'; inspect session '+session['session_id'])
                 elif native == 'UNKNOWN':
                     self.call('blocked', **identity, reason='Native process state unknown; reconcile before retry')
