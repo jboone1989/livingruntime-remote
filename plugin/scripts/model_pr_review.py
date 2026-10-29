@@ -294,37 +294,102 @@ def parse_model_findings(content):
     return value["findings"]
 
 
-def changed_source_context(directory, diff, max_total=48000, max_file=12000):
-    """Include bounded contents of changed files because a plain chat API cannot read tools."""
+def changed_source_context(directory, diff, max_total=48000, max_file=10000):
+    """Attach bounded changed files plus likely callers/tests for a tool-less chat API."""
     root = Path(directory).resolve()
-    paths = []
+    changed = []
     for line in diff.splitlines():
         if not line.startswith("diff --git a/"):
             continue
         match = re.match(r"diff --git a/(.+) b/(.+)$", line)
-        if match and match.group(2) not in paths:
-            paths.append(match.group(2))
-    parts, used = [], 0
-    for relative in paths:
+        if match and match.group(2) not in changed:
+            changed.append(match.group(2))
+
+    excluded_dirs = {
+        ".git", "node_modules", ".venv", "venv", "dist", "build", "coverage",
+        "__pycache__", ".next", ".cache", ".pytest_cache", ".mypy_cache", "vendor",
+    }
+    text_suffixes = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+                     ".json", ".yaml", ".yml", ".toml", ".sql", ".md", ".mdx"}
+    parts, used, changed_used = [], 0, 0
+    changed_stems = {Path(path).stem.casefold() for path in changed}
+    identifiers = set()
+    for line in diff.splitlines():
+        if line.startswith(("+", "-")) and not line.startswith(("+++", "---")):
+            identifiers.update(re.findall(
+                r"\b(?:def|class|function|const|let|var|interface|type)\s+([A-Za-z_][A-Za-z0-9_]{2,})",
+                line[1:],
+            ))
+    identifiers = {name.casefold() for name in identifiers}
+
+    def read_text(relative, limit):
         candidate = (root / relative).resolve()
         if root not in candidate.parents or not candidate.is_file():
-            continue
+            return None
         try:
             raw = candidate.read_bytes()
-            if b"\x00" in raw:
-                continue
-            text = raw.decode("utf-8", errors="replace")
         except OSError:
+            return None
+        if b"\x00" in raw:
+            return None
+        text = raw.decode("utf-8", errors="replace")
+        if len(text) > limit:
+            text = text[:limit] + "\n[FILE CONTEXT TRUNCATED]"
+        return text
+
+    for relative in changed:
+        text = read_text(relative, max_file)
+        if text is None:
             continue
-        if len(text) > max_file:
-            text = text[:max_file] + "\n[FILE CONTEXT TRUNCATED]"
-        piece = f"FILE {relative} (current checkout):\n{text}"
+        piece = f"CHANGED FILE {relative} (current checkout; untrusted):\n{text}"
+        if changed_used + len(piece) > int(max_total * 0.67):
+            break
+        parts.append(piece)
+        used += len(piece)
+        changed_used += len(piece)
+
+    related = []
+    scanned = 0
+    for current, dirs, files in os.walk(root):
+        dirs[:] = [name for name in dirs if name not in excluded_dirs]
+        for filename in files:
+            scanned += 1
+            if scanned > 1800:
+                break
+            candidate = Path(current) / filename
+            relative = candidate.relative_to(root).as_posix()
+            if relative in changed or candidate.suffix.casefold() not in text_suffixes:
+                continue
+            try:
+                if candidate.stat().st_size > 100000:
+                    continue
+            except OSError:
+                continue
+            path_lower = relative.casefold()
+            stem_match = any(stem and stem in path_lower for stem in changed_stems)
+            test_like = ("test" in path_lower or "spec" in path_lower)
+            if stem_match and test_like:
+                related.append((0, relative))
+                continue
+            if not identifiers:
+                continue
+            text = read_text(relative, 30000)
+            if text and any(re.search(rf"\b{re.escape(name)}\b", text, re.IGNORECASE)
+                            for name in identifiers):
+                related.append((1, relative))
+        if scanned > 1800:
+            break
+
+    for _, relative in sorted(set(related))[:6]:
+        text = read_text(relative, 5000)
+        if text is None:
+            continue
+        piece = f"RELATED FILE {relative} (existing caller/test context; untrusted):\n{text}"
         if used + len(piece) > max_total:
             break
         parts.append(piece)
         used += len(piece)
     return "\n\n".join(parts)
-
 
 def model_review(directory, diff, pr_body, timeout):
     """Run a candidate pass and an independent verification pass through one provider."""
