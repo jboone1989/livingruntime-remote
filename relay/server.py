@@ -30,6 +30,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from auth import verifier_from_env
 from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
+from pi_repair_handoff import RepairHandoff
 from mcp_events import (
     CallbackEndpointError,
     COGNITION_EVENT_NAME,
@@ -3658,6 +3659,7 @@ def _device_token(request: Request) -> str:
 
 def create_app(store: RelayStore | None = None) -> Starlette:
     store = store or RelayStore(os.environ.get("LIVINGRUNTIME_RELAY_DB", "state/relay.sqlite3"))
+    repair_handoff = RepairHandoff(store)
     relay = Relay(
         store,
         float(os.environ.get("LIVINGRUNTIME_RELAY_TIMEOUT", "45")),
@@ -3993,6 +3995,7 @@ nav a{{margin-right:18px}}
             )
             if not isinstance(result, dict) or not isinstance(result.get("session_id"), str):
                 return JSONResponse({"error": "cn-dev Pi did not start"}, status_code=503)
+            repair_handoff.record(str(caller["user_sub"]), target_id, number, sha, result["session_id"])
             return JSONResponse({
                 "ok": True, "connector_id": target_id,
                 "session_id": result["session_id"],
@@ -4004,6 +4007,57 @@ nav a{{margin-right:18px}}
             return JSONResponse({"error": str(exc)}, status_code=400)
         except Exception as exc:
             return JSONResponse({"error": type(exc).__name__}, status_code=503)
+
+    async def device_pi_repair_result(request: Request):
+        """Receive Pi's bounded export ONLY after an observed successful native session."""
+        try:
+            device = store.authenticate_device(_device_token(request), touch_last_seen=False)
+            if (device["name"] != "cn-dev" or
+                device["device_id"] != "e21c871f-317b-4f3e-95bf-8d4299547a40"):
+                raise PermissionError("only the paired cn-dev Connector may submit repair results")
+            raw = await request.body()
+            if len(raw) > 230_000:
+                raise ValueError("patch upload too large")
+            body = json.loads(raw)
+            if not isinstance(body, dict) or set(body) != {"session_id", "manifest"}:
+                raise ValueError("invalid repair result envelope")
+            session = str(body["session_id"])
+            observed = await relay.call(str(device["user_sub"]), "get_agent_session",
+                                        {"session_id": session}, connector=str(device["device_id"]))
+            if (not isinstance(observed, dict) or observed.get("session_id") != session or
+                (observed.get("agent_status") or {}).get("status") != "SUCCEEDED"):
+                raise PermissionError("native Pi session has not completed successfully")
+            repair_handoff.submit(str(device["user_sub"]), str(device["device_id"]),
+                                  session, body["manifest"])
+            return JSONResponse({"ok": True, "ready": True})
+        except PermissionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
+        except (ValueError, TypeError, KeyError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except Exception as exc:
+            return JSONResponse({"error": type(exc).__name__}, status_code=503)
+
+    async def device_pi_repair_inbox(request: Request):
+        """Expose pending code patches only to central owner-main; writer ACKs real commits."""
+        try:
+            device = store.authenticate_device(_device_token(request), touch_last_seen=False)
+            if device["name"] != "owner-main":
+                raise PermissionError("only the trusted central writer may consume repair results")
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("invalid inbox command")
+            owner = str(device["user_sub"])
+            if body == {"action": "pending"}:
+                return JSONResponse({"items": repair_handoff.pending(owner)})
+            if set(body) == {"action", "session_id", "original_sha", "new_sha"} and body["action"] == "ack":
+                repair_handoff.acknowledge(owner, body["session_id"],
+                                           body["original_sha"], body["new_sha"])
+                return JSONResponse({"ok": True})
+            raise ValueError("unknown inbox command")
+        except PermissionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
+        except (ValueError, TypeError, KeyError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
 
     async def device_event(request: Request):
         try:
@@ -4295,6 +4349,8 @@ nav a{{margin-right:18px}}
         Route("/device/poll", poll, methods=["POST"]),
         Route("/device/result", complete, methods=["POST"]),
         Route("/device/pi-repair", device_pi_repair, methods=["POST"]),
+        Route("/device/pi-repair-result", device_pi_repair_result, methods=["POST"]),
+        Route("/device/pi-repair-inbox", device_pi_repair_inbox, methods=["POST"]),
         Route("/device/event", device_event, methods=["POST"]),
         Mount("/", app=mcp_app),
     ])
