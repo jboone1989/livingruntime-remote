@@ -55,34 +55,6 @@ def is_claude_quota(message):
     ))
 
 
-def claude_subscription_environment():
-    """Always use Claude Code's on-disk subscription login, not inherited API auth.
-
-    The same self-hosted Runner also invokes DeepSeek through ANTHROPIC_AUTH_TOKEN.
-    The ordinary Claude invocation must not inherit any conflicting model routing
-    or authentication setting from that process, service, or host.
-    """
-    env = os.environ.copy()
-    for name in (
-        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS",
-        "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-        "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_SUBAGENT_MODEL",
-        "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
-        "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_EFFORT_LEVEL",
-        "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
-    ):
-        env.pop(name, None)
-    # Keep the existing Claude subscription login. --bare disables OAuth and
-    # is not suitable here; safe-mode and empty setting sources discard ambient
-    # user/project customizations that may reintroduce API-key auth.
-    # The PR reviewer must not inherit Opus defaults, including in subagents.
-    env["CLAUDE_CODE_SUBAGENT_MODEL"] = "sonnet"
-    env["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"] = "1"
-    return env
-
-
 def _claude_failure_metadata(*outputs):
     """Parse Claude Code's terminal JSON without logging its unbounded payload."""
     for output in outputs:
@@ -362,86 +334,40 @@ def parse_native_review(stdout):
 
 
 def native_review(binary, cwd, baseline, sha, timeout):
-    # --model is required even when user settings default to Opus.
     prompt = f"/code-review high {baseline}..{sha}"
     options = [
-        "--model", "sonnet",
         "--output-format", "json", "--permission-mode", "plan",
         "--max-turns", "48", "--disallowedTools", "Edit,Write,NotebookEdit,mcp__*",
-        "--strict-mcp-config", "--safe-mode", "--setting-sources", "user",
-        "--settings", '{"disableAllHooks":true}',
+        "--strict-mcp-config",
     ]
-    env = claude_subscription_environment()
     args = [binary, "-p", prompt, *options]
     try:
-        stdout = run(args, cwd=cwd, timeout=timeout, env=env)
+        stdout = run(args, cwd=cwd, timeout=timeout)
     except ReviewInterrupted as interrupted:
         stdout = resume_claude(
             binary, interrupted, options, cwd=cwd, timeout=timeout,
-            env=env, phase="native-review")
+            env=None, phase="native-review")
     return parse_native_review(stdout)
 
 
-def ask_claude(binary, cwd, prompt, timeout, model="sonnet", env=None,
+def ask_claude(binary, cwd, prompt, timeout,
                max_turns=16, phase="prompt-review"):
     # --tools restricts which tools exist (unlike --allowedTools).
     # No Bash, shell execution, edits, writes, or MCP tool calls in review mode.
     options = [
         "--output-format", "json", "--permission-mode", "plan",
         "--tools", "Read,Glob,Grep", "--disallowedTools", "mcp__*",
-        "--strict-mcp-config", "--safe-mode", "--setting-sources", "user",
-        "--settings", '{"disableAllHooks": true}',
-        "--model", model, "--max-turns", str(max_turns),
+        "--strict-mcp-config", "--max-turns", str(max_turns),
     ]
-    selected_env = claude_subscription_environment() if env is None else env
     try:
         stdout = run([binary, "-p", *options], cwd=cwd, timeout=timeout,
-                     input_text=prompt, env=selected_env)
+                     input_text=prompt)
     except ReviewInterrupted as interrupted:
         stdout = resume_claude(
             binary, interrupted, options, cwd=cwd, timeout=timeout,
-            env=selected_env, phase=phase)
+            env=None, phase=phase)
     return parse_claude(stdout)
 
-
-
-def deepseek_environment():
-    """Scope the fallback token to DeepSeek's CLI subprocess only."""
-    key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-    if not key:
-        raise ReviewUnavailable("DEEPSEEK_API_KEY is missing from the review runner")
-    env = os.environ.copy()
-    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-                 "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
-                 "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
-                 "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"):
-        env.pop(name, None)
-    # Claude CLI recognizes its own Sonnet ID; DeepSeek officially maps
-    # claude-sonnet* to the current Flash model at its Anthropic endpoint.
-    env.update({
-        "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
-        "ANTHROPIC_AUTH_TOKEN": key,
-        "ANTHROPIC_MODEL": "claude-sonnet-4-5-20250929",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-sonnet-4-5-20250929",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-5-20250929",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-sonnet-4-5-20250929",
-        "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-flash",
-        "CLAUDE_CODE_EFFORT_LEVEL": "max",
-        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "786432",
-    })
-    env.pop("DEEPSEEK_API_KEY", None)
-    return env
-
-
-def deepseek_review(binary, directory, diff, pr_body, timeout):
-    """Perform a full independent review rather than reusing partial Claude findings."""
-    env = deepseek_environment()
-    candidates = ask_claude(binary, directory, quality_prompt(diff, pr_body),
-                            timeout, model="claude-sonnet-4-5-20250929", env=env)
-    verified = (ask_claude(binary, directory, verify_prompt(candidates, diff),
-                           timeout, model="claude-sonnet-4-5-20250929", env=env)
-                if candidates else [])
-    return filter_findings(verified, diff)
 
 
 def needs_quality_review(diff):
@@ -616,49 +542,44 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
         # findings. Fall back to the existing independent, checklist-driven Claude
         # review; never mark the check successful without a real structured review.
         provider = "Claude"
-        try:
-            used_fallback = False
-            if documentation_only(diff):
-                # A prose-only Spec revision doesn't need the native
-                # code-review agent scanning every module. Still require a real
-                # independent Claude finding set; never synthesize approval.
-                try:
-                    candidates = ask_claude(
-                        claude, directory, documentation_prompt(diff, pr.get("body") or ""),
-                        timeout, "sonnet", max_turns=6)
-                except QuotaExceeded:
-                    raise
-                except (ReviewError, subprocess.TimeoutExpired, json.JSONDecodeError):
-                    # No rubber-stamp on exhausted turns: require the full R01–R18
-                    # checklist and normal time/turn budget before any green status.
-                    candidates = ask_claude(
-                        claude, directory, quality_prompt(diff, pr.get("body") or ""),
-                        timeout, "sonnet")
+        used_fallback = False
+        if documentation_only(diff):
+            # A prose-only Spec revision doesn't need the native
+            # code-review agent scanning every module. Still require a real
+            # independent Claude finding set; never synthesize approval.
+            try:
+                candidates = ask_claude(
+                    claude, directory, documentation_prompt(diff, pr.get("body") or ""),
+                    timeout, max_turns=6)
+            except QuotaExceeded:
+                raise
+            except (ReviewError, subprocess.TimeoutExpired, json.JSONDecodeError):
+                # No rubber-stamp on exhausted turns: require the full R01–R18
+                # checklist and normal time/turn budget before any green status.
+                candidates = ask_claude(
+                    claude, directory, quality_prompt(diff, pr.get("body") or ""),
+                    timeout)
+            used_fallback = True
+        else:
+            try:
+                candidates = native_review(claude, directory, baseline, sha, timeout)
+            except QuotaExceeded:
+                raise
+            except (ReviewError, subprocess.TimeoutExpired, json.JSONDecodeError):
+                # Invalid or missing native JSON is not an approval. Require
+                # a fresh, independent checklist-driven Claude review.
+                candidates = ask_claude(claude, directory,
+                                        quality_prompt(diff, pr.get("body") or ""),
+                                        timeout)
                 used_fallback = True
-            else:
-                try:
-                    candidates = native_review(claude, directory, baseline, sha, timeout)
-                except QuotaExceeded:
-                    raise
-                except (ReviewError, subprocess.TimeoutExpired, json.JSONDecodeError):
-                    # Invalid or missing native JSON is not an approval. Require
-                    # a fresh, independent checklist-driven Claude review.
-                    candidates = ask_claude(claude, directory,
-                                            quality_prompt(diff, pr.get("body") or ""),
-                                            timeout, "sonnet")
-                    used_fallback = True
-            if needs_quality_review(diff) and not used_fallback:
-                candidates += ask_claude(claude, directory,
-                                          quality_prompt(diff, pr.get("body") or ""),
-                                          timeout, "sonnet")
-            verified = (ask_claude(claude, directory,
-                                   verify_prompt(candidates, diff), timeout, "sonnet")
-                        if candidates else [])
-            findings = filter_findings(verified, diff)
-        except QuotaExceeded:
-            provider = "DeepSeek-V4.1-Flash-1017"
-            findings = deepseek_review(
-                claude, directory, diff, pr.get("body") or "", timeout)
+        if needs_quality_review(diff) and not used_fallback:
+            candidates += ask_claude(claude, directory,
+                                      quality_prompt(diff, pr.get("body") or ""),
+                                      timeout)
+        verified = (ask_claude(claude, directory,
+                               verify_prompt(candidates, diff), timeout)
+                    if candidates else [])
+        findings = filter_findings(verified, diff)
         fresh = api(gh, f"repos/{repo}/pulls/{number}")
         if fresh["head"]["sha"] != sha:
             return "skip:head updated during review"
