@@ -31,6 +31,17 @@ class WorkboardControlPlaneTests(unittest.TestCase):
         self.assertIn('共享任务试验尚不可用', self.html)
         self.assertIn('esc(', self.html)
 
+    def test_inbox_receipts_require_explicit_ack_with_fence_and_revision(self):
+        self.assertIn('data-ack-index=', self.html)
+        self.assertIn('callTool("workboard_ack",args)', self.html)
+        self.assertIn('fence:receipt.fence', self.html)
+        self.assertIn('source_revision:receipt.source_revision', self.html)
+        self.assertIn('receipt.acknowledged_at!=null', self.html)
+        self.assertIn('esc(txt(x.evidence_json).slice(0,160))', self.html)
+        # Loading or rendering a snapshot must never acknowledge on its own.
+        load = self.html.split('async function loadWorkboard()', 1)[1].split('function render(snapshot)', 1)[0]
+        self.assertNotIn('workboard_ack', load)
+
     @unittest.skipUnless(shutil.which("node"), "Node syntax checker unavailable")
     def test_widget_script_syntax(self):
         script = re.search(r'<script>([\s\S]*?)</script>', self.html)
