@@ -72,7 +72,7 @@ def deliver(cfg, request):
         try:
             observed = agent_sessions.status(item["session_id"])
             status = str(observed["agent_status"].get("status", "UNKNOWN")).upper()
-            if status not in {"SUCCEEDED", "FAILED", "CANCELLED", "BLOCKED"}:
+            if status not in {"SUCCEEDED", "FAILED", "CANCELLED", "BLOCKED", "STALLED"}:
                 continue
             # Limit actual completions, not the first three filenames. Old
             # DELIVERED/BLOCKED or still-running sessions must not starve new
@@ -91,9 +91,13 @@ def deliver(cfg, request):
                 raise RuntimeError("Relay declined Pi repair handoff")
             save(path, {**item, "state": "DELIVERED"})
             delivered = True
+        except (ValueError, PermissionError, UnicodeError) as exc:
+            # A successful Pi session with an empty, forbidden or malformed
+            # patch cannot improve on retry. Preserve the receipt and expose
+            # a human blocker instead of retrying the same bad patch forever.
+            save(path, {**item, "state": "BLOCKED", "reason": "invalid-patch:" + type(exc).__name__})
         except Exception as exc:
-            # Retain the source receipt; never convert failure into a green PR
-            # or start a second native agent. The next poll may retry transient
-            # transport failures, while invalid source remains available.
+            # Transport outages and transient Git failures remain retryable;
+            # never convert either path into a green review/merge result.
             print("Pi repair completion deferred: " + type(exc).__name__, flush=True)
     return delivered
