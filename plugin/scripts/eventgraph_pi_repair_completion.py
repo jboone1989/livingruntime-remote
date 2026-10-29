@@ -64,7 +64,8 @@ def deliver(cfg, request):
     if cfg.get("name") != "cn-dev":
         return False
     delivered = False
-    for path in sorted(journal_dir().glob("lra_*.json"))[:3]:
+    completed = 0
+    for path in sorted(journal_dir().glob("lra_*.json")):
         item = json.loads(path.read_text(encoding="utf-8"))
         if item["state"] != "RUNNING":
             continue
@@ -73,6 +74,12 @@ def deliver(cfg, request):
             status = str(observed["agent_status"].get("status", "UNKNOWN")).upper()
             if status not in {"SUCCEEDED", "FAILED", "CANCELLED", "BLOCKED"}:
                 continue
+            # Limit actual completions, not the first three filenames. Old
+            # DELIVERED/BLOCKED or still-running sessions must not starve new
+            # successful Pi repairs forever.
+            if completed >= 3:
+                break
+            completed += 1
             if status != "SUCCEEDED":
                 save(path, {**item, "state": "BLOCKED", "reason": "native-" + status})
                 continue
