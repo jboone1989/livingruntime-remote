@@ -34,7 +34,7 @@ class ReviewerUnitTests(unittest.TestCase):
               "base": {"ref": "develop"}, "body": "document the approved deployment"}
         with (patch.object(reviewer, "checkout",
                            return_value=(Path("/tmp"), document_diff, "b"*40)),
-              patch.object(reviewer, "deepseek_review", return_value=[]) as deepseek,
+              patch.object(reviewer, "model_review", return_value=[]) as deepseek,
               patch.object(reviewer, "native_review") as native,
               patch.object(reviewer, "ask_claude") as legacy,
               patch.object(reviewer, "api", return_value=pr),
@@ -147,7 +147,7 @@ class ReviewerUnitTests(unittest.TestCase):
                                 "limited": ["a"*40], "failures": {"a"*40: 2}}}}
         with (patch.object(reviewer, "checkout",
                            return_value=(Path("/tmp"), DIFF, "b"*40)) as checkout,
-              patch.object(reviewer, "deepseek_review", return_value=[]) as deepseek,
+              patch.object(reviewer, "model_review", return_value=[]) as deepseek,
               patch.object(reviewer, "native_review") as native,
               patch.object(reviewer, "ask_claude") as legacy,
               patch.object(reviewer, "api", return_value=pr),
@@ -344,7 +344,7 @@ class ReviewerUnitTests(unittest.TestCase):
                    "severity": "important", "reason": "silenced error",
                    "evidence": "catch returns success", "fix": "propagate error"}
         with patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "a"*40)), \
-             patch.object(reviewer, "deepseek_review", return_value=[finding]) as deepseek, \
+             patch.object(reviewer, "model_review", return_value=[finding]) as deepseek, \
              patch.object(reviewer, "native_review") as native, \
              patch.object(reviewer, "ask_claude") as legacy, \
              patch.object(reviewer, "api", return_value=pr), \
@@ -387,7 +387,7 @@ class ReviewerUnitTests(unittest.TestCase):
         state = {"prs": {"2": {"reviewed": ["s1", "s2", "s3"],
                                 "outcomes": {"s1": True, "s2": False, "s3": False}}}}
         with patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "a"*40)), \
-             patch.object(reviewer, "deepseek_review", return_value=[]), \
+             patch.object(reviewer, "model_review", return_value=[]), \
              patch.object(reviewer, "api", return_value=pr), \
              patch.object(reviewer, "already_commented", return_value=True), \
              patch.object(reviewer, "commit_status"), \
@@ -470,7 +470,7 @@ class ReviewerUnitTests(unittest.TestCase):
             work = Path(tmp) / "reviews"
             with patch.object(reviewer, "checkout", return_value=(
                      work / "source", DIFF, "a"*40)), \
-                 patch.object(reviewer, "deepseek_review",
+                 patch.object(reviewer, "model_review",
                               side_effect=reviewer.ReviewError("DeepSeek unavailable")):
                 with self.assertRaisesRegex(reviewer.ReviewError, "DeepSeek unavailable"):
                     reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
@@ -643,7 +643,7 @@ class ReviewerUnitTests(unittest.TestCase):
               "base": {"ref": "main"}, "body": ""}
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "deepseek_review",
+             patch.object(reviewer, "model_review",
                           side_effect=reviewer.ReviewError("DeepSeek unavailable")), \
              patch.object(reviewer, "native_review") as native, \
              patch.object(reviewer, "ask_claude") as legacy:
@@ -706,7 +706,7 @@ class ReviewerUnitTests(unittest.TestCase):
               "base": {"ref": "main"}, "body": ""}
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "deepseek_review", return_value=[]) as deepseek, \
+             patch.object(reviewer, "model_review", return_value=[]) as deepseek, \
              patch.object(reviewer, "native_review") as native, \
              patch.object(reviewer, "ask_claude") as legacy, \
              patch.object(reviewer, "api", return_value=pr), \
@@ -729,7 +729,7 @@ class ReviewerUnitTests(unittest.TestCase):
               "base": {"ref": "main"}, "body": ""}
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "deepseek_review", return_value=[]) as deepseek, \
+             patch.object(reviewer, "model_review", return_value=[]) as deepseek, \
              patch.object(reviewer, "native_review") as native, \
              patch.object(reviewer, "ask_claude") as legacy, \
              patch.object(reviewer, "api", return_value=pr), \
@@ -752,7 +752,7 @@ class ReviewerUnitTests(unittest.TestCase):
               "base": {"ref": "main"}, "body": ""}
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "deepseek_review", return_value=[]) as deepseek, \
+             patch.object(reviewer, "model_review", return_value=[]) as deepseek, \
              patch.object(reviewer, "native_review") as native, \
              patch.object(reviewer, "ask_claude") as legacy, \
              patch.object(reviewer, "api", return_value=pr), \
@@ -776,7 +776,7 @@ class ReviewerUnitTests(unittest.TestCase):
               "base": {"ref": "main"}, "body": ""}
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "deepseek_review", return_value=[]) as deepseek, \
+             patch.object(reviewer, "model_review", return_value=[]) as deepseek, \
              patch.object(reviewer, "native_review") as native, \
              patch.object(reviewer, "ask_claude") as legacy, \
              patch.object(reviewer, "api", return_value=pr), \
