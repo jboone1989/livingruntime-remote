@@ -493,7 +493,7 @@ def needs_quality_review(diff):
 def quality_prompt(diff, pr_body):
     """Apply every relevant item of the trusted, versioned R01–R18 checklist."""
     checklist = (Path(__file__).resolve().parents[2]
-                 / "docs" / "model-review-checklist.md").read_text(encoding="utf-8")
+                 / "docs" / "claude-review-checklist.md").read_text(encoding="utf-8")
     return (
         "You are the independent adversarial code reviewer. "
         "Use Read/Glob/Grep only; do not execute or change source code. "
@@ -529,7 +529,7 @@ def documentation_only(diff):
         path = header.group(2)
         if path.startswith(("industry/prompts/", "prompts/", "config/prompts/")):
             return False
-        if path.rsplit("/", 1)[-1].lower() in ("agents.md", "claude.md", "skill.md", "claude-review-checklist.md", "model-review-checklist.md"):
+        if path.rsplit("/", 1)[-1].lower() in ("agents.md", "claude.md", "skill.md", "claude-review-checklist.md"):
             return False
         if not (path.startswith(("specs/", "docs/")) and path.endswith((".md", ".mdx", ".rst", ".txt"))
                 or path in ("README.md", "CHANGELOG.md", "CONTRIBUTING.md")):
