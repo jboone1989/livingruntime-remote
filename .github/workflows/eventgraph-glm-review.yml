@@ -31,7 +31,7 @@ jobs:
   review:
     if: github.repository == 'jboone1989/EventGraph'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 60
     permissions:
       actions: read
       contents: read
@@ -154,7 +154,7 @@ jobs:
             Return the schema findings list; return [] only after a real review.
           claude_args: >-
             --model ${{ vars.GLM_REVIEW_MODEL || 'glm-5.3' }}
-            --max-turns 32
+            --max-turns 64
             --tools Read,Glob,Grep
             --disallowedTools mcp__*
             --strict-mcp-config
@@ -185,7 +185,7 @@ jobs:
             only if the independent verification genuinely finds no valid findings.
           claude_args: >-
             --model ${{ vars.GLM_REVIEW_MODEL || 'glm-5.3' }}
-            --max-turns 16
+            --max-turns 48
             --tools Read,Glob,Grep
             --disallowedTools mcp__*
             --strict-mcp-config
