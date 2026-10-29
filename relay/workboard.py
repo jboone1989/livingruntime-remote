@@ -40,6 +40,13 @@ class Workboard:
             CREATE TABLE IF NOT EXISTS workboard_events(
               seq INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL,
               fence INTEGER NOT NULL, status TEXT NOT NULL, created_at REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS workboard_receipts(
+              item_id TEXT PRIMARY KEY, user_sub TEXT NOT NULL,
+              fence INTEGER NOT NULL, source_revision TEXT NOT NULL,
+              evidence_json TEXT NOT NULL, finished_at REAL NOT NULL,
+              acknowledged_at REAL);
+            CREATE INDEX IF NOT EXISTS workboard_inbox
+              ON workboard_receipts(user_sub,acknowledged_at,finished_at);
             CREATE INDEX IF NOT EXISTS workboard_ready
               ON workboard_items(user_sub,device_id,agent_id,status,created_at);
             """)
@@ -67,6 +74,16 @@ class Workboard:
     def event(db, row):
         db.execute("INSERT INTO workboard_events(item_id,fence,status,created_at) VALUES(?,?,?,?)",
                    (row['id'], row['fence'], row['status'], time.time()))
+
+    @staticmethod
+    def receipt(db, row):
+        # Same transaction as acceptance. A repeated/replayed completion cannot
+        # make a second Inbox item or silently substitute its evidence.
+        db.execute("""INSERT INTO workboard_receipts
+          (item_id,user_sub,fence,source_revision,evidence_json,finished_at)
+          VALUES (?,?,?,?,?,?)""",
+          (row['id'], row['user_sub'], row['fence'],
+           row['source_revision'], row['evidence_json'], time.time()))
 
     @staticmethod
     def row(db, user, item_id):
@@ -229,6 +246,8 @@ class Workboard:
                     status = 'SUCCEEDED'
                 db.execute("UPDATE workboard_items SET status=?,lease_until=NULL,evidence_json=? WHERE id=?",
                            (status, json.dumps(evidence_refs or []), item_id))
+                if status == 'SUCCEEDED':
+                    self.receipt(db, self.row(db, user, item_id))
                 if status == 'VERIFYING':
                     db.execute("INSERT INTO workboard_actions VALUES(?,?,?,?,?, 'PENDING',?,NULL)",
                                ('lrhuman_'+uuid.uuid4().hex, item_id, row['attempt'],
@@ -245,6 +264,27 @@ class Workboard:
             row = self.row(db, user, item_id)
             self.event(db, row)
             return row
+
+    def inbox(self, user, *, include_acknowledged=False):
+        with closing(self.store.db()) as db:
+            where = '' if include_acknowledged else 'AND acknowledged_at IS NULL'
+            return [dict(r) for r in db.execute(
+                "SELECT * FROM workboard_receipts WHERE user_sub=? " + where +
+                " ORDER BY finished_at DESC,item_id LIMIT 100", (user,))]
+
+    def acknowledge(self, user, item_id, fence, source_revision):
+        if type(fence) is not int or fence < 1:
+            raise ValueError('invalid receipt fence')
+        self.text(item_id, 'item_id')
+        self.text(source_revision, 'source_revision')
+        with self.transaction() as db:
+            result = db.execute("""UPDATE workboard_receipts
+              SET acknowledged_at=? WHERE item_id=? AND user_sub=? AND fence=?
+              AND source_revision=? AND acknowledged_at IS NULL""",
+              (time.time(), item_id, user, fence, source_revision))
+            if result.rowcount != 1:
+                raise PermissionError('unknown, stale or already acknowledged Inbox receipt')
+            return dict(db.execute("SELECT * FROM workboard_receipts WHERE item_id=?", (item_id,)).fetchone())
 
     def human_actions(self, user):
         with closing(self.store.db()) as db:
@@ -289,6 +329,7 @@ class Workboard:
                 raise PermissionError("stale acceptance or item not verifying")
             db.execute("UPDATE workboard_items SET status='SUCCEEDED',evidence_json=? WHERE id=?",
                        (json.dumps(evidence_refs), item_id))
+            self.receipt(db, self.row(db, user, item_id))
             db.execute("UPDATE workboard_actions SET status='RESOLVED',resolution='Verified evidence' "
                        "WHERE item_id=? AND attempt=? AND fence=? AND source_revision=? "
                        "AND status='PENDING'",
