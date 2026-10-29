@@ -69,6 +69,30 @@ class PiRepairDispatchTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "ineligible"):
                 router.validate_failure({**PR, **delta}, SHA, "check", 10)
 
+    def test_untrusted_or_quoted_markers_cannot_exhaust_repair_rounds(self):
+        def comment(sha, *, association="NONE", login="attacker", quoted=False):
+            marker = (f"<!-- eventgraph-pi-repair sha={sha} "
+                      "attempt=1 state=dispatched -->")
+            return {
+                "body": ("Quoted marker: " if quoted else "") + marker,
+                "author_association": association,
+                "user": {"login": login},
+            }
+
+        comments = [
+            comment(SHA),  # A public PR commenter cannot block real repairs.
+            comment("b" * 40, association="OWNER", login="jboone1989", quoted=True),
+            comment("c" * 40, association="OWNER", login="jboone1989"),
+            comment("d" * 40, login="github-actions[bot]"),
+            {"body": comment("e" * 40)["body"]},  # Deleted/unknown author.
+        ]
+        with patch.object(router, "api", return_value=comments):
+            markers = router.read_markers(175)
+        self.assertEqual(markers, [
+            ("c" * 40, 1, "dispatched"), ("d" * 40, 1, "dispatched"),
+        ])
+        self.assertEqual(router.next_attempt(markers, SHA), 3)
+
     def test_repair_rounds_are_deduplicated_and_bounded(self):
         markers = [(SHA, 1, "dispatched")]
         self.assertIsNone(router.next_attempt(markers, SHA))
