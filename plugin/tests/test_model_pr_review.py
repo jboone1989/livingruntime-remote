@@ -210,11 +210,11 @@ class ReviewerUnitTests(unittest.TestCase):
             env = reviewer.model_environment()
         self.assertEqual(env["GH_TOKEN"], "runner-github-token")
         self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic")
-        self.assertEqual(env["ANTHROPIC_API_KEY"], "deepseek-review-key")
+        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "deepseek-review-key")
         self.assertEqual(env["ANTHROPIC_MODEL"], "deepseek-flash")
         self.assertEqual(env["CLAUDE_CODE_SUBAGENT_MODEL"], "deepseek-flash")
         self.assertEqual(env["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"], "1")
-        self.assertNotIn("ANTHROPIC_AUTH_TOKEN", env)
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
         self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", env)
         self.assertNotIn("CLAUDE_CODE_USE_BEDROCK", env)
         self.assertNotIn("REVIEW_API_KEY", env)
@@ -237,9 +237,9 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertEqual(reviewer.native_review(
                 "claude", Path("/tmp"), "a"*40, "b"*40, 30), [])
             env = native.call_args.kwargs["env"]
-            self.assertEqual(env["ANTHROPIC_API_KEY"], "deepseek-review-key")
+            self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "deepseek-review-key")
             self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic")
-            self.assertNotIn("ANTHROPIC_AUTH_TOKEN", env)
+            self.assertNotIn("ANTHROPIC_API_KEY", env)
             self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", env)
             args = native.call_args.args[0]
             self.assertIn("--safe-mode", args)
@@ -250,9 +250,9 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertEqual(reviewer.ask_claude(
                 "claude", Path("/tmp"), "review", 30), [])
             env = ask.call_args.kwargs["env"]
-            self.assertEqual(env["ANTHROPIC_API_KEY"], "deepseek-review-key")
+            self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "deepseek-review-key")
             self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic")
-            self.assertNotIn("ANTHROPIC_AUTH_TOKEN", env)
+            self.assertNotIn("ANTHROPIC_API_KEY", env)
             self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", env)
             args = ask.call_args.args[0]
             self.assertIn("--safe-mode", args)
@@ -272,7 +272,7 @@ class ReviewerUnitTests(unittest.TestCase):
                 "claude", Path("/tmp"), "review", 30,
                 env=reviewer.model_environment()), [])
         env = run.call_args.kwargs["env"]
-        self.assertEqual(env["ANTHROPIC_API_KEY"], "provider-review-key")
+        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "provider-review-key")
         self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic")
         self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", env)
 
@@ -290,7 +290,7 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertEqual(reviewer.ask_claude("claude", Path("/tmp"), "prompt", 30), [])
             args = proc.call_args.args[0]
             self.assertEqual(proc.call_args.kwargs["input"], "prompt")
-            self.assertEqual(proc.call_args.kwargs["env"]["ANTHROPIC_API_KEY"], "provider-review-key")
+            self.assertEqual(proc.call_args.kwargs["env"]["ANTHROPIC_AUTH_TOKEN"], "provider-review-key")
             self.assertEqual(proc.call_args.kwargs["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "deepseek-flash")
             self.assertEqual(proc.call_args.kwargs["env"]["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"], "1")
             self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", proc.call_args.kwargs["env"])
@@ -377,7 +377,7 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertEqual(call.kwargs["model"], "deepseek-flash")
             self.assertEqual(call.kwargs["env"]["ANTHROPIC_BASE_URL"],
                              "https://api.deepseek.com/anthropic")
-            self.assertEqual(call.kwargs["env"]["ANTHROPIC_API_KEY"], "fake-review-key")
+            self.assertEqual(call.kwargs["env"]["ANTHROPIC_AUTH_TOKEN"], "fake-review-key")
             self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", call.kwargs["env"])
 
     def test_clean_review_resets_round_counter(self):
@@ -687,8 +687,8 @@ class ReviewerUnitTests(unittest.TestCase):
         self.assertEqual(env["ANTHROPIC_DEFAULT_SONNET_MODEL"], "deepseek-flash")
         self.assertEqual(env["CLAUDE_CODE_SUBAGENT_MODEL"], "deepseek-flash")
         self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.deepseek.com/anthropic")
-        self.assertEqual(env["ANTHROPIC_API_KEY"], "fake-review-only-key")
-        self.assertNotIn("ANTHROPIC_AUTH_TOKEN", env)
+        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "fake-review-only-key")
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
         self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", env)
         self.assertNotIn("CLAUDE_CODE_USE_BEDROCK", env)
         self.assertNotIn("REVIEW_API_KEY", env)
