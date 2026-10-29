@@ -78,7 +78,7 @@ def model_environment():
     """Launch Claude Code as the harness, authenticated only to the configured model API.
 
     ANTHROPIC_* below are Claude Code's Messages-protocol settings, not Anthropic
-    account credentials. The key is REVIEW_API_KEY for REVIEW_BASE_URL; OAuth,
+    account credentials. The provider key is passed as a protocol token for REVIEW_BASE_URL; OAuth,
     saved-provider overrides, and all inherited Anthropic account credentials are
     excluded before every model request.
     """
@@ -97,17 +97,20 @@ def model_environment():
         env.pop(name, None)
     # Claude Code is retained as the read-only agent harness; only inference is
     # redirected. The selected provider must implement Claude Code's Anthropic-compatible Messages protocol.
+    subagent_model = "deepseek-flash" if model == "deepseek-flash[1m]" else model
     env.update({
         "ANTHROPIC_BASE_URL": base_url,
-        "ANTHROPIC_API_KEY": api_key,
+        "ANTHROPIC_AUTH_TOKEN": api_key,
         "ANTHROPIC_MODEL": model,
         "ANTHROPIC_DEFAULT_OPUS_MODEL": model,
         "ANTHROPIC_DEFAULT_SONNET_MODEL": model,
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
-        "CLAUDE_CODE_SUBAGENT_MODEL": model,
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": subagent_model,
+        "CLAUDE_CODE_SUBAGENT_MODEL": subagent_model,
         "CLAUDE_CODE_SUBAGENT_MODEL_FORCE": "1",
         "CLAUDE_CODE_EFFORT_LEVEL": "max",
     })
+    if model == "deepseek-flash[1m]":
+        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = "786432"
     env.pop("REVIEW_API_KEY", None)
     env.pop("DEEPSEEK_API_KEY", None)
     return env
@@ -598,7 +601,7 @@ def format_report(repo, sha, round_number, findings, *, manual_rereview=False, p
     return "\n".join(lines), bool(blocking)
 
 
-def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_approval=None):
+def review(pr, *, repo, gh, claude="/home/ubuntu/.local/bin/claude", work=None, state=None, state_path=None, timeout=180, manual_approval=None):
     number, sha = pr["number"], pr["head"]["sha"]
     if pr["state"] != "open" or pr.get("draft"):
         return "skip:draft/closed"
@@ -708,7 +711,8 @@ def run_once(args):
             # Only a completed review is terminal for a SHA. Transient runner/model
             # errors remain retryable when CI dispatches a review again.
             try:
-                result = review(pr, repo=args.repo, gh=args.gh, claude=args.claude,
+                result = review(pr, repo=args.repo, gh=args.gh,
+                                claude=getattr(args, "claude", "/home/ubuntu/.local/bin/claude"),
                                 work=args.work, state=state, state_path=args.state,
                                 timeout=args.timeout, manual_approval=(manual_approval if sha == getattr(args, "expected_sha", None) else None))
                 print(f"PR #{pr['number']}: {result}", flush=True)
