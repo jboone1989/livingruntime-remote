@@ -131,6 +131,41 @@ class PatchWriterTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "did not change"):
                 writer.prepare_tree(SHA, manifest()["changes"])
 
+    def test_lost_ack_recovers_exact_committed_patch_without_new_write(self):
+        import hashlib
+        data = manifest()
+        raw = data["changes"][0]["content"].encode()
+        blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\\x00" + raw).hexdigest()
+        expected_message = f"fix(pr-175): Pi repair of verified failure at {SHA[:12]}"
+        paths = []
+        def fake(path, *, method="GET", body=None):
+            paths.append((path, method))
+            self.assertEqual(method, "GET", "replay must never write")
+            if path == "pulls/175":
+                return {"state": "open", "draft": False, "base": {"ref": "develop"},
+                        "head": {"repo": {"full_name": REPO}, "sha": NEXT, "ref": "fix/explain"}}
+            if path == "git/commits/" + NEXT:
+                return {"message": expected_message, "parents": [{"sha": SHA}],
+                        "tree": {"sha": TREE}}
+            if path == "git/trees/" + TREE + "?recursive=1":
+                return {"truncated": False, "tree": [{**BASE, "sha": blob}]}
+            self.fail("unexpected reconciliation call")
+        with patch.object(writer, "api", side_effect=fake):
+            result = writer.write(data)
+        self.assertEqual(result["new_sha"], NEXT)
+        self.assertNotIn(("git/refs/heads/fix/explain", "PATCH"), paths)
+
+    def test_lost_ack_does_not_accept_unrelated_commit(self):
+        with patch.object(writer, "api", side_effect=[
+            {"state": "open", "draft": False, "base": {"ref": "develop"},
+             "head": {"repo": {"full_name": REPO}, "sha": NEXT}},
+            {"state": "open", "draft": False, "base": {"ref": "develop"},
+             "head": {"repo": {"full_name": REPO}, "sha": NEXT}},
+            {"message": "unrelated commit", "parents": [{"sha": SHA}], "tree": {"sha": TREE}},
+        ]):
+            with self.assertRaises(PermissionError):
+                writer.write(manifest())
+
     def test_pre_commit_race_fails_without_pushing(self):
         pr = {"state": "open", "draft": False, "base": {"ref": "develop"},
               "head": {"repo": {"full_name": REPO}, "sha": SHA, "ref": "fix/explain"}}
