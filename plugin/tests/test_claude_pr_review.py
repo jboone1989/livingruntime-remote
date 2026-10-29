@@ -386,7 +386,8 @@ class ReviewerUnitTests(unittest.TestCase):
         with patch.object(reviewer, "run") as run:
             reviewer.commit_status("gh", "org/repo", "a"*40, "success", "review passed")
         calls = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(any("context=model-review" in args for args in calls))
         self.assertTrue(any("context=deepseek-review" in args for args in calls))
         self.assertTrue(any("context=claude-review" in args for args in calls))
 
