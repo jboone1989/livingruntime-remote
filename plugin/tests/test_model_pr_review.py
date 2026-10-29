@@ -670,6 +670,18 @@ class ReviewerUnitTests(unittest.TestCase):
         native.assert_not_called()
         legacy.assert_not_called()
 
+    def test_default_provider_uses_official_deepseek_harness_configuration(self):
+        with patch.dict(reviewer.os.environ, {"REVIEW_API_KEY": "fake-review-key"}, clear=True):
+            base_url, key, model = reviewer.model_settings()
+            env = reviewer.model_environment()
+        self.assertEqual(base_url, "https://api.deepseek.com/anthropic")
+        self.assertEqual(key, "fake-review-key")
+        self.assertEqual(model, "deepseek-flash[1m]")
+        self.assertEqual(env["ANTHROPIC_MODEL"], "deepseek-flash[1m]")
+        self.assertEqual(env["CLAUDE_CODE_SUBAGENT_MODEL"], "deepseek-flash")
+        self.assertEqual(env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], "786432")
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", env)
+
     def test_model_environment_is_scoped_and_configurable(self):
         with patch.dict(reviewer.os.environ, {
             "REVIEW_API_KEY": "fake-review-only-key",
