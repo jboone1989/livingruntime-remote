@@ -147,7 +147,7 @@ def committed_receipt(number, sha, changes):
     blobs = {r["path"]: r for r in tree["tree"] if r.get("type") == "blob"}
     for item in changes:
         raw = item["content"].encode("utf-8")
-        expected = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\\x00" + raw).hexdigest()
+        expected = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest()
         actual = blobs.get(item["path"])
         if not actual or actual["sha"] != expected or actual["mode"] != "100644":
             raise PermissionError("committed patch bytes differ from the claimed result")
