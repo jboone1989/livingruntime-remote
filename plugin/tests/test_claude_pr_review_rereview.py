@@ -51,8 +51,7 @@ class OneTimeReviewTests(unittest.TestCase):
                         "diff --git a/plugin/foo.py b/plugin/foo.py\n"
                         "--- a/plugin/foo.py\n+++ b/plugin/foo.py\n"
                         "@@ -1 +1 @@\n-old\n+new\n", "base")),
-                  patch.object(reviewer, "native_review", return_value=[]) as native,
-                  patch.object(reviewer, "ask_claude", return_value=[]) as quality,
+                  patch.object(reviewer, "deepseek_review", return_value=[]) as deepseek,
                   patch.object(reviewer, "api", return_value=pr),
                   patch.object(reviewer, "already_commented", return_value=False),
                   patch.object(reviewer, "post_comment") as comment,
@@ -62,15 +61,14 @@ class OneTimeReviewTests(unittest.TestCase):
                 result = reviewer.review(pr, repo=REPO, gh="gh", claude="claude",
                     work=Path(d), state=state, state_path=path, timeout=60)
                 self.assertIn("blocking=False", result)
-                native.assert_called_once()
-                quality.assert_called_once()
+                deepseek.assert_called_once()
                 comment.assert_called_once()
                 self.assertEqual(status.call_args.args[3], "success")
                 self.assertIn(SHA, reviewer.load_state(path)["prs"]["142"]["reviewed"])
                 self.assertEqual(reviewer.review(pr, repo=REPO, gh="gh", claude="claude",
                     work=Path(d), state=state, state_path=path, timeout=60),
                     "skip:already reviewed")
-                native.assert_called_once()
+                deepseek.assert_called_once()
 
 
 if __name__ == "__main__":
