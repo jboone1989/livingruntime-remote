@@ -28,6 +28,30 @@ class PiRepairHandoffTests(unittest.TestCase):
         self.board = RepairHandoff(self.store)
         self.board.record("owner", CN, 175, SHA, SESSION)
 
+    def test_reservation_precedes_launch_and_allows_exactly_one_session(self):
+        reservation = self.board.reserve("owner", CN, 177, NEXT)
+        with self.assertRaisesRegex(PermissionError, "already claimed"):
+            self.board.reserve("owner", CN, 177, NEXT)
+        with self.assertRaisesRegex(PermissionError, "missing or consumed"):
+            self.board.activate("owner", "unpaired-device", reservation, "lra_" + "d" * 32)
+        actual = "lra_" + "d" * 32
+        self.board.activate("owner", CN, reservation, actual)
+        with self.assertRaisesRegex(PermissionError, "missing or consumed"):
+            self.board.activate("owner", CN, reservation, "lra_" + "e" * 32)
+        source = {**patch(), "pr_number": 177, "expected_head_sha": NEXT}
+        self.board.submit("owner", CN, actual, source)
+        self.assertEqual(self.board.pending("owner")[0]["session_id"], actual)
+
+    def test_ambiguous_launch_leaves_durable_claim_instead_of_second_agent(self):
+        reservation = self.board.reserve("owner", CN, 177, NEXT)
+        with self.store.db() as db:
+            row = db.execute("SELECT state FROM pi_repair_handoffs WHERE session_id=?",
+                             (reservation,)).fetchone()
+        self.assertEqual(row["state"], "LAUNCHING")
+        with self.assertRaises(PermissionError):
+            self.board.reserve("owner", CN, 177, NEXT)
+        self.assertEqual(self.board.pending("owner"), [])
+
     def test_exact_owned_session_and_immutable_head(self):
         self.board.submit("owner", CN, SESSION, patch())
         result = self.board.pending("owner")
