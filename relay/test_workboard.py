@@ -508,5 +508,49 @@ class WorkboardTests(unittest.TestCase):
         self.assertEqual(len(self.board.human_actions('owner')), 1)
 
 
+    def test_worker_repeated_native_status_errors_block_only_that_item(self):
+        first = self.create()
+        second = self.create()
+        launches = []
+        def start(*args, **kwargs):
+            launches.append(args)
+            return {'session_id': 'session-'+str(len(launches)),
+                    'runtime_job_id': 'job-'+str(len(launches))}
+        def status(_session_id):
+            raise RuntimeError('native status endpoint unavailable')
+        with patch.dict(os.environ, {'LIVINGRUNTIME_WORKBOARD_JOURNALS': self.tmp.name+'/journal'}):
+            worker = self.worker(start, status)
+            worker.tick()
+            worker.tick()
+            worker.tick()
+            self.assertEqual(len(launches), 1)
+            self.assertEqual(self.board.list_items('owner')[0]['status'], 'CLAIMED')
+            worker.tick()
+            self.assertEqual(len(launches), 2)
+            items = {item['id']: item for item in self.board.list_items('owner')}
+            self.assertEqual(items[first['id']]['status'], 'BLOCKED_HUMAN')
+            self.assertEqual(items[second['id']]['status'], 'CLAIMED')
+            self.assertEqual(self.board.human_actions('owner')[0]['item_id'], first['id'])
+
+    def test_worker_native_status_recovery_resets_error_budget(self):
+        self.create()
+        calls = []
+        def start(*args, **kwargs):
+            return {'session_id': 'session', 'runtime_job_id': 'job'}
+        def status(_session_id):
+            calls.append(True)
+            if len(calls) in {1, 3, 4}:
+                raise RuntimeError('temporary native status failure')
+            return {'agent_status': {'status': 'RUNNING'}}
+        with patch.dict(os.environ, {'LIVINGRUNTIME_WORKBOARD_JOURNALS': self.tmp.name+'/journal'}):
+            worker = self.worker(start, status)
+            worker.tick()
+            for _ in range(5):
+                worker.tick()
+            self.assertEqual(len(calls), 5)
+            self.assertEqual(self.board.list_items('owner')[0]['status'], 'RUNNING')
+            self.assertEqual(self.board.human_actions('owner'), [])
+
+
 if __name__ == '__main__':
     unittest.main()
