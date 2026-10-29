@@ -898,7 +898,7 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
  </div>
  <div id="workboard-view" class="panel">
   <h2 class="panel-title">共享任务 · Workboard（试验）</h2>
-  <p class="notice" id="workboard-status" role="status">任务与人工处理项只读；收件箱回执可逐项确认已阅，不代替 CI 或人工验收。</p>
+  <p class="notice" id="workboard-status" role="status">人工处理须核对原生进程与外部副作用；人工验收须提交真实证据。收件箱确认已阅不代替 CI。</p>
   <div class="agents">
    <section class="agent"><h3 class="subhead">发件箱 · Goals</h3><div id="wb-goals" class="history"></div></section>
    <section class="agent"><h3 class="subhead">任务表 · WorkItems</h3><div id="wb-items" class="history"></div></section>
@@ -991,7 +991,7 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
    $("recent-activity").innerHTML=history.length?history.map(a=>'<div class="event"><span>'+esc(a.tool||"远程操作")+'</span><span>'+esc(a.ok?"成功":"失败")+'</span></div>').join(""):'<div class="empty">暂无最近活动</div>';
  }
  function renderWorkboard(){
-   $("workboard-status").textContent=boardError||"Relay 共享任务快照；仅可手动确认已阅完成回执，不代表验收通过。";
+   $("workboard-status").textContent=boardError||"Relay 共享任务快照；人工处理与验收必须主动提交核对结果，不代表 CI 已通过。";
    const empty='<div class="empty">暂无记录</div>';
    if(!board){
      for(const id of ["wb-goals","wb-items","wb-actions","wb-inbox"])$(id).innerHTML='<div class="empty">未能读取共享任务状态</div>';
@@ -1000,7 +1000,21 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
    const goals=array(board.goals),items=array(board.items),actions=array(board.human_actions),inbox=array(board.inbox);
    $("wb-goals").innerHTML=goals.length?goals.map(g=>'<div class="event"><span>'+esc(g.title)+'</span><span>'+esc(g.paused?"已暂停":g.succeeded_items+"/"+g.total_items+" 已完成")+'</span></div>').join(""):empty;
    $("wb-items").innerHTML=items.length?items.slice(0,30).map(w=>'<div class="event"><span>'+esc(txt(w.goal).slice(0,100))+'<div class="tiny">'+esc(w.agent_id)+" · "+esc(w.project)+'</div></span><span>'+esc(w.status)+'</span></div>').join(""):empty;
-   $("wb-actions").innerHTML=actions.length?actions.map(a=>'<div class="event"><span>'+esc(txt(a.reason).slice(0,120))+'<div class="tiny">'+esc(a.item_id)+'</div></span><span>需核对后处理</span></div>').join(""):empty;
+   const itemById=new Map(items.map(item=>[item.id,item]));
+   $("wb-actions").innerHTML=actions.length?actions.map((a,i)=>{
+     const item=itemById.get(a.item_id),verifying=item?.status==="VERIFYING";
+     const fields=verifying
+       ?'<label>人工验收证据引用 <input name="evidence_ref" required maxlength="2000" placeholder="已核实的测试/PR/运行证据 URL"></label>'
+       :'<label>处理决定 <select name="decision"><option value="retry">核对后重试</option><option value="fail">确认失败并终止</option></select></label>'+
+        '<label>核对记录 <input name="resolution" required minlength="8" maxlength="2000" placeholder="原生进程、外部副作用的核对结果"></label>'+
+        '<label><input type="checkbox" name="stopped" required>已确认原生进程停止并核对外部副作用</label>';
+     return '<div class="event"><div><span>'+esc(txt(a.reason).slice(0,120))+'</span>'+
+       '<div class="tiny">'+esc(a.item_id)+' · revision '+esc(txt(a.source_revision).slice(0,12))+'</div>'+
+       (item&&["VERIFYING","BLOCKED_HUMAN"].includes(item.status)
+         ?'<form data-action-index="'+i+'" style="display:grid;gap:6px;margin-top:8px">'+fields+
+           '<button type="submit">'+(verifying?"提交人工验收":"提交处理决定")+'</button></form>'
+         :'<div class="tiny">任务状态已变化，请刷新后核对</div>')+'</div></div>';
+   }).join(""):empty;
    $("wb-inbox").innerHTML=inbox.length?inbox.map((x,i)=>'<div class="event"><span>'+esc(x.item_id)+
      '<div class="tiny">revision '+esc(txt(x.source_revision).slice(0,12))+'</div>'+
      '<div class="tiny">证据 '+esc(txt(x.evidence_json).slice(0,160))+'</div></span>'+
@@ -1068,6 +1082,38 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
  $("tab-devices").addEventListener("click",()=>selectTab("devices"));
  $("tab-activity").addEventListener("click",()=>selectTab("activity"));
  $("tab-workboard").addEventListener("click",()=>selectTab("workboard"));
+ $("wb-actions").addEventListener("submit",async e=>{
+   const form=e.target.closest("form[data-action-index]");if(!form)return;
+   e.preventDefault();
+   const action=array(board?.human_actions)[Number(form.dataset.actionIndex)];
+   const item=array(board?.items).find(w=>w.id===action?.item_id);
+   if(!action||!item||item.fence!==action.fence||
+      item.source_revision!==action.source_revision)return;
+   const fd=new FormData(form);
+   let tool,args;
+   if(item.status==="VERIFYING"){
+     const evidence=txt(fd.get("evidence_ref")).trim();
+     if(!evidence||evidence.length>2000)return;
+     tool="workboard_verify";
+     args={item_id:action.item_id,fence:action.fence,
+       source_revision:action.source_revision,evidence_refs:[evidence]};
+   }else if(item.status==="BLOCKED_HUMAN"){
+     const decision=fd.get("decision"),resolution=txt(fd.get("resolution")).trim();
+     if(!["retry","fail"].includes(decision)||resolution.length<8||
+        resolution.length>2000||fd.get("stopped")!=="on")return;
+     tool="workboard_resolve";
+     args={action_id:action.id,decision,resolution,stopped:true};
+   }else return;
+   const button=form.querySelector('button[type="submit"]');button.disabled=true;
+   try{
+     const response=window.openai?.callTool
+       ?await window.openai.callTool(tool,args)
+       :await request("tools/call",{name:tool,arguments:args});
+     if(response?.isError||response?.error)throw new Error("处理失败；请检查授权和任务版本");
+     await loadWorkboard();
+   }catch(err){$("workboard-status").textContent="处理未完成："+txt(err?.message||err);}
+   finally{button.disabled=false;}
+ });
  $("wb-inbox").addEventListener("click",async e=>{
    const button=e.target.closest("button[data-ack-index]");if(!button||button.disabled)return;
    const index=Number(button.dataset.ackIndex),receipt=array(board?.inbox)[index];

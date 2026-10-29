@@ -42,6 +42,23 @@ class WorkboardControlPlaneTests(unittest.TestCase):
         load = self.html.split('async function loadWorkboard()', 1)[1].split('function render(snapshot)', 1)[0]
         self.assertNotIn('workboard_ack', load)
 
+    def test_human_actions_are_explicit_and_fenced_not_auto_approved(self):
+        self.assertIn('data-action-index=', self.html)
+        self.assertIn('addEventListener("submit"', self.html)
+        self.assertIn('tool="workboard_verify"', self.html)
+        self.assertIn('tool="workboard_resolve"', self.html)
+        self.assertIn('evidence_refs:[evidence]', self.html)
+        self.assertIn('fd.get("stopped")!=="on"', self.html)
+        self.assertIn('stopped:true', self.html)
+        self.assertIn('item.fence!==action.fence', self.html)
+        self.assertIn('item.source_revision!==action.source_revision', self.html)
+        self.assertIn('callTool(tool,args)', self.html)
+        self.assertIn('已确认原生进程停止并核对外部副作用', self.html)
+        # No human action is executed during refresh or rendering.
+        load = self.html.split('async function loadWorkboard()', 1)[1].split('function render(snapshot)', 1)[0]
+        self.assertNotIn('workboard_resolve', load)
+        self.assertNotIn('workboard_verify', load)
+
     @unittest.skipUnless(shutil.which("node"), "Node syntax checker unavailable")
     def test_widget_script_syntax(self):
         script = re.search(r'<script>([\s\S]*?)</script>', self.html)
