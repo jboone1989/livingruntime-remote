@@ -51,7 +51,7 @@ class OneTimeReviewTests(unittest.TestCase):
                         "diff --git a/plugin/foo.py b/plugin/foo.py\n"
                         "--- a/plugin/foo.py\n+++ b/plugin/foo.py\n"
                         "@@ -1 +1 @@\n-old\n+new\n", "base")),
-                  patch.object(reviewer, "deepseek_review", return_value=[]) as deepseek,
+                  patch.object(reviewer, "model_review", return_value=[]) as deepseek,
                   patch.object(reviewer, "api", return_value=pr),
                   patch.object(reviewer, "already_commented", return_value=False),
                   patch.object(reviewer, "post_comment") as comment,
