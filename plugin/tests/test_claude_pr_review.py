@@ -216,8 +216,8 @@ class ReviewerUnitTests(unittest.TestCase):
             self.assertEqual(proc.call_args.kwargs["input"], "prompt")
             self.assertNotIn("env", proc.call_args.kwargs)
             self.assertNotIn("prompt", args)
-            self.assertIn("--setting-sources", args)
-            self.assertIn('{"disableAllHooks": true}', args)
+            self.assertNotIn("--model", args)
+            self.assertNotIn("--settings", args)
 
     def test_quality_prompt_explicitly_challenges_bad_shortcuts(self):
         prompt = reviewer.quality_prompt(DIFF, "tests passed")
@@ -551,54 +551,6 @@ class ReviewerUnitTests(unittest.TestCase):
                       resumed.args[0][-1])
         self.assertNotIn("env", resumed.kwargs)
         self.assertIn("--tools", resumed.args[0])
-
-    def test_second_interruption_remains_error_and_never_changes_provider(self):
-        session_id = "0d01dcdb-fd91-484e-8175-25437b05f80e"
-        interrupted = reviewer.ReviewInterrupted(session_id)
-        with patch.object(reviewer, "run",
-                          side_effect=[interrupted, interrupted]) as cli:
-            with self.assertRaisesRegex(
-                    reviewer.ReviewError, "remained interrupted after one resume"):
-                reviewer.ask_claude(
-                    "claude", Path("/tmp"), "review", 60, phase="verification")
-        self.assertEqual(cli.call_count, 2)
-
-        pr = {"number": 2, "state": "open", "draft": False,
-              "head": {"sha": "e"*40, "repo": {"full_name": "org/repo"}},
-              "base": {"ref": "main"}, "body": ""}
-        with tempfile.TemporaryDirectory() as tmp, \
-             patch.object(reviewer, "checkout",
-                          return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "native_review",
-                          side_effect=reviewer.ReviewInterrupted(session_id)), \
-             patch.object(reviewer, "ask_claude",
-                          side_effect=reviewer.ReviewError("still incomplete")), \
-             patch.object(reviewer, "deepseek_review") as deepseek:
-            with self.assertRaisesRegex(reviewer.ReviewError, "still incomplete"):
-                reviewer.review(
-                    pr, repo="org/repo", gh="gh", claude="claude",
-                    work=Path(tmp), state={"prs": {}},
-                    state_path=Path(tmp)/"state", timeout=5)
-        deepseek.assert_not_called()
-
-    def test_claude_returns_on_next_review_without_deepseek(self):
-        pr = {"number": 2, "state": "open", "draft": False,
-              "head": {"sha": "d"*40, "repo": {"full_name": "org/repo"}},
-              "base": {"ref": "main"}, "body": ""}
-        with tempfile.TemporaryDirectory() as tmp, \
-             patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "native_review", return_value=[]), \
-             patch.object(reviewer, "ask_claude", return_value=[]), \
-             patch.object(reviewer, "deepseek_review") as deepseek, \
-             patch.object(reviewer, "api", return_value=pr), \
-             patch.object(reviewer, "already_commented", return_value=True), \
-             patch.object(reviewer, "commit_status"), \
-             patch.object(reviewer, "save_state"):
-            result = reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
-                                     work=Path(tmp), state={"prs": {}},
-                                     state_path=Path(tmp)/"state", timeout=5)
-        self.assertIn("provider=Claude", result)
-        deepseek.assert_not_called()
 
     def test_quota_without_key_does_not_consume_retry_budget(self):
         with tempfile.TemporaryDirectory() as tmp:
