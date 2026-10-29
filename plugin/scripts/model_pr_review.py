@@ -526,7 +526,7 @@ def documentation_only(diff):
         path = header.group(2)
         if path.startswith(("industry/prompts/", "prompts/", "config/prompts/")):
             return False
-        if path.rsplit("/", 1)[-1].lower() in ("agents.md", "claude.md", "skill.md", "claude-review-checklist.md"):
+        if path.rsplit("/", 1)[-1].lower() in ("agents.md", "claude.md", "skill.md", "claude-review-checklist.md", "model-review-checklist.md"):
             return False
         if not (path.startswith(("specs/", "docs/")) and path.endswith((".md", ".mdx", ".rst", ".txt"))
                 or path in ("README.md", "CHANGELOG.md", "CONTRIBUTING.md")):
