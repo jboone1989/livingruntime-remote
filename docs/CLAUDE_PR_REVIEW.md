@@ -46,6 +46,25 @@ runner was registered with the `claude-review` label and confirmed online.
 The reviewer is considered operational only after an actual PR event yields
 the expected commit status and review comment.
 
+## Central review queue (2026-10-29)
+
+`Claude PR review (subscription CLI)` uses one repository-wide native GitHub
+Actions concurrency group, `central-claude-pr-review`, with `queue: max` and
+`cancel-in-progress: false`. EventGraph review dispatches and this repository's
+own PR reviews therefore take turns through the existing self-hosted runner;
+EventGraph Check, Docker and E2E still run independently.
+
+GitHub retains up to 100 pending workflow runs in this group. FIFO is based on
+the time a workflow begins waiting, not necessarily dispatch time or PR number.
+If the queue exceeds 100, additional runs may be cancelled; the queue is **not**
+an unbounded durable workboard. Existing per-SHA checks refuse stale heads,
+and each completed or failed review workflow frees the next position. Failed
+reviews are **not** silently treated as successful; CI and `claude-review`
+required status checks remain enforced by GitHub.
+
+This applies to newly triggered workflows after the configuration reaches the
+default branch; it does not retroactively regroup already-queued runs.
+
 ## Native review benchmark (2026-10-23)
 
 Against the original buggy PR #17 revision (`717da62`), the old Haiku-first
