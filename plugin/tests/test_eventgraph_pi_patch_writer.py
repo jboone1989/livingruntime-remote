@@ -163,7 +163,7 @@ class PatchWriterTests(unittest.TestCase):
         import hashlib
         data = manifest()
         raw = data["changes"][0]["content"].encode()
-        blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\\x00" + raw).hexdigest()
+        blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest()
         def fake(path, *, method="GET", body=None):
             self.assertEqual(method, "GET")
             if path == "pulls/175":
