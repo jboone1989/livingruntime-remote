@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   deepseek-flash-smoke:
+    if: github.ref_name != 'bootstrap/deepseek-review-pr87-20261029'
     runs-on: [self-hosted, Linux, X64, claude-review]
     timeout-minutes: 8
     steps:
@@ -34,3 +35,40 @@ jobs:
           chmod 0600 "$HOME/.livingruntime/credentials/deepseek-api-key"
           unset DEEPSEEK_API_KEY
           python3 plugin/scripts/deepseek_cli_smoke.py
+
+  bootstrap-deepseek-review:
+    # One-time bootstrap: obtain a real DeepSeek review status for PR #87 while
+    # the base-branch reviewer still runs the blocked Claude-first implementation.
+    # This temporary branch is not merged; it never runs the VM09 credential job.
+    if: github.event_name == 'workflow_dispatch' && github.ref_name == 'bootstrap/deepseek-review-pr87-20261029'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Claude Code CLI as a DeepSeek-compatible client
+        run: npm install --global @anthropic-ai/claude-code
+      - name: Run DeepSeek-only review for PR #87
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          set -eu
+          python3 plugin/scripts/claude_pr_review.py \
+            --repo jboone1989/livingruntime-remote --pr-number 87 \
+            --gh gh --claude claude \
+            --state "$RUNNER_TEMP/deepseek-review-pr87.json" \
+            --work "$RUNNER_TEMP/deepseek-review-pr87" \
+            --timeout 360 --expected-sha "f9c9883a83dd722050b82fac222d45cb9c2f367a"
