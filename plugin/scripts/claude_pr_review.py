@@ -55,29 +55,6 @@ def is_claude_quota(message):
     ))
 
 
-def claude_subscription_environment():
-    """Always use Claude Code's on-disk subscription login, not inherited API auth.
-
-    The Claude Code user's settings.json selects the GLM provider.\n    Do not inherit conflicting authentication or model overrides from CI.
-    """
-    env = os.environ.copy()
-    for name in (
-        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS",
-        "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-        "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_SUBAGENT_MODEL",
-        "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
-        "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_EFFORT_LEVEL",
-        "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
-    ):
-        env.pop(name, None)
-    # Preserve the Claude Code harness and its GLM provider configuration.\n    # Keep subagents on the configured Sonnet alias.
-    env["CLAUDE_CODE_SUBAGENT_MODEL"] = "sonnet"
-    env["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"] = "1"
-    return env
-
-
 def _claude_failure_metadata(*outputs):
     """Parse Claude Code's terminal JSON without logging its unbounded payload."""
     for output in outputs:
@@ -357,45 +334,38 @@ def parse_native_review(stdout):
 
 
 def native_review(binary, cwd, baseline, sha, timeout):
-    # --model is required even when user settings default to Opus.
     prompt = f"/code-review high {baseline}..{sha}"
     options = [
-        "--model", "sonnet",
         "--output-format", "json", "--permission-mode", "plan",
         "--max-turns", "48", "--disallowedTools", "Edit,Write,NotebookEdit,mcp__*",
-        "--strict-mcp-config", "--safe-mode", "--setting-sources", "user",
-        "--settings", '{"disableAllHooks":true}',
+        "--strict-mcp-config",
     ]
-    env = claude_subscription_environment()
     args = [binary, "-p", prompt, *options]
     try:
-        stdout = run(args, cwd=cwd, timeout=timeout, env=env)
+        stdout = run(args, cwd=cwd, timeout=timeout)
     except ReviewInterrupted as interrupted:
         stdout = resume_claude(
             binary, interrupted, options, cwd=cwd, timeout=timeout,
-            env=env, phase="native-review")
+            env=None, phase="native-review")
     return parse_native_review(stdout)
 
 
-def ask_claude(binary, cwd, prompt, timeout, model="sonnet", env=None,
+def ask_claude(binary, cwd, prompt, timeout,
                max_turns=16, phase="prompt-review"):
     # --tools restricts which tools exist (unlike --allowedTools).
     # No Bash, shell execution, edits, writes, or MCP tool calls in review mode.
     options = [
         "--output-format", "json", "--permission-mode", "plan",
         "--tools", "Read,Glob,Grep", "--disallowedTools", "mcp__*",
-        "--strict-mcp-config", "--safe-mode", "--setting-sources", "user",
-        "--settings", '{"disableAllHooks": true}',
-        "--model", model, "--max-turns", str(max_turns),
+        "--strict-mcp-config", "--max-turns", str(max_turns),
     ]
-    selected_env = claude_subscription_environment() if env is None else env
     try:
         stdout = run([binary, "-p", *options], cwd=cwd, timeout=timeout,
-                     input_text=prompt, env=selected_env)
+                     input_text=prompt)
     except ReviewInterrupted as interrupted:
         stdout = resume_claude(
             binary, interrupted, options, cwd=cwd, timeout=timeout,
-            env=selected_env, phase=phase)
+            env=None, phase=phase)
     return parse_claude(stdout)
 
 
@@ -581,7 +551,7 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
                 try:
                     candidates = ask_claude(
                         claude, directory, documentation_prompt(diff, pr.get("body") or ""),
-                        timeout, "sonnet", max_turns=6)
+                        timeout, max_turns=6)
                 except QuotaExceeded:
                     raise
                 except (ReviewError, subprocess.TimeoutExpired, json.JSONDecodeError):
@@ -589,7 +559,7 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
                     # checklist and normal time/turn budget before any green status.
                     candidates = ask_claude(
                         claude, directory, quality_prompt(diff, pr.get("body") or ""),
-                        timeout, "sonnet")
+                        timeout)
                 used_fallback = True
             else:
                 try:
@@ -601,14 +571,14 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
                     # a fresh, independent checklist-driven Claude review.
                     candidates = ask_claude(claude, directory,
                                             quality_prompt(diff, pr.get("body") or ""),
-                                            timeout, "sonnet")
+                                            timeout)
                     used_fallback = True
             if needs_quality_review(diff) and not used_fallback:
                 candidates += ask_claude(claude, directory,
                                           quality_prompt(diff, pr.get("body") or ""),
-                                          timeout, "sonnet")
+                                          timeout)
             verified = (ask_claude(claude, directory,
-                                   verify_prompt(candidates, diff), timeout, "sonnet")
+                                   verify_prompt(candidates, diff), timeout)
                         if candidates else [])
             findings = filter_findings(verified, diff)
         fresh = api(gh, f"repos/{repo}/pulls/{number}")
