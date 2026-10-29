@@ -897,8 +897,8 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
   <details><summary class="subhead">最近历史和诊断</summary><div id="recent-activity" class="history"></div></details>
  </div>
  <div id="workboard-view" class="panel">
-  <h2 class="panel-title">共享任务 · Workboard（只读试验）</h2>
-  <p class="notice" id="workboard-status" role="status">仅显示 Relay 已授权的任务与回执；不代替 CI 或人工验收。</p>
+  <h2 class="panel-title">共享任务 · Workboard（试验）</h2>
+  <p class="notice" id="workboard-status" role="status">任务与人工处理项只读；收件箱回执可逐项确认已阅，不代替 CI 或人工验收。</p>
   <div class="agents">
    <section class="agent"><h3 class="subhead">发件箱 · Goals</h3><div id="wb-goals" class="history"></div></section>
    <section class="agent"><h3 class="subhead">任务表 · WorkItems</h3><div id="wb-items" class="history"></div></section>
@@ -991,7 +991,7 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
    $("recent-activity").innerHTML=history.length?history.map(a=>'<div class="event"><span>'+esc(a.tool||"远程操作")+'</span><span>'+esc(a.ok?"成功":"失败")+'</span></div>').join(""):'<div class="empty">暂无最近活动</div>';
  }
  function renderWorkboard(){
-   $("workboard-status").textContent=boardError||"Relay 共享任务只读快照；完成回执不等于用户已确认。";
+   $("workboard-status").textContent=boardError||"Relay 共享任务快照；仅可手动确认已阅完成回执，不代表验收通过。";
    const empty='<div class="empty">暂无记录</div>';
    if(!board){
      for(const id of ["wb-goals","wb-items","wb-actions","wb-inbox"])$(id).innerHTML='<div class="empty">未能读取共享任务状态</div>';
@@ -1001,7 +1001,10 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
    $("wb-goals").innerHTML=goals.length?goals.map(g=>'<div class="event"><span>'+esc(g.title)+'</span><span>'+esc(g.paused?"已暂停":g.succeeded_items+"/"+g.total_items+" 已完成")+'</span></div>').join(""):empty;
    $("wb-items").innerHTML=items.length?items.slice(0,30).map(w=>'<div class="event"><span>'+esc(txt(w.goal).slice(0,100))+'<div class="tiny">'+esc(w.agent_id)+" · "+esc(w.project)+'</div></span><span>'+esc(w.status)+'</span></div>').join(""):empty;
    $("wb-actions").innerHTML=actions.length?actions.map(a=>'<div class="event"><span>'+esc(txt(a.reason).slice(0,120))+'<div class="tiny">'+esc(a.item_id)+'</div></span><span>需核对后处理</span></div>').join(""):empty;
-   $("wb-inbox").innerHTML=inbox.length?inbox.map(x=>'<div class="event"><span>'+esc(x.item_id)+'<div class="tiny">revision '+esc(txt(x.source_revision).slice(0,12))+'</div></span><span>未确认</span></div>').join(""):empty;
+   $("wb-inbox").innerHTML=inbox.length?inbox.map((x,i)=>'<div class="event"><span>'+esc(x.item_id)+
+     '<div class="tiny">revision '+esc(txt(x.source_revision).slice(0,12))+'</div>'+
+     '<div class="tiny">证据 '+esc(txt(x.evidence_json).slice(0,160))+'</div></span>'+
+     '<button type="button" data-ack-index="'+i+'">确认已阅</button></div>').join(""):empty;
  }
  async function loadWorkboard(){
    try{
@@ -1065,6 +1068,22 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
  $("tab-devices").addEventListener("click",()=>selectTab("devices"));
  $("tab-activity").addEventListener("click",()=>selectTab("activity"));
  $("tab-workboard").addEventListener("click",()=>selectTab("workboard"));
+ $("wb-inbox").addEventListener("click",async e=>{
+   const button=e.target.closest("button[data-ack-index]");if(!button||button.disabled)return;
+   const index=Number(button.dataset.ackIndex),receipt=array(board?.inbox)[index];
+   if(!receipt||!receipt.item_id||!Number.isSafeInteger(receipt.fence)||
+      !receipt.source_revision||receipt.acknowledged_at!=null)return;
+   button.disabled=true;
+   try{
+     const args={item_id:receipt.item_id,fence:receipt.fence,source_revision:receipt.source_revision};
+     const response=window.openai?.callTool
+       ?await window.openai.callTool("workboard_ack",args)
+       :await request("tools/call",{name:"workboard_ack",arguments:args});
+     if(response?.isError||response?.error)throw new Error("确认失败；请检查授权与回执状态");
+     await loadWorkboard();
+   }catch(err){$("workboard-status").textContent="确认未完成："+txt(err?.message||err);}
+   finally{button.disabled=false;}
+ });
  $("refresh").addEventListener("click",refresh);
  const syncMode=()=>{document.body.dataset.mode=window.openai?.displayMode||"inline";};
  window.addEventListener("openai:set_globals",syncMode,{passive:true});
