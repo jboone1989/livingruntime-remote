@@ -402,7 +402,7 @@ def native_review(binary, cwd, baseline, sha, timeout):
     # --model is required even when user settings default to Opus.
     prompt = f"/code-review high {baseline}..{sha}"
     options = [
-        "--model", "sonnet",
+        "--model", model_settings()[2],
         "--output-format", "json", "--permission-mode", "plan",
         "--max-turns", "48", "--disallowedTools", "Edit,Write,NotebookEdit,mcp__*",
         "--strict-mcp-config", "--safe-mode", "--setting-sources", "",
