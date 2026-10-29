@@ -372,7 +372,7 @@ def parse_native_review(stdout):
     """Normalize Claude Code's bundled /code-review findings, not a custom review prompt."""
     result = json.loads(stdout)
     if isinstance(result, dict) and is_provider_quota(result.get("result")):
-        raise QuotaExceeded("Claude subscription usage limit reached")
+        raise QuotaExceeded("Model provider usage limit reached")
     if not isinstance(result, dict) or result.get("is_error") or str(result.get("subtype", "")).startswith("error_"):
         raise ReviewError("Native Claude Code review failed")
     response = result.get("result")
@@ -461,7 +461,7 @@ def model_review(binary, directory, diff, pr_body, timeout):
         raise
     except (ReviewError, subprocess.TimeoutExpired, json.JSONDecodeError):
         # Malformed documentation-only output retries the full checklist through
-        # the same harness and provider. It never falls back to Anthropic or approves.
+        # the same harness and provider. It never switches providers or approves.
         if not is_docs:
             raise
         candidates = ask_claude(
@@ -623,7 +623,7 @@ def review(pr, *, repo, gh, work, state, state_path, timeout, claude="/home/ubun
     manually_authorized = False
     if round_number > MAX_ROUNDS and manual_approval:
         # Owner-authored approval is verified via the GitHub API before entry.
-        # Consume once BEFORE running Claude, even if Claude later fails.
+        # Consume once before the model review, even if the provider call later fails.
         manual_history = history.setdefault("manual_rereviews", {})
         if sha in manual_history:
             return "skip:one-time re-review already used"
