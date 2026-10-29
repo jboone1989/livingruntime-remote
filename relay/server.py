@@ -30,6 +30,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from auth import verifier_from_env
 from embedded_auth import EmbeddedAuthStore, EmbeddedOAuthProvider
 from store import RelayStore
+from workboard import Workboard
 from mcp_events import (
     CallbackEndpointError,
     COGNITION_EVENT_NAME,
@@ -832,9 +833,9 @@ textarea{min-height:72px;resize:vertical}
 .event{display:flex;justify-content:space-between;gap:12px;align-items:baseline;border-bottom:1px solid var(--stroke);padding:6px 0;font-size:12px}
 .event:last-child{border-bottom:0}
 .event span:last-child{color:var(--sub);font-size:11px;white-space:nowrap}
-#activity-view{display:none}
-body[data-view=activity] #activity-view{display:block}
-body[data-view=activity] #devices-view{display:none}
+#activity-view,#workboard-view{display:none}
+body[data-view=activity] #activity-view,body[data-view=workboard] #workboard-view{display:block}
+body[data-view=activity] #devices-view,body[data-view=workboard] #devices-view{display:none}
 .statusbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:space-between;margin-top:10px;font-size:11px;color:var(--sub)}
 section[hidden],div[hidden]{display:none!important}
 @media(prefers-color-scheme:dark){:root{--txt:var(--color-text-primary,#f1f2f5);--sub:var(--color-text-secondary,#b7bbc4);--action:#f1f2f5;--action-text:#181818}}
@@ -869,7 +870,7 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
   <div class="stat"><b id="sum-projects">—</b><span>项目</span></div>
   <div class="stat"><b id="sum-attention">—</b><span>默认设备待处理</span></div>
  </div>
- <nav class="tabs" aria-label="查看方式"><button class="tab" type="button" id="tab-devices" aria-selected="true">设备与 Agent</button><button class="tab" type="button" id="tab-activity" aria-selected="false">运行与审批</button></nav>
+ <nav class="tabs" aria-label="查看方式"><button class="tab" type="button" id="tab-devices" aria-selected="true">设备与 Agent</button><button class="tab" type="button" id="tab-activity" aria-selected="false">运行与审批</button><button class="tab" type="button" id="tab-workboard" aria-selected="false">共享任务</button></nav>
  <div id="devices-view" class="workspace">
   <aside class="panel"><h2 class="panel-title">我的设备</h2><input class="search" id="search" type="search" placeholder="搜索主机、Agent 或项目" aria-label="搜索设备"><div id="device-list" class="device-list"></div></aside>
   <main class="panel">
@@ -895,6 +896,16 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
   <hr class="rule"><h3 class="subhead">待处理审批与完成回执</h3><div id="attention" class="history"></div>
   <details><summary class="subhead">最近历史和诊断</summary><div id="recent-activity" class="history"></div></details>
  </div>
+ <div id="workboard-view" class="panel">
+  <h2 class="panel-title">共享任务 · Workboard（试验）</h2>
+  <p class="notice" id="workboard-status" role="status">人工处理须核对原生进程与外部副作用；人工验收须提交真实证据。收件箱确认已阅不代替 CI。</p>
+  <div class="agents">
+   <section class="agent"><h3 class="subhead">发件箱 · Goals</h3><div id="wb-goals" class="history"></div></section>
+   <section class="agent"><h3 class="subhead">任务表 · WorkItems</h3><div id="wb-items" class="history"></div></section>
+   <section class="agent"><h3 class="subhead">待我处理 · Human Actions</h3><div id="wb-actions" class="history"></div></section>
+   <section class="agent"><h3 class="subhead">收件箱 · Inbox</h3><div id="wb-inbox" class="history"></div></section>
+  </div>
+ </div>
  <footer class="statusbar"><span id="footer-note">读取设备清单中…</span><span id="updated"></span></footer>
 </div>
 <script>
@@ -902,6 +913,7 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
  const $ = id => document.getElementById(id);
  const pending = new Map(); let id = 1; let connected = false; let latest = {};
  let selected = null; let search = ""; let scheduled = null; let busy = false;
+ let board = null; let boardError = null;
  const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
  const txt = v => String(v ?? "");
  const array = value => Array.isArray(value) ? value : [];
@@ -978,10 +990,51 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
    const history=array(o.activity).slice(-8).reverse();
    $("recent-activity").innerHTML=history.length?history.map(a=>'<div class="event"><span>'+esc(a.tool||"远程操作")+'</span><span>'+esc(a.ok?"成功":"失败")+'</span></div>').join(""):'<div class="empty">暂无最近活动</div>';
  }
+ function renderWorkboard(){
+   $("workboard-status").textContent=boardError||"Relay 共享任务快照；人工处理与验收必须主动提交核对结果，不代表 CI 已通过。";
+   const empty='<div class="empty">暂无记录</div>';
+   if(!board){
+     for(const id of ["wb-goals","wb-items","wb-actions","wb-inbox"])$(id).innerHTML='<div class="empty">未能读取共享任务状态</div>';
+     return;
+   }
+   const goals=array(board.goals),items=array(board.items),actions=array(board.human_actions),inbox=array(board.inbox);
+   $("wb-goals").innerHTML=goals.length?goals.map(g=>'<div class="event"><span>'+esc(g.title)+'</span><span>'+esc(g.paused?"已暂停":g.succeeded_items+"/"+g.total_items+" 已完成")+'</span></div>').join(""):empty;
+   $("wb-items").innerHTML=items.length?items.slice(0,30).map(w=>'<div class="event"><span>'+esc(txt(w.goal).slice(0,100))+'<div class="tiny">'+esc(w.agent_id)+" · "+esc(w.project)+'</div></span><span>'+esc(w.status)+'</span></div>').join(""):empty;
+   const itemById=new Map(items.map(item=>[item.id,item]));
+   $("wb-actions").innerHTML=actions.length?actions.map((a,i)=>{
+     const item=itemById.get(a.item_id),verifying=item?.status==="VERIFYING";
+     const fields=verifying
+       ?'<label>人工验收证据引用 <input name="evidence_ref" required maxlength="2000" placeholder="已核实的测试/PR/运行证据 URL"></label>'
+       :'<label>处理决定 <select name="decision"><option value="retry">核对后重试</option><option value="fail">确认失败并终止</option></select></label>'+
+        '<label>核对记录 <input name="resolution" required minlength="8" maxlength="2000" placeholder="原生进程、外部副作用的核对结果"></label>'+
+        '<label><input type="checkbox" name="stopped" required>已确认原生进程停止并核对外部副作用</label>';
+     return '<div class="event"><div><span>'+esc(txt(a.reason).slice(0,120))+'</span>'+
+       '<div class="tiny">'+esc(a.item_id)+' · revision '+esc(txt(a.source_revision).slice(0,12))+'</div>'+
+       (item&&["VERIFYING","BLOCKED_HUMAN"].includes(item.status)
+         ?'<form data-action-index="'+i+'" style="display:grid;gap:6px;margin-top:8px">'+fields+
+           '<button type="submit">'+(verifying?"提交人工验收":"提交处理决定")+'</button></form>'
+         :'<div class="tiny">任务状态已变化，请刷新后核对</div>')+'</div></div>';
+   }).join(""):empty;
+   $("wb-inbox").innerHTML=inbox.length?inbox.map((x,i)=>'<div class="event"><span>'+esc(x.item_id)+
+     '<div class="tiny">revision '+esc(txt(x.source_revision).slice(0,12))+'</div>'+
+     '<div class="tiny">证据 '+esc(txt(x.evidence_json).slice(0,160))+'</div></span>'+
+     '<button type="button" data-ack-index="'+i+'">确认已阅</button></div>').join(""):empty;
+ }
+ async function loadWorkboard(){
+   try{
+     const result=window.openai?.callTool
+       ?await window.openai.callTool("workboard_list",{})
+       :await request("tools/call",{name:"workboard_list",arguments:{}});
+     const data=value(result);
+     if(!["goals","items","human_actions","inbox"].every(k=>Array.isArray(data[k])))throw new Error("未返回完整任务快照");
+     board=data;boardError=null;
+   }catch(e){board=null;boardError="共享任务试验尚不可用："+txt(e?.message||e);}
+   renderWorkboard();
+ }
  function render(snapshot) {
    if(!snapshot||typeof snapshot!=="object")return;
    latest=snapshot;
-   renderStats();renderDevices();renderActivity();
+   renderStats();renderDevices();renderActivity();renderWorkboard();
    $("updated").textContent="更新于 "+new Date().toLocaleTimeString();
  }
  async function refresh(){
@@ -991,6 +1044,7 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
        ?await window.openai.callTool("remote_overview",{include_resources:false})
        :await request("tools/call",{name:"remote_overview",arguments:{include_resources:false}});
      render(value(result));
+     if(document.body.dataset.view==="workboard")await loadWorkboard();
    } catch(e){$("footer-note").textContent="刷新失败："+txt(e?.message||e);}
    finally{$("refresh").disabled=false;busy=false;}
  }
@@ -998,6 +1052,8 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
    document.body.dataset.view=name;
    $("tab-devices").setAttribute("aria-selected",name==="devices"?"true":"false");
    $("tab-activity").setAttribute("aria-selected",name==="activity"?"true":"false");
+   $("tab-workboard").setAttribute("aria-selected",name==="workboard"?"true":"false");
+   if(name==="workboard")void loadWorkboard();
  }
  $("device-list").addEventListener("click",e=>{
    const el=e.target.closest("button[data-device]");if(!el)return;
@@ -1025,6 +1081,55 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
  });
  $("tab-devices").addEventListener("click",()=>selectTab("devices"));
  $("tab-activity").addEventListener("click",()=>selectTab("activity"));
+ $("tab-workboard").addEventListener("click",()=>selectTab("workboard"));
+ $("wb-actions").addEventListener("submit",async e=>{
+   const form=e.target.closest("form[data-action-index]");if(!form)return;
+   e.preventDefault();
+   const action=array(board?.human_actions)[Number(form.dataset.actionIndex)];
+   const item=array(board?.items).find(w=>w.id===action?.item_id);
+   if(!action||!item||item.fence!==action.fence||
+      item.source_revision!==action.source_revision)return;
+   const fd=new FormData(form);
+   let tool,args;
+   if(item.status==="VERIFYING"){
+     const evidence=txt(fd.get("evidence_ref")).trim();
+     if(!evidence||evidence.length>2000)return;
+     tool="workboard_verify";
+     args={item_id:action.item_id,fence:action.fence,
+       source_revision:action.source_revision,evidence_refs:[evidence]};
+   }else if(item.status==="BLOCKED_HUMAN"){
+     const decision=fd.get("decision"),resolution=txt(fd.get("resolution")).trim();
+     if(!["retry","fail"].includes(decision)||resolution.length<8||
+        resolution.length>2000||fd.get("stopped")!=="on")return;
+     tool="workboard_resolve";
+     args={action_id:action.id,decision,resolution,stopped:true};
+   }else return;
+   const button=form.querySelector('button[type="submit"]');button.disabled=true;
+   try{
+     const response=window.openai?.callTool
+       ?await window.openai.callTool(tool,args)
+       :await request("tools/call",{name:tool,arguments:args});
+     if(response?.isError||response?.error)throw new Error("处理失败；请检查授权和任务版本");
+     await loadWorkboard();
+   }catch(err){$("workboard-status").textContent="处理未完成："+txt(err?.message||err);}
+   finally{button.disabled=false;}
+ });
+ $("wb-inbox").addEventListener("click",async e=>{
+   const button=e.target.closest("button[data-ack-index]");if(!button||button.disabled)return;
+   const index=Number(button.dataset.ackIndex),receipt=array(board?.inbox)[index];
+   if(!receipt||!receipt.item_id||!Number.isSafeInteger(receipt.fence)||
+      !receipt.source_revision||receipt.acknowledged_at!=null)return;
+   button.disabled=true;
+   try{
+     const args={item_id:receipt.item_id,fence:receipt.fence,source_revision:receipt.source_revision};
+     const response=window.openai?.callTool
+       ?await window.openai.callTool("workboard_ack",args)
+       :await request("tools/call",{name:"workboard_ack",arguments:args});
+     if(response?.isError||response?.error)throw new Error("确认失败；请检查授权与回执状态");
+     await loadWorkboard();
+   }catch(err){$("workboard-status").textContent="确认未完成："+txt(err?.message||err);}
+   finally{button.disabled=false;}
+ });
  $("refresh").addEventListener("click",refresh);
  const syncMode=()=>{document.body.dataset.mode=window.openai?.displayMode||"inline";};
  window.addEventListener("openai:set_globals",syncMode,{passive:true});
@@ -1038,7 +1143,11 @@ body[data-mode=pip] .agents{grid-template-columns:1fr}
      const p=pending.get(m.id);pending.delete(m.id);
      m.error?p.reject(m.error):p.resolve(m.result);return;
    }
-   if(m.method==="ui/notifications/tool-result")render(m.params?.structuredContent||null);
+   if(m.method==="ui/notifications/tool-result"){
+     const payload=m.params?.structuredContent||null;
+     if(payload&&Array.isArray(payload.goals)&&Array.isArray(payload.items)){board=payload;boardError=null;renderWorkboard();}
+     else render(payload);
+   }
    if(m.method==="ui/notifications/request-teardown"){connected=false;if(scheduled)clearInterval(scheduled);}
  },{passive:true});
  window.addEventListener("pagehide",()=>{connected=false;if(scheduled)clearInterval(scheduled);},{once:true});
@@ -3646,6 +3755,66 @@ def create_mcp(
     async def diagnostics() -> dict[str, Any]:
         return await relay.call(_principal("remote:read"), "diagnostics", {})
 
+    if os.environ.get("LIVINGRUNTIME_WORKBOARD_DRAFT") == "1":
+        board = Workboard(relay.store)
+
+        @server.tool(name="workboard_goal_create", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+        async def workboard_goal_create(title: str, intent: str, source_revision: str,
+                                        idempotency_key: str) -> dict[str, Any]:
+            """Create an owner-scoped, immutable source-revision Goal."""
+            return board.create_goal(_principal("remote:write"), title=title, intent=intent,
+                                     source_revision=source_revision, idempotency_key=idempotency_key)
+
+        @server.tool(name="workboard_goal_pause", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+        async def workboard_goal_pause(goal_id: str, paused: bool) -> dict[str, Any]:
+            """Pause/resume only NEW claims; already running native jobs retain their own lifecycle."""
+            return board.set_goal_paused(_principal("remote:write"), goal_id, paused)
+
+        @server.tool(name="workboard_create", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+        async def workboard_create(goal_id: str, device_id: str, agent_id: str, adapter_id: str,
+                                   project: str, local_device: str, goal: str, source_revision: str,
+                                   idempotency_key: str, exclusive_key: str,
+                                   depends_on: list[str] | None = None,
+                                   acceptance_argv: list[str] | None = None) -> dict[str, Any]:
+            """DRAFT: authorize one fixed-revision task on an explicit machine/agent placement."""
+            return board.create(_principal("remote:write"), goal_id=goal_id,
+                                device_id=device_id, agent_id=agent_id,
+                                adapter_id=adapter_id, project=project, local_device=local_device,
+                                goal=goal, source_revision=source_revision, idempotency_key=idempotency_key,
+                                exclusive_key=exclusive_key, depends_on=depends_on, acceptance_argv=acceptance_argv)
+
+        @server.tool(name="workboard_list", annotations=ToolAnnotations(readOnlyHint=True))
+        async def workboard_list() -> dict[str, Any]:
+            """Read this owner's draft work items and pending human actions."""
+            user = _principal("remote:read")
+            return {"goals": board.list_goals(user), "items": board.list_items(user),
+                    "human_actions": board.human_actions(user), "inbox": board.inbox(user)}
+
+        @server.tool(name="workboard_inbox", annotations=ToolAnnotations(readOnlyHint=True))
+        async def workboard_inbox(include_acknowledged: bool = False) -> dict[str, Any]:
+            """Durable completed-work receipts; unread state is independent of next task claims."""
+            return {"receipts": board.inbox(_principal("remote:read"),
+                                           include_acknowledged=include_acknowledged)}
+
+        @server.tool(name="workboard_ack", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+        async def workboard_ack(item_id: str, fence: int, source_revision: str) -> dict[str, Any]:
+            """Acknowledge exactly one receipt for the same owner, attempt and frozen revision."""
+            return board.acknowledge(_principal("remote:write"), item_id, fence, source_revision)
+
+        @server.tool(name="workboard_resolve", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+        async def workboard_resolve(action_id: str, decision: str, resolution: str,
+                                    stopped: bool = False) -> dict[str, Any]:
+            """Resolve a current human request after reconciling process and side effects; grants no CLI tool approval."""
+            return board.resolve(_principal("remote:write"), action_id, decision=decision,
+                                 resolution=resolution, stopped=stopped)
+
+        @server.tool(name="workboard_verify", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+        async def workboard_verify(item_id: str, fence: int, source_revision: str,
+                                   evidence_refs: list[str]) -> dict[str, Any]:
+            """Accept checked evidence for this exact revision/attempt and release dependent tasks."""
+            return board.verify(_principal("remote:write"), item_id, fence=fence,
+                                source_revision=source_revision, evidence_refs=evidence_refs)
+
     return server
 
 
@@ -3933,6 +4102,28 @@ nav a{{margin-right:18px}}
             return JSONResponse({"ok": True})
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
+
+    async def device_workboard(request: Request):
+        if os.environ.get("LIVINGRUNTIME_WORKBOARD_DRAFT") != "1":
+            return JSONResponse({"error": "draft workboard disabled"}, status_code=404)
+        try:
+            device = store.authenticate_device(_device_token(request))
+            body = await request.json()
+            board = Workboard(store)
+            operation = body.pop('operation')
+            agent_id = body.pop('agent_id')
+            if operation == 'claim':
+                if body:
+                    raise ValueError('unexpected claim arguments')
+                item = board.claim(device['user_sub'], device['device_id'], agent_id)
+            else:
+                item = board.update(device['user_sub'], device['device_id'], agent_id,
+                                    operation=operation, **body)
+            return JSONResponse({'item': item})
+        except PermissionError as exc:
+            return JSONResponse({'error': str(exc)}, status_code=403)
+        except (KeyError, TypeError, ValueError) as exc:
+            return JSONResponse({'error': str(exc)}, status_code=400)
 
     async def device_event(request: Request):
         try:
@@ -4223,6 +4414,7 @@ nav a{{margin-right:18px}}
         Route("/device/pair", pair, methods=["POST"]),
         Route("/device/poll", poll, methods=["POST"]),
         Route("/device/result", complete, methods=["POST"]),
+        Route("/device/workboard", device_workboard, methods=["POST"]),
         Route("/device/event", device_event, methods=["POST"]),
         Mount("/", app=mcp_app),
     ])
