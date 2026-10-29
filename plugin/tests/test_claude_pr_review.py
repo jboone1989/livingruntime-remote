@@ -89,29 +89,25 @@ class ReviewerUnitTests(unittest.TestCase):
         state = {"prs": {"2": {"reviewed": ["s1", "s2", "s3"],
                                 "outcomes": {"s1": True, "s2": True, "s3": True},
                                 "limited": ["a"*40], "failures": {"a"*40: 2}}}}
-        with (patch.object(reviewer, "checkout",
-                           return_value=(Path("/tmp"), DIFF, "b"*40)) as checkout,
-              patch.object(reviewer, "model_review", return_value=[]) as deepseek,
-
-
-              patch.object(reviewer, "api", return_value=pr),
-              patch.object(reviewer, "already_commented", return_value=True),
-              patch.object(reviewer, "commit_status") as status,
-              patch.object(reviewer, "save_state")):
-            result = reviewer.review(
-                pr, repo="org/repo", gh="gh", 
-                work=Path("/tmp"), state=state,
-                state_path=Path("/tmp/unused"), timeout=5)
+        with (
+            patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "b"*40)) as checkout,
+            patch.object(reviewer, "model_review", return_value=[]) as model,
+            patch.object(reviewer, "api", return_value=pr),
+            patch.object(reviewer, "already_commented", return_value=True),
+            patch.object(reviewer, "commit_status") as status,
+            patch.object(reviewer, "save_state"),
+        ):
+            result = reviewer.review(pr, repo="org/repo", gh="gh", work=Path("/tmp"),
+                                     state=state, state_path=Path("/tmp/unused"), timeout=5)
             self.assertIn("reviewed:", result)
             checkout.assert_called_once()
-            deepseek.assert_called_once()
+            model.assert_called_once()
             self.assertEqual(status.call_args.args[3], "success")
             self.assertIn("a"*40, state["prs"]["2"]["reviewed"])
-            again = reviewer.review(
-                pr, repo="org/repo", gh="gh", 
-                work=Path("/tmp"), state=state,
-                state_path=Path("/tmp/unused"), timeout=5)
-            self.assertEqual(again, "skip:already reviewed")
+            self.assertEqual(
+                reviewer.review(pr, repo="org/repo", gh="gh", work=Path("/tmp"),
+                                state=state, state_path=Path("/tmp/unused"), timeout=5),
+                "skip:already reviewed")
             checkout.assert_called_once()
 
     def test_external_fork_skipped(self):
@@ -133,6 +129,98 @@ class ReviewerUnitTests(unittest.TestCase):
 +normal
 """
         self.assertEqual(reviewer.changed_lines(diff), {"src/a.mjs": {1, 2, 3}})
+
+    def test_document_only_uses_configured_model(self):
+        document_diff = ("diff --git a/specs/008/spec.md b/specs/008/spec.md\n"
+                         "--- a/specs/008/spec.md\n+++ b/specs/008/spec.md\n"
+                         "@@ -1 +1 @@\n-old\n+new acceptance criterion\n")
+        pr = {"number": 19, "state": "open", "draft": False,
+              "head": {"sha": "a"*40, "repo": {"full_name": "org/repo"}},
+              "base": {"ref": "develop"}, "body": "document the approved deployment"}
+        with (
+            patch.object(reviewer, "checkout", return_value=(Path("/tmp"), document_diff, "b"*40)),
+            patch.object(reviewer, "model_review", return_value=[]) as model,
+            patch.object(reviewer, "api", return_value=pr),
+            patch.object(reviewer, "already_commented", return_value=True),
+            patch.object(reviewer, "commit_status") as status,
+            patch.object(reviewer, "save_state"),
+        ):
+            reviewer.review(pr, repo="org/repo", gh="gh", work=Path("/tmp"),
+                            state={"prs": {}}, state_path=Path("/tmp/unused"), timeout=360)
+            model.assert_called_once_with(Path("/tmp"), document_diff, pr["body"], 360)
+            self.assertEqual(status.call_args.args[3], "success")
+
+    def test_document_model_failure_retries_full_checklist(self):
+        doc = ("diff --git a/specs/x/spec.md b/specs/x/spec.md\n"
+               "--- a/specs/x/spec.md\n+++ b/specs/x/spec.md\n"
+               "@@ -1 +1 @@\n-old\n+new\n")
+        with patch.object(reviewer, "call_model",
+                          side_effect=[reviewer.ReviewError("invalid JSON"), []]) as call:
+            self.assertEqual(reviewer.model_review(Path("/tmp"), doc, "approved document", 360), [])
+            self.assertEqual(call.call_count, 2)
+            self.assertIn("documentation-only", call.call_args_list[0].args[0])
+            self.assertIn("TRUSTED REVIEW CHECKLIST", call.call_args_list[1].args[0])
+
+    def test_model_settings_are_provider_neutral(self):
+        with patch.dict(reviewer.os.environ, {
+            "REVIEW_BASE_URL": "https://gateway.example/v1",
+            "REVIEW_API_KEY": "test-key",
+            "REVIEW_MODEL": "model-id",
+        }, clear=True):
+            self.assertEqual(reviewer.model_settings(),
+                             ("https://gateway.example/v1", "test-key", "model-id"))
+        with patch.dict(reviewer.os.environ, {}, clear=True):
+            with self.assertRaises(reviewer.ReviewUnavailable):
+                reviewer.model_settings()
+
+    def test_openai_compatible_request_uses_configured_url_key_and_model(self):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self):
+                return json.dumps({"choices": [{"message": {
+                    "content": json.dumps({"findings": []})
+                }}]}).encode()
+        with patch.dict(reviewer.os.environ, {
+            "REVIEW_BASE_URL": "https://gateway.example/v1",
+            "REVIEW_API_KEY": "secret-key",
+            "REVIEW_MODEL": "other-model",
+        }, clear=True), patch.object(reviewer.urllib.request, "urlopen",
+                                     return_value=Response()) as request:
+            self.assertEqual(reviewer.call_model("review prompt", 30), [])
+        req = request.call_args.args[0]
+        self.assertEqual(req.full_url, "https://gateway.example/v1/chat/completions")
+        self.assertEqual(req.headers["Authorization"], "Bearer secret-key")
+        body = json.loads(req.data)
+        self.assertEqual(body["model"], "other-model")
+        self.assertEqual(body["messages"][1]["content"], "review prompt")
+
+    def test_model_response_parsing(self):
+        self.assertEqual(reviewer.parse_model_findings(
+            '{"findings":[]}'), [])
+        with self.assertRaises(reviewer.ReviewError):
+            reviewer.parse_model_findings("not json")
+
+    def test_model_review_verifies_candidates_with_the_same_provider(self):
+        candidate = {"path": "src/a.mjs", "line": 4, "confidence": 96,
+                     "severity": "important", "reason": "silenced error",
+                     "evidence": "catch returns success", "fix": "propagate error"}
+        with patch.object(reviewer, "call_model",
+                          side_effect=[[candidate], [candidate]]) as call:
+            findings = reviewer.model_review(Path("/tmp"), DIFF, "approved spec", 60)
+        self.assertEqual(findings, [candidate])
+        self.assertEqual(call.call_count, 2)
+        self.assertIn("TRUSTED REVIEW CHECKLIST", call.call_args_list[0].args[0])
+        self.assertIn("CANDIDATES", call.call_args_list[1].args[0])
+
+    def test_changed_file_source_context_is_bounded_and_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "src" / "a.mjs"
+            source.parent.mkdir()
+            source.write_text("export const value = 1;", encoding="utf-8")
+            context = reviewer.changed_source_context(Path(tmp), DIFF)
+            self.assertIn("FILE src/a.mjs", context)
+            self.assertIn("export const value = 1;", context)
 
     def test_quality_prompt_explicitly_challenges_bad_shortcuts(self):
         prompt = reviewer.quality_prompt(DIFF, "tests passed")
@@ -182,18 +270,17 @@ class ReviewerUnitTests(unittest.TestCase):
         finding = {"path": "src/a.mjs", "line": 4, "confidence": 96,
                    "severity": "important", "reason": "silenced error",
                    "evidence": "catch returns success", "fix": "propagate error"}
-        with patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "a"*40)), \
-             patch.object(reviewer, "model_review", return_value=[finding]) as deepseek, \
-
-
-             patch.object(reviewer, "api", return_value=pr), \
-             patch.object(reviewer, "already_commented", return_value=True), \
-             patch.object(reviewer, "commit_status") as status, \
-             patch.object(reviewer, "save_state"):
-            reviewer.review(pr, repo="org/repo", gh="gh", 
-                            work=Path("/tmp"), state={"prs": {}},
-                            state_path=Path("/tmp/unused"), timeout=5)
-            deepseek.assert_called_once()
+        with (
+            patch.object(reviewer, "checkout", return_value=(Path("/tmp"), DIFF, "a"*40)),
+            patch.object(reviewer, "model_review", return_value=[finding]) as model,
+            patch.object(reviewer, "api", return_value=pr),
+            patch.object(reviewer, "already_commented", return_value=True),
+            patch.object(reviewer, "commit_status") as status,
+            patch.object(reviewer, "save_state"),
+        ):
+            reviewer.review(pr, repo="org/repo", gh="gh", work=Path("/tmp"),
+                            state={"prs": {}}, state_path=Path("/tmp/unused"), timeout=5)
+            model.assert_called_once()
             self.assertEqual(status.call_args.args[3], "failure")
 
     def test_clean_review_resets_round_counter(self):
@@ -278,20 +365,21 @@ class ReviewerUnitTests(unittest.TestCase):
                 self.assertEqual(git("--git-dir", cache, "for-each-ref",
                                      "--format=%(refname)", "refs/heads"), "")
 
-    def test_temporary_review_checkout_cleaned_when_deepseek_fails(self):
+    def test_temporary_review_checkout_cleaned_when_model_fails(self):
         pr = {"number": 17, "state": "open", "draft": False,
               "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "develop"}}
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp) / "reviews"
-            with patch.object(reviewer, "checkout", return_value=(
-                     work / "source", DIFF, "a"*40)), \
-                 patch.object(reviewer, "model_review",
-                              side_effect=reviewer.ReviewError("DeepSeek unavailable")):
-                with self.assertRaisesRegex(reviewer.ReviewError, "DeepSeek unavailable"):
-                    reviewer.review(pr, repo="org/repo", gh="gh", 
-                                    work=work, state={"prs": {}},
-                                    state_path=Path(tmp) / "state.json", timeout=5)
+            with (
+                patch.object(reviewer, "checkout", return_value=(work / "source", DIFF, "a"*40)),
+                patch.object(reviewer, "model_review",
+                             side_effect=reviewer.ReviewError("Model provider unavailable")),
+            ):
+                with self.assertRaisesRegex(reviewer.ReviewError, "Model provider unavailable"):
+                    reviewer.review(pr, repo="org/repo", gh="gh", work=work,
+                                    state={"prs": {}}, state_path=Path(tmp) / "state.json",
+                                    timeout=5)
             self.assertEqual(list(work.iterdir()), [])
 
     def test_commit_status_publishes_deepseek_and_legacy_gate_contexts(self):
@@ -353,99 +441,88 @@ class ReviewerUnitTests(unittest.TestCase):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "e"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "main"}, "body": ""}
-        with tempfile.TemporaryDirectory() as tmp, \
-             patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "model_review",
-                          side_effect=reviewer.ReviewError("DeepSeek unavailable")), \
+        with tempfile.TemporaryDirectory() as tmp, (
+            patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)),
+            patch.object(reviewer, "model_review",
+                         side_effect=reviewer.ReviewError("Model provider unavailable")),
+        ):
+            with self.assertRaisesRegex(reviewer.ReviewError, "Model provider unavailable"):
+                reviewer.review(pr, repo="org/repo", gh="gh", work=Path(tmp),
+                                state={"prs": {}}, state_path=Path(tmp)/"state", timeout=5)
 
-
-            with self.assertRaisesRegex(reviewer.ReviewError, "DeepSeek unavailable"):
-                reviewer.review(
-                    pr, repo="org/repo", gh="gh", 
-                    work=Path(tmp), state={"prs": {}},
-                    state_path=Path(tmp)/"state", timeout=5)
     def test_review_uses_only_the_configured_model_provider(self):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "main"}, "body": ""}
-        with tempfile.TemporaryDirectory() as tmp, \
-             patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "model_review", return_value=[]) as deepseek, \
-
-
-             patch.object(reviewer, "api", return_value=pr), \
-             patch.object(reviewer, "already_commented", return_value=True), \
-             patch.object(reviewer, "commit_status") as status, \
-             patch.object(reviewer, "save_state"):
-            result = reviewer.review(
-                pr, repo="org/repo", gh="gh", 
-                work=Path(tmp), state={"prs": {}},
-                state_path=Path(tmp)/"state", timeout=5)
+        with tempfile.TemporaryDirectory() as tmp, (
+            patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)),
+            patch.object(reviewer, "model_review", return_value=[]) as model,
+            patch.object(reviewer, "api", return_value=pr),
+            patch.object(reviewer, "already_commented", return_value=True),
+            patch.object(reviewer, "commit_status") as status,
+            patch.object(reviewer, "save_state"),
+        ):
+            result = reviewer.review(pr, repo="org/repo", gh="gh", work=Path(tmp),
+                                     state={"prs": {}}, state_path=Path(tmp)/"state", timeout=5)
         self.assertIn("provider=deepseek-flash", result)
-        deepseek.assert_called_once()
+        model.assert_called_once()
         self.assertEqual(status.call_args.args[3], "success")
 
     def test_code_review_uses_the_configured_model_provider(self):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "main"}, "body": ""}
-        with tempfile.TemporaryDirectory() as tmp, \
-             patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "model_review", return_value=[]) as deepseek, \
-
-
-             patch.object(reviewer, "api", return_value=pr), \
-             patch.object(reviewer, "already_commented", return_value=True), \
-             patch.object(reviewer, "commit_status") as status, \
-             patch.object(reviewer, "save_state"):
-            result = reviewer.review(
-                pr, repo="org/repo", gh="gh", 
-                work=Path(tmp), state={"prs": {}},
-                state_path=Path(tmp)/"state", timeout=5)
+        with tempfile.TemporaryDirectory() as tmp, (
+            patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)),
+            patch.object(reviewer, "model_review", return_value=[]) as model,
+            patch.object(reviewer, "api", return_value=pr),
+            patch.object(reviewer, "already_commented", return_value=True),
+            patch.object(reviewer, "commit_status") as status,
+            patch.object(reviewer, "save_state"),
+        ):
+            result = reviewer.review(pr, repo="org/repo", gh="gh", work=Path(tmp),
+                                     state={"prs": {}}, state_path=Path(tmp)/"state", timeout=5)
         self.assertIn("provider=deepseek-flash", result)
-        deepseek.assert_called_once()
+        model.assert_called_once()
         self.assertEqual(status.call_args.args[3], "success")
 
     def test_model_review_does_not_wait_for_an_account_login(self):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "b"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "main"}, "body": ""}
-        with tempfile.TemporaryDirectory() as tmp, \
-             patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "model_review", return_value=[]) as deepseek, \
-
-
-             patch.object(reviewer, "api", return_value=pr), \
-             patch.object(reviewer, "already_commented", return_value=False), \
-             patch.object(reviewer, "post_comment") as comment, \
-             patch.object(reviewer, "commit_status") as status, \
-             patch.object(reviewer, "save_state"):
-            result = reviewer.review(pr, repo="org/repo", gh="gh", 
-                                     work=Path(tmp), state={"prs": {}},
-                                     state_path=Path(tmp)/"state", timeout=5)
+        with tempfile.TemporaryDirectory() as tmp, (
+            patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)),
+            patch.object(reviewer, "model_review", return_value=[]) as model,
+            patch.object(reviewer, "api", return_value=pr),
+            patch.object(reviewer, "already_commented", return_value=False),
+            patch.object(reviewer, "post_comment") as comment,
+            patch.object(reviewer, "commit_status") as status,
+            patch.object(reviewer, "save_state"),
+        ):
+            result = reviewer.review(pr, repo="org/repo", gh="gh", work=Path(tmp),
+                                     state={"prs": {}}, state_path=Path(tmp)/"state", timeout=5)
         self.assertIn("provider=deepseek-flash", result)
-        deepseek.assert_called_once()
-        self.assertIn("DeepSeek", comment.call_args.args[3])
+        model.assert_called_once()
+        self.assertIn("deepseek-flash", comment.call_args.args[3])
         self.assertEqual(status.call_args.args[3], "success")
 
     def test_each_new_review_sha_uses_the_configured_model(self):
         pr = {"number": 2, "state": "open", "draft": False,
               "head": {"sha": "d"*40, "repo": {"full_name": "org/repo"}},
               "base": {"ref": "main"}, "body": ""}
-        with tempfile.TemporaryDirectory() as tmp, \
-             patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)), \
-             patch.object(reviewer, "model_review", return_value=[]) as deepseek, \
-
-
-             patch.object(reviewer, "api", return_value=pr), \
-             patch.object(reviewer, "already_commented", return_value=True), \
-             patch.object(reviewer, "commit_status"), \
-             patch.object(reviewer, "save_state"):
-            result = reviewer.review(pr, repo="org/repo", gh="gh", 
-                                     work=Path(tmp), state={"prs": {}},
-                                     state_path=Path(tmp)/"state", timeout=5)
+        with tempfile.TemporaryDirectory() as tmp, (
+            patch.object(reviewer, "checkout", return_value=(Path(tmp), DIFF, "a"*40)),
+            patch.object(reviewer, "model_review", return_value=[]) as model,
+            patch.object(reviewer, "api", return_value=pr),
+            patch.object(reviewer, "already_commented", return_value=True),
+            patch.object(reviewer, "commit_status"),
+            patch.object(reviewer, "save_state"),
+        ):
+            result = reviewer.review(pr, repo="org/repo", gh="gh", work=Path(tmp),
+                                     state={"prs": {}}, state_path=Path(tmp)/"state", timeout=5)
         self.assertIn("provider=deepseek-flash", result)
-        deepseek.assert_called_once()
+        model.assert_called_once()
+
     def test_quota_without_key_does_not_consume_retry_budget(self):
         with tempfile.TemporaryDirectory() as tmp:
             pr = {"number": 7, "state": "open", "draft": False,
