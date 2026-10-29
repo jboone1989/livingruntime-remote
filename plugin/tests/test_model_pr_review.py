@@ -78,11 +78,11 @@ class ReviewerUnitTests(unittest.TestCase):
                 "--- a/specs/x/spec.md\n+++ b/specs/x/spec.md\n"
                 "@@ -1 +1 @@\n-old\n+new\n")
         malformed = json.JSONDecodeError("bad", "{", 0)
-        with (patch.dict(reviewer.os.environ, {"DEEPSEEK_API_KEY": "fake"}, clear=True),
+        with (patch.dict(reviewer.os.environ, {"REVIEW_API_KEY": "fake"}, clear=True),
               patch.object(reviewer, "ask_claude",
                            side_effect=[malformed, []]) as ask):
             self.assertEqual(
-                reviewer.deepseek_review("claude", Path("/tmp"), diff, "spec", 360), [])
+                reviewer.model_review("claude", Path("/tmp"), diff, "spec", 360), [])
             self.assertEqual(ask.call_count, 2)
             self.assertIn("TRUSTED REVIEW CHECKLIST", ask.call_args_list[1].args[2])
 
@@ -533,8 +533,8 @@ class ReviewerUnitTests(unittest.TestCase):
             argv = cli.call_args.args[0]
             self.assertIn("/code-review high " + "a"*40 + ".." + "b"*40, argv)
             self.assertIn("--permission-mode", argv)
-            self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
-            self.assertEqual(cli.call_args.kwargs["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "sonnet")
+            self.assertEqual(argv[argv.index("--model") + 1], "deepseek-flash")
+            self.assertEqual(cli.call_args.kwargs["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "deepseek-flash")
             self.assertEqual(cli.call_args.kwargs["env"]["CLAUDE_CODE_SUBAGENT_MODEL_FORCE"], "1")
             self.assertIn("--disallowedTools", argv)
             self.assertNotIn("--bare", argv)
@@ -740,7 +740,7 @@ class ReviewerUnitTests(unittest.TestCase):
                 pr, repo="org/repo", gh="gh", claude="claude",
                 work=Path(tmp), state={"prs": {}},
                 state_path=Path(tmp)/"state", timeout=5)
-        self.assertIn("provider=DeepSeek-V4.1-Flash-1017", result)
+        self.assertIn("provider=deepseek-flash", result)
         deepseek.assert_called_once()
         native.assert_not_called()
         legacy.assert_not_called()
@@ -763,7 +763,7 @@ class ReviewerUnitTests(unittest.TestCase):
             result = reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
                                      work=Path(tmp), state={"prs": {}},
                                      state_path=Path(tmp)/"state", timeout=5)
-        self.assertIn("provider=DeepSeek-V4.1-Flash-1017", result)
+        self.assertIn("provider=deepseek-flash", result)
         deepseek.assert_called_once()
         native.assert_not_called()
         legacy.assert_not_called()
@@ -786,7 +786,7 @@ class ReviewerUnitTests(unittest.TestCase):
             result = reviewer.review(pr, repo="org/repo", gh="gh", claude="claude",
                                      work=Path(tmp), state={"prs": {}},
                                      state_path=Path(tmp)/"state", timeout=5)
-        self.assertIn("provider=DeepSeek-V4.1-Flash-1017", result)
+        self.assertIn("provider=deepseek-flash", result)
         deepseek.assert_called_once()
         native.assert_not_called()
         legacy.assert_not_called()
