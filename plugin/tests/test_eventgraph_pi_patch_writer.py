@@ -147,6 +147,10 @@ class PatchWriterTests(unittest.TestCase):
             if path == "git/commits/" + NEXT:
                 return {"message": expected_message, "parents": [{"sha": SHA}],
                         "tree": {"sha": TREE}}
+            if path == "git/commits/" + SHA:
+                return {"tree": {"sha": "9" * 40}}
+            if path == "git/trees/" + "9" * 40 + "?recursive=1":
+                return {"truncated": False, "tree": [BASE]}
             if path == "git/trees/" + TREE + "?recursive=1":
                 return {"truncated": False, "tree": [{**BASE, "sha": blob}]}
             self.fail("unexpected reconciliation call")
@@ -154,6 +158,32 @@ class PatchWriterTests(unittest.TestCase):
             result = writer.write(data)
         self.assertEqual(result["new_sha"], NEXT)
         self.assertNotIn(("git/refs/heads/fix/explain", "PATCH"), paths)
+
+    def test_lost_ack_rejects_extra_files_even_when_claimed_patch_matches(self):
+        import hashlib
+        data = manifest()
+        raw = data["changes"][0]["content"].encode()
+        blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\\x00" + raw).hexdigest()
+        def fake(path, *, method="GET", body=None):
+            self.assertEqual(method, "GET")
+            if path == "pulls/175":
+                return {"state": "open", "draft": False, "base": {"ref": "develop"},
+                        "head": {"repo": {"full_name": REPO}, "sha": NEXT}}
+            if path == "git/commits/" + NEXT:
+                return {"message": f"fix(pr-175): Pi repair of verified failure at {SHA[:12]}",
+                        "parents": [{"sha": SHA}], "tree": {"sha": TREE}}
+            if path == "git/commits/" + SHA:
+                return {"tree": {"sha": "9" * 40}}
+            if path == "git/trees/" + "9" * 40 + "?recursive=1":
+                return {"truncated": False, "tree": [BASE]}
+            if path == "git/trees/" + TREE + "?recursive=1":
+                return {"truncated": False, "tree": [{**BASE, "sha": blob},
+                    {"path": "apps/web/app/features/unauthorized.ts", "mode": "100644",
+                     "type": "blob", "sha": "8" * 40}]}
+            self.fail("unexpected API call: " + path)
+        with patch.object(writer, "api", side_effect=fake):
+            with self.assertRaisesRegex(PermissionError, "authorized patch paths"):
+                writer.write(data)
 
     def test_lost_ack_does_not_accept_unrelated_commit(self):
         with patch.object(writer, "api", side_effect=[
