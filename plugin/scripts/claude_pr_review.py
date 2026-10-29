@@ -219,8 +219,8 @@ def checkout(repo, number, sha, base, directory, cache):
                 "--unified=3", baseline, sha, "--"], timeout=60)
     if not diff.strip():
         raise ReviewError("Empty PR diff")
-    if len(diff.encode("utf-8")) > 80000:
-        raise ReviewError("Diff exceeds 80KB review budget; human review required")
+    if len(diff.encode("utf-8")) > 128_000:
+        raise ReviewError("Diff exceeds 128KB review budget; human review required")
     return directory, diff, baseline
 
 
