@@ -3967,9 +3967,13 @@ nav a{{margin-right:18px}}
             if not target or target["device_id"] != target_id or target["name"] != "cn-dev":
                 raise PermissionError("repair target must be the paired cn-dev Connector")
             goal = (
-                "You are the EventGraph FIXER running as native Pi on cn-dev "
-                "(NOT Codex and NOT Claude reviewer). Work in a fresh isolated "
-                "worktree under the existing aihot-dev project; do not alter existing "
+                f"[eventgraph-pi-repair pr={number} sha={sha}] "
+                "You are the EventGraph FIXER running as native Pi on cn-dev. "
+                "Use the EXACT isolated worktree path "
+                f"/home/ubuntu/livingruntime-aihot/.worktrees/pi-repair-{number}-{sha[:12]} "
+                "at the original PR SHA. Do not push or submit a PR yourself; "
+                "the existing Connector exports the diff after native completion "
+                "for a trusted, atomic GitHub write. Do not alter existing "
                 "dirty worktrees or VM09/VM13/production. First verify GitHub "
                 "jboone1989/EventGraph PR #"
                 f"{number} is open, same-repository, non-draft, targets develop, and "
@@ -3980,10 +3984,10 @@ nav a{{margin-right:18px}}
                 "follow the approved specs/pi-auto-repair/spec.md. "
                 "Fix the actual app/test issue with focused tests. Never change "
                 ".github, Spec, dependency locks, auth/security, migrations, "
-                "deployment, permissions or branch protection. Before normal "
-                "non-force push, re-fetch PR head and confirm unchanged exact SHA; "
-                "push only the original PR branch with existing scoped GitHub auth "
-                "if available. Never merge, forge statuses, deploy or access secrets. "
+                "deployment, permissions or branch protection. Leave the "
+                "modified source files in the specified isolated worktree and "
+                "complete only after focused tests. Never push, merge, forge "
+                "statuses, deploy or access secrets. "
                 "If offline, quota-limited, unsafe, auth missing, or SHA stale, "
                 "return a precise blocker without claiming a successful fix."
             )
