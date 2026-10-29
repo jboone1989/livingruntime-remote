@@ -3650,14 +3650,27 @@ def create_mcp(
     if os.environ.get("LIVINGRUNTIME_WORKBOARD_DRAFT") == "1":
         board = Workboard(relay.store)
 
+        @server.tool(name="workboard_goal_create", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+        async def workboard_goal_create(title: str, intent: str, source_revision: str,
+                                        idempotency_key: str) -> dict[str, Any]:
+            """Create an owner-scoped, immutable source-revision Goal."""
+            return board.create_goal(_principal("remote:write"), title=title, intent=intent,
+                                     source_revision=source_revision, idempotency_key=idempotency_key)
+
+        @server.tool(name="workboard_goal_pause", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+        async def workboard_goal_pause(goal_id: str, paused: bool) -> dict[str, Any]:
+            """Pause/resume only NEW claims; already running native jobs retain their own lifecycle."""
+            return board.set_goal_paused(_principal("remote:write"), goal_id, paused)
+
         @server.tool(name="workboard_create", annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True))
-        async def workboard_create(device_id: str, agent_id: str, adapter_id: str, project: str,
-                                   local_device: str, goal: str, source_revision: str,
+        async def workboard_create(goal_id: str, device_id: str, agent_id: str, adapter_id: str,
+                                   project: str, local_device: str, goal: str, source_revision: str,
                                    idempotency_key: str, exclusive_key: str,
                                    depends_on: list[str] | None = None,
                                    acceptance_argv: list[str] | None = None) -> dict[str, Any]:
             """DRAFT: authorize one fixed-revision task on an explicit machine/agent placement."""
-            return board.create(_principal("remote:write"), device_id=device_id, agent_id=agent_id,
+            return board.create(_principal("remote:write"), goal_id=goal_id,
+                                device_id=device_id, agent_id=agent_id,
                                 adapter_id=adapter_id, project=project, local_device=local_device,
                                 goal=goal, source_revision=source_revision, idempotency_key=idempotency_key,
                                 exclusive_key=exclusive_key, depends_on=depends_on, acceptance_argv=acceptance_argv)
@@ -3666,8 +3679,8 @@ def create_mcp(
         async def workboard_list() -> dict[str, Any]:
             """Read this owner's draft work items and pending human actions."""
             user = _principal("remote:read")
-            return {"items": board.list_items(user), "human_actions": board.human_actions(user),
-                    "inbox": board.inbox(user)}
+            return {"goals": board.list_goals(user), "items": board.list_items(user),
+                    "human_actions": board.human_actions(user), "inbox": board.inbox(user)}
 
         @server.tool(name="workboard_inbox", annotations=ToolAnnotations(readOnlyHint=True))
         async def workboard_inbox(include_acknowledged: bool = False) -> dict[str, Any]:
