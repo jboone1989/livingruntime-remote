@@ -80,7 +80,10 @@ def main(path):
                 stream.write(json.dumps({"seq": seq, **value}, ensure_ascii=False) + "\n")
                 stream.flush()
 
-            proc = subprocess.Popen(cli_args(record), cwd=record["cwd"],
+            child_env = os.environ.copy()
+            if record.get("agent_dir"):
+                child_env["PI_CODING_AGENT_DIR"] = record["agent_dir"]
+            proc = subprocess.Popen(cli_args(record), cwd=record["cwd"], env=child_env,
                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, text=True, bufsize=1,
                                     start_new_session=True)

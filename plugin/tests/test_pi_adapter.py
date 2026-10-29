@@ -142,6 +142,40 @@ class PiAdapterTests(unittest.TestCase):
                 self.assertEqual(opts["model"], "glm-5.3")
                 self.assertEqual(opts["env_file"], str(env_file.resolve()))
                 self.assertNotIn("placeholder", json.dumps(opts))
+                rec = json.loads(records[0].read_text())
+                agent_dir = Path(rec["agent_dir"])
+                self.assertEqual(agent_dir, home_config / "pi-harness/agent-config")
+                settings = json.loads((agent_dir / "models.json").read_text())
+                official = settings["providers"]["bigmodel-official"]
+                self.assertEqual(official["baseUrl"], "https://open.bigmodel.cn/api/paas/v4")
+                self.assertEqual(official["api"], "openai-completions")
+                self.assertEqual(official["apiKey"], "BIGMODEL_API_KEY")
+                self.assertEqual(official["models"][0]["id"], "glm-5.3")
+                self.assertNotIn("placeholder", json.dumps(settings))
+                self.assertFalse((workspace / ".pi/agent/models.json").exists())
+
+    def test_worker_injects_trusted_agent_dir_only_into_native_pi_child(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            agent_dir = root / "trusted-models"
+            agent_dir.mkdir()
+            fake = root / "pi"
+            fake.write_text('#!/usr/bin/env python3\n'
+                'import json,os\n'
+                'print(json.dumps({"type":"message_end","message":{"role":"assistant",'
+                '"content":[{"type":"text","text":os.environ.get("PI_CODING_AGENT_DIR","")}]}}))\n'
+                'print(json.dumps({"type":"agent_settled"}))\n', encoding="utf-8")
+            fake.chmod(0o700)
+            record = root / (str(uuid.uuid4()) + ".json")
+            record.write_text(json.dumps({
+                "session_id": str(uuid.uuid4()), "executable": str(fake),
+                "cwd": td, "agent_dir": str(agent_dir), "prompt": "test",
+                "options": {"provider": "bigmodel-official", "model": "glm-5.3"},
+            }), encoding="utf-8")
+            pi_worker.main(str(record))
+            result = json.loads(record.with_suffix(".result.json").read_text())
+            self.assertEqual(result["status"], "SUCCEEDED", result)
+            self.assertEqual(result["result"], str(agent_dir))
 
     def test_default_prefers_trusted_home_before_project_path(self):
         with tempfile.TemporaryDirectory() as td:

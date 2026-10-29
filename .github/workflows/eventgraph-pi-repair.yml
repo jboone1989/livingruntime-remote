@@ -1,0 +1,40 @@
+name: EventGraph cn-dev native Pi repair handoff
+
+on:
+  repository_dispatch:
+    types: [eventgraph-pi-repair]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eventgraph-pi-repair-${{ github.event.client_payload.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  route:
+    if: github.event.client_payload.repository == 'jboone1989/EventGraph'
+    runs-on: [self-hosted, Linux, X64, claude-review]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Validate exact PR failure and dispatch only to cn-dev native Pi
+        env:
+          REPO: ${{ github.event.client_payload.repository }}
+          NUMBER: ${{ github.event.client_payload.pr_number }}
+          HEAD_SHA: ${{ github.event.client_payload.sha }}
+          FAILURE_KIND: ${{ github.event.client_payload.failure_kind }}
+          RUN_ID: ${{ github.event.client_payload.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$REPO" == 'jboone1989/EventGraph' ]]
+          [[ "$NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$FAILURE_KIND" == check || "$FAILURE_KIND" == claude-review ]]
+          python3 plugin/scripts/eventgraph_pi_repair_dispatch.py \
+            --repository "$REPO" --pr-number "$NUMBER" \
+            --sha "$HEAD_SHA" --failure-kind "$FAILURE_KIND" --run-id "$RUN_ID"

@@ -596,6 +596,18 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
             history["manual_rereviews"][sha]["completed_at"] = datetime.now(timezone.utc).isoformat()
             history["manual_rereviews"][sha]["blocking"] = blocking
         save_state(state_path, state)
+        # Do not depend solely on GitHub status webhooks: immediately hand a
+        # verified blocking review to the existing cn-dev native Pi route.
+        # Handoff failures never turn an independent review verdict green.
+        if (blocking and repo == "jboone1989/EventGraph" and
+                fresh["state"] == "open" and not fresh.get("draft") and
+                fresh["base"]["ref"] == "develop"):
+            try:
+                import eventgraph_pi_repair_dispatch as repair
+                repair.run(number, sha, "claude-review", None)
+            except Exception as exc:
+                print("EventGraph native Pi handoff deferred: " + type(exc).__name__,
+                      file=sys.stderr, flush=True)
         return f"reviewed:{sha[:12]}, provider={provider}, blocking={blocking}"
 
 

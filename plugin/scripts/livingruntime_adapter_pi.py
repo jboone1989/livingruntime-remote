@@ -5,9 +5,11 @@ authorization, durable job receipts, and event visibility.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
+import subprocess
 import uuid
 from pathlib import Path
 
@@ -60,6 +62,78 @@ def pi_workspace(device, project):
     return str(resolved)
 
 
+def official_glm_agent_dir():
+    """Register the actual BigModel OpenAI-compatible API in a trusted Pi dir.
+
+    Pi does not ship a provider named 'bigmodel-official'. The credential comes
+    from the existing owner-home env file; no token is persisted in models.json.
+    """
+    directory = Path.home() / ".livingruntime" / "pi-harness" / "agent-config"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "models.json"
+    settings = {
+        "providers": {
+            "bigmodel-official": {
+                "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+                "api": "openai-completions",
+                "apiKey": "BIGMODEL_API_KEY",
+                "models": [{
+                    "id": "glm-5.3", "name": "GLM-5.3",
+                    "input": ["text"], "reasoning": True,
+                    "contextWindow": 131072, "maxTokens": 32768,
+                    "compat": {"supportsDeveloperRole": False,
+                               "supportsReasoningEffort": False}
+                }],
+            }
+        }
+    }
+    # This directory is only used for this Connector's custom provider; never
+    # overwrite the user's regular ~/.pi/agent/models.json.
+    temp = directory / ("models." + uuid.uuid4().hex + ".tmp")
+    with temp.open("x", encoding="utf-8") as out:
+        os.chmod(temp, 0o600)
+        json.dump(settings, out)
+        out.flush()
+        os.fsync(out.fileno())
+    os.replace(temp, path)
+    return str(directory)
+
+
+_REPAIR_MARKER = re.compile(r"^\[eventgraph-pi-repair pr=([1-9][0-9]*) sha=([0-9a-f]{40})\] ")
+_CN_DEV = "e21c871f-317b-4f3e-95bf-8d4299547a40"
+
+
+def _git(root, *args):
+    return subprocess.run(["git", "-C", str(root), *args], check=True,
+                          capture_output=True, text=True, timeout=45).stdout.strip()
+
+
+def prepare_repair_worktree(goal, *, project, device, workspace):
+    match = _REPAIR_MARKER.match(goal)
+    if not match:
+        return workspace
+    if project != "aihot-dev" or device != _CN_DEV:
+        raise PermissionError("EventGraph native Pi repair is only allowed on cn-dev aihot-dev")
+    number, sha = int(match.group(1)), match.group(2)
+    root = Path(workspace).resolve(strict=True)
+    if _git(root, "rev-parse", "--show-toplevel") != str(root):
+        raise ValueError("Pi repair project must be a Git worktree root")
+    path = root / ".worktrees" / f"pi-repair-{number}-{sha[:12]}"
+    if path.exists():
+        if (_git(path, "rev-parse", "HEAD") != sha or
+            _git(path, "status", "--porcelain")):
+            raise PermissionError("prior Pi repair worktree differs from the exact clean PR HEAD")
+        return str(path)
+    # Read-only fetch can update local Git objects, not the remote PR branch.
+    _git(root, "fetch", "origin", sha)
+    if _git(root, "rev-parse", sha + "^{commit}") != sha:
+        raise ValueError("target PR commit not available")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _git(root, "worktree", "add", "--detach", str(path), sha)
+    return str(path)
+
+
+
 class PiAdapter(ClaudeCodeAdapter):
     adapter_id = "pi"
 
@@ -84,7 +158,8 @@ class PiAdapter(ClaudeCodeAdapter):
         options = validate_options(options)
         provider = options.get("provider", "bigmodel-official")
         model = options.get("model", "glm-5.3")
-        cwd = pi_workspace(device, project)
+        cwd = prepare_repair_worktree(goal, project=project, device=device,
+                                      workspace=pi_workspace(device, project))
         default_env = Path.home() / ".livingruntime" / "official-glm.env"
         owner_env_selected = (provider == "bigmodel-official" and
                               "env_file" not in options and default_env.is_file())
@@ -107,10 +182,12 @@ class PiAdapter(ClaudeCodeAdapter):
             if not (target.is_relative_to(workspace) or owner_home_env) or not target.is_file():
                 raise PermissionError("Pi env_file must be explicit in the workspace or the trusted owner-home default")
             options["env_file"] = str(target)
+        agent_dir = official_glm_agent_dir() if provider == "bigmodel-official" else None
         sid = str(uuid.uuid4())
         self._write(sid, {
             "session_id": sid, "cwd": cwd, "executable": executable,
             "status": "PENDING", "project": project, "device": device,
+            "agent_dir": agent_dir,
             "options": {**options, "provider": provider, "model": model},
         })
         return self._spawn(sid, goal, False)
