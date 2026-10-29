@@ -36,11 +36,11 @@ jobs:
           ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.DEEPSEEK_API_KEY }}
           ANTHROPIC_API_KEY: ""
-          ANTHROPIC_MODEL: deepseek-flash
-          ANTHROPIC_DEFAULT_OPUS_MODEL: deepseek-flash
-          ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-flash
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-flash
-          CLAUDE_CODE_SUBAGENT_MODEL: deepseek-flash
+          ANTHROPIC_MODEL: claude-sonnet-4-5
+          ANTHROPIC_DEFAULT_OPUS_MODEL: claude-sonnet-4-5
+          ANTHROPIC_DEFAULT_SONNET_MODEL: claude-sonnet-4-5
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku-4-5
+          CLAUDE_CODE_SUBAGENT_MODEL: claude-sonnet-4-5
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           GIT_CONFIG_COUNT: "1"
           GIT_CONFIG_KEY_0: "credential.helper"
@@ -79,11 +79,11 @@ jobs:
           ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.DEEPSEEK_API_KEY }}
           ANTHROPIC_API_KEY: ""
-          ANTHROPIC_MODEL: deepseek-flash
-          ANTHROPIC_DEFAULT_OPUS_MODEL: deepseek-flash
-          ANTHROPIC_DEFAULT_SONNET_MODEL: deepseek-flash
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: deepseek-flash
-          CLAUDE_CODE_SUBAGENT_MODEL: deepseek-flash
+          ANTHROPIC_MODEL: claude-sonnet-4-5
+          ANTHROPIC_DEFAULT_OPUS_MODEL: claude-sonnet-4-5
+          ANTHROPIC_DEFAULT_SONNET_MODEL: claude-sonnet-4-5
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku-4-5
+          CLAUDE_CODE_SUBAGENT_MODEL: claude-sonnet-4-5
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
           GIT_CONFIG_COUNT: "1"
           GIT_CONFIG_KEY_0: "credential.helper"
