@@ -135,7 +135,7 @@ class PatchWriterTests(unittest.TestCase):
         import hashlib
         data = manifest()
         raw = data["changes"][0]["content"].encode()
-        blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\\x00" + raw).hexdigest()
+        blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest()
         expected_message = f"fix(pr-175): Pi repair of verified failure at {SHA[:12]}"
         paths = []
         def fake(path, *, method="GET", body=None):
