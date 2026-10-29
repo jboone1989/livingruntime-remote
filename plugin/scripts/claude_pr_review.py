@@ -542,45 +542,44 @@ def review(pr, *, repo, gh, claude, work, state, state_path, timeout, manual_app
         # findings. Fall back to the existing independent, checklist-driven Claude
         # review; never mark the check successful without a real structured review.
         provider = "Claude"
-        try:
-            used_fallback = False
-            if documentation_only(diff):
-                # A prose-only Spec revision doesn't need the native
-                # code-review agent scanning every module. Still require a real
-                # independent Claude finding set; never synthesize approval.
-                try:
-                    candidates = ask_claude(
-                        claude, directory, documentation_prompt(diff, pr.get("body") or ""),
-                        timeout, max_turns=6)
-                except QuotaExceeded:
-                    raise
-                except (ReviewError, subprocess.TimeoutExpired, json.JSONDecodeError):
-                    # No rubber-stamp on exhausted turns: require the full R01–R18
-                    # checklist and normal time/turn budget before any green status.
-                    candidates = ask_claude(
-                        claude, directory, quality_prompt(diff, pr.get("body") or ""),
-                        timeout)
+        used_fallback = False
+        if documentation_only(diff):
+            # A prose-only Spec revision doesn't need the native
+            # code-review agent scanning every module. Still require a real
+            # independent Claude finding set; never synthesize approval.
+            try:
+                candidates = ask_claude(
+                    claude, directory, documentation_prompt(diff, pr.get("body") or ""),
+                    timeout, max_turns=6)
+            except QuotaExceeded:
+                raise
+            except (ReviewError, subprocess.TimeoutExpired, json.JSONDecodeError):
+                # No rubber-stamp on exhausted turns: require the full R01–R18
+                # checklist and normal time/turn budget before any green status.
+                candidates = ask_claude(
+                    claude, directory, quality_prompt(diff, pr.get("body") or ""),
+                    timeout)
+            used_fallback = True
+        else:
+            try:
+                candidates = native_review(claude, directory, baseline, sha, timeout)
+            except QuotaExceeded:
+                raise
+            except (ReviewError, subprocess.TimeoutExpired, json.JSONDecodeError):
+                # Invalid or missing native JSON is not an approval. Require
+                # a fresh, independent checklist-driven Claude review.
+                candidates = ask_claude(claude, directory,
+                                        quality_prompt(diff, pr.get("body") or ""),
+                                        timeout)
                 used_fallback = True
-            else:
-                try:
-                    candidates = native_review(claude, directory, baseline, sha, timeout)
-                except QuotaExceeded:
-                    raise
-                except (ReviewError, subprocess.TimeoutExpired, json.JSONDecodeError):
-                    # Invalid or missing native JSON is not an approval. Require
-                    # a fresh, independent checklist-driven Claude review.
-                    candidates = ask_claude(claude, directory,
-                                            quality_prompt(diff, pr.get("body") or ""),
-                                            timeout)
-                    used_fallback = True
-            if needs_quality_review(diff) and not used_fallback:
-                candidates += ask_claude(claude, directory,
-                                          quality_prompt(diff, pr.get("body") or ""),
-                                          timeout)
-            verified = (ask_claude(claude, directory,
-                                   verify_prompt(candidates, diff), timeout)
-                        if candidates else [])
-            findings = filter_findings(verified, diff)
+        if needs_quality_review(diff) and not used_fallback:
+            candidates += ask_claude(claude, directory,
+                                      quality_prompt(diff, pr.get("body") or ""),
+                                      timeout)
+        verified = (ask_claude(claude, directory,
+                               verify_prompt(candidates, diff), timeout)
+                    if candidates else [])
+        findings = filter_findings(verified, diff)
         fresh = api(gh, f"repos/{repo}/pulls/{number}")
         if fresh["head"]["sha"] != sha:
             return "skip:head updated during review"
