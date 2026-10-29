@@ -139,7 +139,7 @@ class Worker:
         for field in ('agent_id', 'adapter_id', 'project', 'local_device'):
             if item[field] != self.placement[field]:
                 self.call('blocked', **identity, reason='Claim differs from operator placement')
-                self.save(None)
+                self.archive(item)  # Preserve a durable receipt; never erase a rejected claim.
                 return
         if self.call('heartbeat', **identity)['item']['status'] != 'CLAIMED':
             self.archive(item)
