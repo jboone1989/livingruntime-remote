@@ -127,9 +127,9 @@ jobs:
           fi
           # Explicit success is required; a skipped/failed review cannot merge.
           reviewed="$("$gh" api "repos/$REPO/commits/$REVIEWED_SHA/status" \
-            --jq '[.statuses[] | select(.context == "deepseek-review")][0].state // "missing"')"
+            --jq '[.statuses[] | select(.context == "model-review")][0].state // "missing"')"
           if [[ "$reviewed" != success ]]; then
-            echo "Skip: DeepSeek review is $reviewed"
+            echo "Skip: model review is $reviewed"
             exit 0
           fi
           files="$("$gh" api "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100")"
