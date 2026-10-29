@@ -48,13 +48,13 @@ class PiRepairDispatchTests(unittest.TestCase):
         with patch.object(router, "api", return_value={**good, "pull_requests": []}):
             router.validate_failure(PR, SHA, "check", 123)
 
-    def test_claude_failure_or_error_must_be_latest_status(self):
-        for state in ("failure", "error"):
-            with self.subTest(state=state), patch.object(router, "api", return_value={
-                "statuses": [{"context": "claude-review", "state": state}],
-            }):
-                router.validate_failure(PR, SHA, "claude-review", None)
-        for state in ("success", "pending"):
+    def test_only_blocking_claude_failure_routes_to_code_repair(self):
+        with patch.object(router, "api", return_value={
+            "statuses": [{"context": "claude-review", "state": "failure"}],
+        }):
+            router.validate_failure(PR, SHA, "claude-review", None)
+        # Reviewer/model infrastructure errors are not business-code defects.
+        for state in ("success", "pending", "error"):
             with self.subTest(state=state), patch.object(router, "api", return_value={
                 "statuses": [{"context": "claude-review", "state": state}],
             }):
