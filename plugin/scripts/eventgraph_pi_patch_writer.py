@@ -141,15 +141,25 @@ def committed_receipt(number, sha, changes):
     if ([p.get("sha") for p in commit.get("parents", [])] != [sha] or
         commit.get("message") != f"fix(pr-{number}): Pi repair of verified failure at {sha[:12]}"):
         raise PermissionError("PR changed outside this repair; refusing acknowledgement")
-    tree = api("git/trees/" + commit["tree"]["sha"] + "?recursive=1")
-    if tree.get("truncated"):
+    original = api("git/commits/" + sha)
+    before = api("git/trees/" + original["tree"]["sha"] + "?recursive=1")
+    after = api("git/trees/" + commit["tree"]["sha"] + "?recursive=1")
+    if before.get("truncated") or after.get("truncated"):
         raise RuntimeError("cannot reconcile truncated committed tree")
-    blobs = {r["path"]: r for r in tree["tree"] if r.get("type") == "blob"}
+    # Compare all leaf entries, including modes and submodules. A different
+    # commit with our message and target file bytes must not be acknowledged
+    # if it also changed any unrelated path.
+    def leaves(tree):
+        return {r["path"]: (r["type"], r["mode"], r["sha"])
+                for r in tree["tree"] if r["type"] != "tree"}
+    old, new = leaves(before), leaves(after)
+    changed = {path for path in old.keys() | new.keys() if old.get(path) != new.get(path)}
+    if changed != {item["path"] for item in changes}:
+        raise PermissionError("committed files differ from the authorized patch paths")
     for item in changes:
         raw = item["content"].encode("utf-8")
         expected = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\x00" + raw).hexdigest()
-        actual = blobs.get(item["path"])
-        if not actual or actual["sha"] != expected or actual["mode"] != "100644":
+        if new.get(item["path"]) != ("blob", "100644", expected):
             raise PermissionError("committed patch bytes differ from the claimed result")
     return {"pr_number": number, "previous_sha": sha, "new_sha": now}
 
