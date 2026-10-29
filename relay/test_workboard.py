@@ -101,9 +101,15 @@ class WorkboardTests(unittest.TestCase):
         active = self.claim()
         self.finish(active)
         self.assertIsNone(self.claim())
+        actions = self.board.human_actions('owner')
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]['item_id'], active['id'])
+        self.assertIn('manual acceptance', actions[0]['reason'])
         with self.assertRaises(ValueError):
             self.board.verify('owner', active['id'], fence=1, source_revision='a'*40, evidence_refs=[])
+        self.assertEqual(len(self.board.human_actions('owner')), 1)
         self.accept(active)
+        self.assertEqual(self.board.human_actions('owner'), [])
         self.assertEqual(self.claim()['id'], second['id'])
 
     def test_human_block_does_not_freeze_independent_work_and_resolution_is_single_use(self):
