@@ -390,6 +390,10 @@ class RelayServerTests(unittest.TestCase):
                 self.assertIn("175", args["goal"])
                 self.assertIn("a" * 40, args["goal"])
                 routed.reset_mock()
+                duplicate = client.post("/device/pi-repair", json=payload, headers=headers)
+                self.assertEqual(duplicate.status_code, 403, duplicate.text)
+                self.assertEqual(routed.await_count, 0,
+                                 "same PR HEAD must not start a second native Pi session")
                 rejected = client.post("/device/pi-repair", json=payload, headers={
                     "authorization": "Bearer " + other["device_token"],
                 })
