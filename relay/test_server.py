@@ -385,7 +385,7 @@ class RelayServerTests(unittest.TestCase):
                 self.assertEqual(tool, "start_agent")
                 self.assertEqual(args["adapter_id"], "pi")
                 self.assertEqual(args["project"], "aihot-dev")
-                self.assertNotIn("secret", str(args).lower())
+                self.assertNotIn(central["device_token"], str(args))
                 self.assertEqual(routed.call_args.kwargs["connector"], selected)
                 self.assertIn("175", args["goal"])
                 self.assertIn("a" * 40, args["goal"])
