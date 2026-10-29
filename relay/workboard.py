@@ -229,6 +229,11 @@ class Workboard:
                     status = 'SUCCEEDED'
                 db.execute("UPDATE workboard_items SET status=?,lease_until=NULL,evidence_json=? WHERE id=?",
                            (status, json.dumps(evidence_refs or []), item_id))
+                if status == 'VERIFYING':
+                    db.execute("INSERT INTO workboard_actions VALUES(?,?,?,?,?, 'PENDING',?,NULL)",
+                               ('lrhuman_'+uuid.uuid4().hex, item_id, row['attempt'],
+                                row['fence'], row['source_revision'],
+                                'Execution finished; manual acceptance evidence required'))
             elif operation == 'blocked':
                 if execution_done is True:
                     if row['status'] != 'RUNNING' or not row['session_id']:
@@ -284,6 +289,10 @@ class Workboard:
                 raise PermissionError("stale acceptance or item not verifying")
             db.execute("UPDATE workboard_items SET status='SUCCEEDED',evidence_json=? WHERE id=?",
                        (json.dumps(evidence_refs), item_id))
+            db.execute("UPDATE workboard_actions SET status='RESOLVED',resolution='Verified evidence' "
+                       "WHERE item_id=? AND attempt=? AND fence=? AND source_revision=? "
+                       "AND status='PENDING'",
+                       (item_id, row['attempt'], row['fence'], source_revision))
             row = self.row(db, user, item_id)
             self.event(db, row)
             return row
