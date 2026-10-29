@@ -5,6 +5,7 @@ authorization, durable job receipts, and event visibility.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -60,6 +61,43 @@ def pi_workspace(device, project):
     return str(resolved)
 
 
+def official_glm_agent_dir():
+    """Register the actual BigModel OpenAI-compatible API in a trusted Pi dir.
+
+    Pi does not ship a provider named 'bigmodel-official'. The credential comes
+    from the existing owner-home env file; no token is persisted in models.json.
+    """
+    directory = Path.home() / ".livingruntime" / "pi-harness" / "agent-config"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "models.json"
+    settings = {
+        "providers": {
+            "bigmodel-official": {
+                "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+                "api": "openai-completions",
+                "apiKey": "$BIGMODEL_API_KEY",
+                "models": [{
+                    "id": "glm-5.3", "name": "GLM-5.3",
+                    "input": ["text"], "reasoning": True,
+                    "contextWindow": 131072, "maxTokens": 32768,
+                    "compat": {"supportsDeveloperRole": False,
+                               "supportsReasoningEffort": False}
+                }],
+            }
+        }
+    }
+    # This directory is only used for this Connector's custom provider; never
+    # overwrite the user's regular ~/.pi/agent/models.json.
+    temp = directory / ("models." + uuid.uuid4().hex + ".tmp")
+    with temp.open("x", encoding="utf-8") as out:
+        os.chmod(temp, 0o600)
+        json.dump(settings, out)
+        out.flush()
+        os.fsync(out.fileno())
+    os.replace(temp, path)
+    return str(directory)
+
+
 class PiAdapter(ClaudeCodeAdapter):
     adapter_id = "pi"
 
@@ -107,10 +145,12 @@ class PiAdapter(ClaudeCodeAdapter):
             if not (target.is_relative_to(workspace) or owner_home_env) or not target.is_file():
                 raise PermissionError("Pi env_file must be explicit in the workspace or the trusted owner-home default")
             options["env_file"] = str(target)
+        agent_dir = official_glm_agent_dir() if provider == "bigmodel-official" else None
         sid = str(uuid.uuid4())
         self._write(sid, {
             "session_id": sid, "cwd": cwd, "executable": executable,
             "status": "PENDING", "project": project, "device": device,
+            "agent_dir": agent_dir,
             "options": {**options, "provider": provider, "model": model},
         })
         return self._spawn(sid, goal, False)
