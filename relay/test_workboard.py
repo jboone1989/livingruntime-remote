@@ -112,6 +112,50 @@ class WorkboardTests(unittest.TestCase):
         self.assertEqual(self.board.human_actions('owner'), [])
         self.assertEqual(self.claim()['id'], second['id'])
 
+    def test_inbox_persists_verified_result_until_owner_ack_then_auto_next(self):
+        first = self.create()
+        child = self.create(depends_on=[first['id']])
+        active = self.claim()
+        self.finish(active)
+        self.assertEqual(self.board.inbox('owner'), [])
+        self.assertEqual(self.board.human_actions('owner')[0]['item_id'], first['id'])
+        self.accept(active)
+        unread = self.board.inbox('owner')
+        self.assertEqual(len(unread), 1)
+        self.assertEqual(unread[0]['item_id'], first['id'])
+        self.assertEqual(unread[0]['source_revision'], 'a'*40)
+        self.assertEqual(unread[0]['fence'], active['fence'])
+        self.assertEqual(unread[0]['evidence_json'], '["test://checked-results"]')
+        # A waiting Inbox receipt cannot prevent automatic execution of the
+        # next previously authorized dependent task.
+        self.assertEqual(self.claim()['id'], child['id'])
+        self.assertEqual(Workboard(RelayStore(self.store.path)).inbox('owner'), unread)
+        with self.assertRaises(PermissionError):
+            self.board.acknowledge('other', first['id'], active['fence'], 'a'*40)
+        with self.assertRaises(PermissionError):
+            self.board.acknowledge('owner', first['id'], active['fence']+1, 'a'*40)
+        with self.assertRaises(PermissionError):
+            self.board.acknowledge('owner', first['id'], active['fence'], 'b'*40)
+        ack = self.board.acknowledge('owner', first['id'], active['fence'], 'a'*40)
+        self.assertIsNotNone(ack['acknowledged_at'])
+        self.assertEqual(self.board.inbox('owner'), [])
+        self.assertEqual(len(self.board.inbox('owner', include_acknowledged=True)), 1)
+        with self.assertRaises(PermissionError):
+            self.board.acknowledge('owner', first['id'], active['fence'], 'a'*40)
+
+    def test_machine_checked_success_creates_single_inbox_receipt(self):
+        item = self.create(acceptance_argv=['node','--version'])
+        claimed = self.claim()
+        self.update(claimed, 'started', session_id='session1', runtime_job_id='job1')
+        self.update(claimed, 'finished', checks_passed=True, evidence_refs=['runtime-job:job1'])
+        inbox = self.board.inbox('owner')
+        self.assertEqual(len(inbox), 1)
+        self.assertEqual(inbox[0]['item_id'], item['id'])
+        with self.assertRaises(PermissionError):
+            self.update(claimed, 'finished', checks_passed=True, evidence_refs=['runtime-job:job1'])
+        self.assertEqual(len(self.board.inbox('owner')), 1)
+        self.assertEqual(self.board.human_actions('owner'), [])
+
     def test_human_block_does_not_freeze_independent_work_and_resolution_is_single_use(self):
         self.create()
         next_item = self.create()
