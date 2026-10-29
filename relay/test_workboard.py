@@ -45,11 +45,13 @@ class WorkboardTests(unittest.TestCase):
         self.a = self.store.pair_device(self.store.create_pairing_code('owner')['code'], 'A')
         self.b = self.store.pair_device(self.store.create_pairing_code('owner')['code'], 'B')
         self.other = self.store.pair_device(self.store.create_pairing_code('other')['code'], 'Other')
+        self.goal = self.board.create_goal('owner', title='EventGraph auto development',
+            intent='Finish the authorized work queue', source_revision='a'*40, idempotency_key='eventgraph-goal')
         self.counter = 0
 
     def create(self, **overrides):
         self.counter += 1
-        args = dict(device_id=self.a['device_id'], agent_id='agent-a', adapter_id='test-native',
+        args = dict(goal_id=self.goal['id'], device_id=self.a['device_id'], agent_id='agent-a', adapter_id='test-native',
                     project='demo', local_device='main', goal='Check the fixed revision',
                     source_revision='a'*40, idempotency_key=str(self.counter),
                     exclusive_key='workspace-'+str(self.counter))
@@ -70,6 +72,43 @@ class WorkboardTests(unittest.TestCase):
     def accept(self, item):
         return self.board.verify('owner', item['id'], fence=item['fence'], source_revision=item['source_revision'],
                                  evidence_refs=['test://checked-results'])
+
+    def test_goal_is_durable_and_pausing_blocks_new_claims_without_restarting_agent(self):
+        first = self.create()
+        second = self.create()
+        running = self.claim()
+        self.assertEqual(running['id'], first['id'])
+        paused = self.board.set_goal_paused('owner', self.goal['id'], True)
+        self.assertEqual(paused['paused'], 1)
+        self.assertEqual(len(Workboard(RelayStore(self.store.path)).list_goals('owner')), 1)
+        self.assertEqual(self.board.list_goals('owner')[0]['total_items'], 2)
+        # Existing lease/status remains current; paused Goal stops only NEW claims.
+        self.assertEqual(self.update(running, 'heartbeat')['status'], 'CLAIMED')
+        self.finish(running)
+        self.accept(running)
+        self.assertIsNone(self.claim())
+        with self.assertRaises(PermissionError):
+            self.board.set_goal_paused('other', self.goal['id'], False)
+        self.board.set_goal_paused('owner', self.goal['id'], False)
+        self.assertEqual(self.claim()['id'], second['id'])
+        self.assertEqual(self.board.list_goals('owner')[0]['succeeded_items'], 1)
+
+    def test_goal_idempotency_and_cross_owner_or_cross_goal_task_rejected(self):
+        same = self.board.create_goal('owner', title='EventGraph auto development',
+            intent='Finish the authorized work queue', source_revision='a'*40,
+            idempotency_key='eventgraph-goal')
+        self.assertEqual(same['id'], self.goal['id'])
+        with self.assertRaises(ValueError):
+            self.board.create_goal('owner', title='Changed goal', intent='Scope',
+                source_revision='a'*40, idempotency_key='eventgraph-goal')
+        with self.assertRaises(PermissionError):
+            self.create(goal_id='other-goal')
+        new_goal = self.board.create_goal('owner', title='Separate goal', intent='Other',
+            source_revision='b'*40, idempotency_key='other-goal')
+        first = self.create()
+        with self.assertRaises(PermissionError):
+            self.create(goal_id=new_goal['id'], depends_on=[first['id']])
+        self.assertEqual(self.board.list_goals('other'), [])
 
     def test_atomic_claim_across_independent_connections(self):
         item = self.create()
@@ -211,7 +250,7 @@ class WorkboardTests(unittest.TestCase):
 
     def test_idempotency_conflict_and_unknown_cross_owner_dependencies(self):
         first = self.create(idempotency_key='same')
-        args = {k: first[k] for k in ('device_id','agent_id','adapter_id','project','local_device','goal',
+        args = {k: first[k] for k in ('goal_id','device_id','agent_id','adapter_id','project','local_device','goal',
                                        'source_revision','idempotency_key','exclusive_key')}
         self.assertEqual(self.board.create('owner', **args)['id'], first['id'])
         with self.assertRaises(ValueError):
