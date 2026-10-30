@@ -105,24 +105,25 @@ jobs:
             exit 0
           fi
           base_ref="$(jq -r '.base.ref' <<< "$pr")"
-          base_sha="$(jq -r '.base.sha' <<< "$pr")"
           [[ "$base_ref" == "develop" || "$base_ref" == "main" ]]
-          [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]
-          # Publish the target identity before operations that can fail, so the
-          # always-run status step can report an execution error on this exact SHA.
+          # PR .base.sha is a last-synchronization snapshot, not the live branch
+          # tip. Resolve the actual base ref from Git, then recheck it after diffing.
           echo "run=true" >> "$GITHUB_OUTPUT"
           echo "number=$pr_number" >> "$GITHUB_OUTPUT"
           echo "sha=$CHECK_SHA" >> "$GITHUB_OUTPUT"
           echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
+          git fetch --no-tags origin "refs/heads/$base_ref:refs/remotes/origin/$base_ref"
+          base_sha="$(git rev-parse "refs/remotes/origin/$base_ref")"
+          [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]
           echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          base="$(git merge-base "refs/remotes/origin/$base_ref" "$CHECK_SHA")"
+          git diff --no-ext-diff --unified=3 "$base" "$CHECK_SHA" -- > "$GITHUB_WORKSPACE/pr-review.diff"
           git fetch --no-tags origin "refs/heads/$base_ref:refs/remotes/origin/$base_ref"
           live_base="$(git rev-parse "refs/remotes/origin/$base_ref")"
           if [[ "$live_base" != "$base_sha" ]]; then
-            echo "::error::PR base moved during review target resolution; rerun against the current base."
+            echo "::error::Live PR base moved while resolving the review diff; rerun against the current base."
             exit 1
           fi
-          base="$(git merge-base "refs/remotes/origin/$base_ref" "$CHECK_SHA")"
-          git diff --no-ext-diff --unified=3 "$base" "$CHECK_SHA" -- > "$GITHUB_WORKSPACE/pr-review.diff"
           test -s "$GITHUB_WORKSPACE/pr-review.diff"
           # Ground reportable locations in actual added/modified HEAD lines.
           git diff --no-ext-diff --unified=0 "$base" "$CHECK_SHA" -- > "$RUNNER_TEMP/changed-hunks.diff"
@@ -199,7 +200,7 @@ jobs:
           settings: '{"disableAllHooks":true}'
           prompt: |
             Independently review EventGraph PR #${{ steps.target.outputs.number }}
-            at exact head ${{ steps.target.outputs.sha }}, against the actual PR base `${{ steps.target.outputs.base_ref }}`.
+            at exact head ${{ steps.target.outputs.sha }}, against the live PR base `${{ steps.target.outputs.base_ref }}` at `${{ steps.target.outputs.base_sha }}`.
             Read review-checklist.md, changed-lines.txt, and pr-review.diff first.
             changed-lines.txt lists the ONLY reportable path and HEAD line ranges.
             Inspect relevant changed source files via Read/Glob/Grep as needed.
@@ -281,6 +282,8 @@ jobs:
         env:
           PR_NUMBER: ${{ steps.target.outputs.number }}
           CHECK_SHA: ${{ steps.target.outputs.sha }}
+          BASE_REF: ${{ steps.target.outputs.base_ref }}
+          BASE_SHA: ${{ steps.target.outputs.base_sha }}
           REVIEW_OUTCOME: ${{ steps.review.outcome }}
           CANDIDATE_OUTCOME: ${{ steps.candidates.outcome }}
           NEEDS_VERIFICATION: ${{ steps.candidates.outputs.needs_verification }}
@@ -295,12 +298,22 @@ jobs:
             const number = Number(process.env.PR_NUMBER);
             const current = await github.rest.pulls.get({owner, repo, pull_number: number});
             if (current.data.head.sha !== sha || current.data.state !== 'open') {
-              core.info('PR head changed during review; no stale status will be published.');
+              core.info('PR head changed during review; no status will be published for a stale head.');
               return;
             }
             let state = 'error';
             let description = 'GLM review did not produce verified structured output';
             try {
+              const baseRef = process.env.BASE_REF;
+              const baseSha = process.env.BASE_SHA;
+              if (!['develop', 'main'].includes(baseRef) || !/^[0-9a-f]{40}$/.test(baseSha || '') ||
+                  current.data.base.ref !== baseRef) {
+                throw new Error('PR base identity changed during review');
+              }
+              const liveBase = await github.rest.repos.getBranch({owner, repo, branch: baseRef});
+              if (liveBase.data.commit.sha !== baseSha) {
+                throw new Error('PR base branch moved during review; rerun against the current base');
+              }
               if (process.env.REVIEW_OUTCOME !== 'success' || process.env.CANDIDATE_OUTCOME !== 'success')
                 throw new Error('GLM review did not finish with valid structured findings');
               const needsVerification = process.env.NEEDS_VERIFICATION === 'true';
