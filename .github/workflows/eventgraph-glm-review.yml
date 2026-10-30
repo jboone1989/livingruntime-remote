@@ -87,7 +87,7 @@ jobs:
           pr_number="$EVENT_PR_NUMBER"
           if [[ ! "$pr_number" =~ ^[1-9][0-9]*$ ]]; then
             pr_number="$(gh api "repos/$GITHUB_REPOSITORY/commits/$CHECK_SHA/pulls?per_page=100" \
-              --jq '[.[] | select(.state == "open" and .base.ref == "develop" and .head.sha == "'"$CHECK_SHA"'")] | if length == 1 then .[0].number else empty end')"
+              --jq '[.[] | select(.state == "open" and (.base.ref == "develop" or .base.ref == "main") and .head.sha == "'"$CHECK_SHA"'")] | if length == 1 then .[0].number else empty end')"
           fi
           if [[ ! "$pr_number" =~ ^[1-9][0-9]*$ ]]; then
             echo 'No unique current PR for passing Check; nothing to review.'
@@ -96,19 +96,32 @@ jobs:
           pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number")"
           if ! jq -e --arg sha "$CHECK_SHA" --arg repo "$GITHUB_REPOSITORY" '
             .state == "open" and (.draft | not) and
-            .base.ref == "develop" and .head.sha == $sha and
-            .head.repo.full_name == $repo
+            (.base.ref == "develop" or .base.ref == "main") and
+            .head.sha == $sha and
+            .head.repo.full_name == $repo and
+            .base.repo.full_name == $repo
           ' <<< "$pr" >/dev/null; then
-            echo 'PR is stale, draft, forked or not targeting develop.'
+            echo 'PR is stale, draft, forked, cross-repository or not targeting develop/main.'
             exit 0
           fi
+          base_ref="$(jq -r '.base.ref' <<< "$pr")"
+          base_sha="$(jq -r '.base.sha' <<< "$pr")"
+          [[ "$base_ref" == "develop" || "$base_ref" == "main" ]]
+          [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]
           # Publish the target identity before operations that can fail, so the
           # always-run status step can report an execution error on this exact SHA.
           echo "run=true" >> "$GITHUB_OUTPUT"
           echo "number=$pr_number" >> "$GITHUB_OUTPUT"
           echo "sha=$CHECK_SHA" >> "$GITHUB_OUTPUT"
-          git fetch --no-tags origin refs/heads/develop:refs/remotes/origin/develop
-          base="$(git merge-base refs/remotes/origin/develop "$CHECK_SHA")"
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          git fetch --no-tags origin "refs/heads/$base_ref:refs/remotes/origin/$base_ref"
+          live_base="$(git rev-parse "refs/remotes/origin/$base_ref")"
+          if [[ "$live_base" != "$base_sha" ]]; then
+            echo "::error::PR base moved during review target resolution; rerun against the current base."
+            exit 1
+          fi
+          base="$(git merge-base "refs/remotes/origin/$base_ref" "$CHECK_SHA")"
           git diff --no-ext-diff --unified=3 "$base" "$CHECK_SHA" -- > "$GITHUB_WORKSPACE/pr-review.diff"
           test -s "$GITHUB_WORKSPACE/pr-review.diff"
           # Ground reportable locations in actual added/modified HEAD lines.
