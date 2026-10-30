@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       check_run_id:
-        description: Workflow run ID whose successful pull_request Check is being reviewed
+        description: Workflow run ID whose successful pull_request or workflow_dispatch Check is being reviewed
         required: true
         type: number
       pr_number:
@@ -44,7 +44,7 @@ jobs:
     steps:
       # Do not trust the workflow_run payload's conclusion or PR association.
       # Query the completed Check itself, including reruns.
-      - name: Confirm successful pull-request Check
+      - name: Confirm successful exact-SHA Check
         id: checkrun
         env:
           GH_TOKEN: ${{ github.token }}
@@ -58,12 +58,12 @@ jobs:
           check="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CHECK_RUN_ID")"
           echo "$check" | jq -r '"Check run \(.id): event=\(.event) status=\(.status) conclusion=\(.conclusion) sha=\(.head_sha)"'
           if jq -e --arg sha "$CHECK_SHA" '
-            .event == "pull_request" and .status == "completed" and
-            .conclusion == "success" and .head_sha == $sha
+            (.event == "pull_request" or .event == "workflow_dispatch") and
+            .status == "completed" and .conclusion == "success" and .head_sha == $sha
           ' <<< "$check" > /dev/null; then
             echo "valid=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Not a successful pull_request Check for this exact SHA; skipping review."
+            echo "Not a successful pull_request/workflow_dispatch Check for this exact SHA; skipping review."
           fi
 
       - uses: actions/checkout@v4
