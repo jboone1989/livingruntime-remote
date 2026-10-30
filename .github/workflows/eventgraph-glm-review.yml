@@ -11,6 +11,16 @@ on:
         description: Workflow run ID whose successful pull_request or workflow_dispatch Check is being reviewed
         required: true
         type: number
+      base_ref:
+        description: Expected PR target branch verified by the caller
+        required: false
+        type: string
+        default: ''
+      base_sha:
+        description: Expected live target commit verified by the caller
+        required: false
+        type: string
+        default: ''
       pr_number:
         description: PR number from workflow_run when available; otherwise resolve by exact SHA
         required: false
@@ -80,6 +90,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CHECK_SHA: ${{ inputs.check_sha }}
           EVENT_PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_BASE_REF: ${{ inputs.base_ref }}
+          EXPECTED_BASE_SHA: ${{ inputs.base_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -114,6 +126,11 @@ jobs:
           echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
           git fetch --no-tags origin "refs/heads/$base_ref:refs/remotes/origin/$base_ref"
           base_sha="$(git rev-parse "refs/remotes/origin/$base_ref")"
+          if [[ -n "$EXPECTED_BASE_REF$EXPECTED_BASE_SHA" &&
+                ( "$EXPECTED_BASE_REF" != "$base_ref" || "$EXPECTED_BASE_SHA" != "$base_sha" ) ]]; then
+            echo '::error::PR target changed after dispatch preflight; require a fresh review'
+            exit 1
+          fi
           [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]
           echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
           base="$(git merge-base "refs/remotes/origin/$base_ref" "$CHECK_SHA")"
@@ -389,6 +406,6 @@ jobs:
             }
             await github.rest.repos.createCommitStatus({
               owner, repo, sha, state, context: 'claude-review',
-              description: description.slice(0, 140)
+              description: ('base=' + process.env.BASE_REF + '@' + process.env.BASE_SHA + '; ' + description).slice(0, 140)
             });
             if (state !== 'success') core.setFailed(description);
