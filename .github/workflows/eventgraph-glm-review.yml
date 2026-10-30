@@ -199,7 +199,7 @@ jobs:
           settings: '{"disableAllHooks":true}'
           prompt: |
             Independently review EventGraph PR #${{ steps.target.outputs.number }}
-            at exact head ${{ steps.target.outputs.sha }}, against develop.
+            at exact head ${{ steps.target.outputs.sha }}, against the actual PR base `${{ steps.target.outputs.base_ref }}`.
             Read review-checklist.md, changed-lines.txt, and pr-review.diff first.
             changed-lines.txt lists the ONLY reportable path and HEAD line ranges.
             Inspect relevant changed source files via Read/Glob/Grep as needed.
