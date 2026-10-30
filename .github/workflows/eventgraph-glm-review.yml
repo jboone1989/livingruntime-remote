@@ -87,7 +87,7 @@ jobs:
           pr_number="$EVENT_PR_NUMBER"
           if [[ ! "$pr_number" =~ ^[1-9][0-9]*$ ]]; then
             pr_number="$(gh api "repos/$GITHUB_REPOSITORY/commits/$CHECK_SHA/pulls?per_page=100" \
-              --jq '[.[] | select(.state == "open" and .base.ref == "develop" and .head.sha == "'"$CHECK_SHA"'")] | if length == 1 then .[0].number else empty end')"
+              --jq '[.[] | select(.state == "open" and (.base.ref == "develop" or .base.ref == "main") and .head.sha == "'"$CHECK_SHA"'")] | if length == 1 then .[0].number else empty end')"
           fi
           if [[ ! "$pr_number" =~ ^[1-9][0-9]*$ ]]; then
             echo 'No unique current PR for passing Check; nothing to review.'
@@ -96,10 +96,11 @@ jobs:
           pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number")"
           if ! jq -e --arg sha "$CHECK_SHA" --arg repo "$GITHUB_REPOSITORY" '
             .state == "open" and (.draft | not) and
-            .base.ref == "develop" and .head.sha == $sha and
+            (.base.ref == "develop" or .base.ref == "main") and
+            .base.repo.full_name == $repo and .head.sha == $sha and
             .head.repo.full_name == $repo
           ' <<< "$pr" >/dev/null; then
-            echo 'PR is stale, draft, forked or not targeting develop.'
+            echo 'PR is stale, draft, forked or not targeting develop/main.'
             exit 0
           fi
           # Publish the target identity before operations that can fail, so the
@@ -107,8 +108,11 @@ jobs:
           echo "run=true" >> "$GITHUB_OUTPUT"
           echo "number=$pr_number" >> "$GITHUB_OUTPUT"
           echo "sha=$CHECK_SHA" >> "$GITHUB_OUTPUT"
-          git fetch --no-tags origin refs/heads/develop:refs/remotes/origin/develop
-          base="$(git merge-base refs/remotes/origin/develop "$CHECK_SHA")"
+          base_ref="$(jq -r '.base.ref' <<< "$pr")"
+          [[ "$base_ref" == develop || "$base_ref" == main ]]
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
+          git fetch --no-tags origin "refs/heads/$base_ref:refs/remotes/origin/$base_ref"
+          base="$(git merge-base "refs/remotes/origin/$base_ref" "$CHECK_SHA")"
           git diff --no-ext-diff --unified=3 "$base" "$CHECK_SHA" -- > "$GITHUB_WORKSPACE/pr-review.diff"
           test -s "$GITHUB_WORKSPACE/pr-review.diff"
           # Ground reportable locations in actual added/modified HEAD lines.
@@ -162,7 +166,7 @@ jobs:
           settings: '{"disableAllHooks":true}'
           prompt: |
             Independently review EventGraph PR #${{ steps.target.outputs.number }}
-            at exact head ${{ steps.target.outputs.sha }}, against develop.
+            at exact head ${{ steps.target.outputs.sha }}, against ${{ steps.target.outputs.base_ref }}.
             Read review-checklist.md, changed-lines.txt, and pr-review.diff first.
             changed-lines.txt lists the ONLY reportable path and HEAD line ranges.
             Inspect relevant changed source files via Read/Glob/Grep as needed.
