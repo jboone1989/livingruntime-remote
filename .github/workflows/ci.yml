@@ -41,6 +41,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - name: Test EventGraph review provenance
+        run: node --test .github/tests/eventgraph-review-provenance.test.mjs
       - name: Install Pi SDK
         run: npm ci --prefix plugin --ignore-scripts --no-audit --no-fund
       - name: Test native Pi SDK tools
