@@ -117,7 +117,10 @@ jobs:
           [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]
           echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
           base="$(git merge-base "refs/remotes/origin/$base_ref" "$CHECK_SHA")"
-          git diff --no-ext-diff --unified=3 "$base" "$CHECK_SHA" -- > "$GITHUB_WORKSPACE/pr-review.diff"
+          # Check has already verified exact-SHA pinned GH-AW strict compilation and
+          # lock-file consistency; do not spend the 80 KB LLM review budget on generated locks.
+          review_paths=(. ':(exclude).github/workflows/*.lock.yml')
+          git diff --no-ext-diff --unified=3 "$base" "$CHECK_SHA" -- "${review_paths[@]}" > "$GITHUB_WORKSPACE/pr-review.diff"
           git fetch --no-tags origin "refs/heads/$base_ref:refs/remotes/origin/$base_ref"
           live_base="$(git rev-parse "refs/remotes/origin/$base_ref")"
           if [[ "$live_base" != "$base_sha" ]]; then
@@ -126,7 +129,7 @@ jobs:
           fi
           test -s "$GITHUB_WORKSPACE/pr-review.diff"
           # Ground reportable locations in actual added/modified HEAD lines.
-          git diff --no-ext-diff --unified=0 "$base" "$CHECK_SHA" -- > "$RUNNER_TEMP/changed-hunks.diff"
+          git diff --no-ext-diff --unified=0 "$base" "$CHECK_SHA" -- "${review_paths[@]}" > "$RUNNER_TEMP/changed-hunks.diff"
           python3 - "$RUNNER_TEMP/changed-hunks.diff" > "$GITHUB_WORKSPACE/changed-lines.txt" <<'PY'
           import re
           import sys
