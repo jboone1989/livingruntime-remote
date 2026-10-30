@@ -87,7 +87,13 @@ jobs:
           pr_number="$EVENT_PR_NUMBER"
           if [[ ! "$pr_number" =~ ^[1-9][0-9]*$ ]]; then
             pr_number="$(gh api "repos/$GITHUB_REPOSITORY/commits/$CHECK_SHA/pulls?per_page=100" \
-              --jq '[.[] | select(.state == "open" and (.base.ref == "develop" or .base.ref == "main") and .head.sha == "'"$CHECK_SHA"'")] | if length == 1 then .[0].number else empty end')"
+              | jq -r --arg sha "$CHECK_SHA" --arg repo "$GITHUB_REPOSITORY" '
+                  [.[] | select(
+                    .state == "open" and (.draft | not) and
+                    (.base.ref == "develop" or .base.ref == "main") and
+                    .base.repo.full_name == $repo and
+                    .head.repo.full_name == $repo and .head.sha == $sha
+                  )] | if length == 1 then .[0].number else empty end')"
           fi
           if [[ ! "$pr_number" =~ ^[1-9][0-9]*$ ]]; then
             echo 'No unique current PR for passing Check; nothing to review.'
