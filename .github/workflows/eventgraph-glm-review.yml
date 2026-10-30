@@ -87,7 +87,7 @@ jobs:
           pr_number="$EVENT_PR_NUMBER"
           if [[ ! "$pr_number" =~ ^[1-9][0-9]*$ ]]; then
             pr_number="$(gh api "repos/$GITHUB_REPOSITORY/commits/$CHECK_SHA/pulls?per_page=100" \
-              --jq '[.[] | select(.state == "open" and .base.ref == "develop" and .head.sha == "'"$CHECK_SHA"'")] | if length == 1 then .[0].number else empty end')"
+              --jq '[.[] | select(.state == "open" and (.base.ref == "develop" or .base.ref == "main") and .head.sha == "'"$CHECK_SHA"'")] | if length == 1 then .[0].number else empty end')"
           fi
           if [[ ! "$pr_number" =~ ^[1-9][0-9]*$ ]]; then
             echo 'No unique current PR for passing Check; nothing to review.'
@@ -96,20 +96,34 @@ jobs:
           pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr_number")"
           if ! jq -e --arg sha "$CHECK_SHA" --arg repo "$GITHUB_REPOSITORY" '
             .state == "open" and (.draft | not) and
-            .base.ref == "develop" and .head.sha == $sha and
-            .head.repo.full_name == $repo
+            (.base.ref == "develop" or .base.ref == "main") and
+            .head.sha == $sha and
+            .head.repo.full_name == $repo and
+            .base.repo.full_name == $repo
           ' <<< "$pr" >/dev/null; then
-            echo 'PR is stale, draft, forked or not targeting develop.'
+            echo 'PR is stale, draft, forked, cross-repository or not targeting develop/main.'
             exit 0
           fi
-          # Publish the target identity before operations that can fail, so the
-          # always-run status step can report an execution error on this exact SHA.
+          base_ref="$(jq -r '.base.ref' <<< "$pr")"
+          [[ "$base_ref" == "develop" || "$base_ref" == "main" ]]
+          # PR .base.sha is a last-synchronization snapshot, not the live branch
+          # tip. Resolve the actual base ref from Git, then recheck it after diffing.
           echo "run=true" >> "$GITHUB_OUTPUT"
           echo "number=$pr_number" >> "$GITHUB_OUTPUT"
           echo "sha=$CHECK_SHA" >> "$GITHUB_OUTPUT"
-          git fetch --no-tags origin refs/heads/develop:refs/remotes/origin/develop
-          base="$(git merge-base refs/remotes/origin/develop "$CHECK_SHA")"
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
+          git fetch --no-tags origin "refs/heads/$base_ref:refs/remotes/origin/$base_ref"
+          base_sha="$(git rev-parse "refs/remotes/origin/$base_ref")"
+          [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          base="$(git merge-base "refs/remotes/origin/$base_ref" "$CHECK_SHA")"
           git diff --no-ext-diff --unified=3 "$base" "$CHECK_SHA" -- > "$GITHUB_WORKSPACE/pr-review.diff"
+          git fetch --no-tags origin "refs/heads/$base_ref:refs/remotes/origin/$base_ref"
+          live_base="$(git rev-parse "refs/remotes/origin/$base_ref")"
+          if [[ "$live_base" != "$base_sha" ]]; then
+            echo "::error::Live PR base moved while resolving the review diff; rerun against the current base."
+            exit 1
+          fi
           test -s "$GITHUB_WORKSPACE/pr-review.diff"
           # Ground reportable locations in actual added/modified HEAD lines.
           git diff --no-ext-diff --unified=0 "$base" "$CHECK_SHA" -- > "$RUNNER_TEMP/changed-hunks.diff"
@@ -139,6 +153,30 @@ jobs:
           cp "$RUNNER_TEMP/central-reviewer/docs/claude-review-checklist.md" "$GITHUB_WORKSPACE/review-checklist.md"
           test -s "$GITHUB_WORKSPACE/review-checklist.md"
       
+      - name: Enforce the immutable Spec gate for main PRs
+        if: steps.target.outputs.run == 'true' && steps.target.outputs.base_ref == 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.target.outputs.number }}
+          SPEC_BASE_SHA: ${{ steps.target.outputs.base_sha }}
+          SPEC_HEAD_SHA: ${{ steps.target.outputs.sha }}
+          SPEC_BASE_REF: ${{ steps.target.outputs.base_ref }}
+          SPEC_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Use the already-merged develop gate, never execute a script supplied
+          # by the untrusted PR head. The gate itself only reads Git objects.
+          git fetch --no-tags origin refs/heads/develop:refs/remotes/origin/develop
+          git show refs/remotes/origin/develop:scripts/ci/check-spec.mjs > "$RUNNER_TEMP/check-spec.mjs"
+          test -s "$RUNNER_TEMP/check-spec.mjs"
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
+          export SPEC_PR_BODY="$(jq -r '.body // ""' <<< "$pr")"
+          export SPEC_PR_AUTHOR="$(jq -r '.user.login' <<< "$pr")"
+          export SPEC_HEAD_REF="$(jq -r '.head.ref' <<< "$pr")"
+          export SPEC_HEAD_REPO="$(jq -r '.head.repo.full_name // ""' <<< "$pr")"
+          node "$RUNNER_TEMP/check-spec.mjs"
+
       - name: Require configured GLM key
         if: steps.target.outputs.run == 'true'
         env:
@@ -162,7 +200,7 @@ jobs:
           settings: '{"disableAllHooks":true}'
           prompt: |
             Independently review EventGraph PR #${{ steps.target.outputs.number }}
-            at exact head ${{ steps.target.outputs.sha }}, against develop.
+            at exact head ${{ steps.target.outputs.sha }}, against the live PR base `${{ steps.target.outputs.base_ref }}` at `${{ steps.target.outputs.base_sha }}`.
             Read review-checklist.md, changed-lines.txt, and pr-review.diff first.
             changed-lines.txt lists the ONLY reportable path and HEAD line ranges.
             Inspect relevant changed source files via Read/Glob/Grep as needed.
@@ -244,6 +282,8 @@ jobs:
         env:
           PR_NUMBER: ${{ steps.target.outputs.number }}
           CHECK_SHA: ${{ steps.target.outputs.sha }}
+          BASE_REF: ${{ steps.target.outputs.base_ref }}
+          BASE_SHA: ${{ steps.target.outputs.base_sha }}
           REVIEW_OUTCOME: ${{ steps.review.outcome }}
           CANDIDATE_OUTCOME: ${{ steps.candidates.outcome }}
           NEEDS_VERIFICATION: ${{ steps.candidates.outputs.needs_verification }}
@@ -258,12 +298,22 @@ jobs:
             const number = Number(process.env.PR_NUMBER);
             const current = await github.rest.pulls.get({owner, repo, pull_number: number});
             if (current.data.head.sha !== sha || current.data.state !== 'open') {
-              core.info('PR head changed during review; no stale status will be published.');
+              core.info('PR head changed during review; no status will be published for a stale head.');
               return;
             }
             let state = 'error';
             let description = 'GLM review did not produce verified structured output';
             try {
+              const baseRef = process.env.BASE_REF;
+              const baseSha = process.env.BASE_SHA;
+              if (!['develop', 'main'].includes(baseRef) || !/^[0-9a-f]{40}$/.test(baseSha || '') ||
+                  current.data.base.ref !== baseRef) {
+                throw new Error('PR base identity changed during review');
+              }
+              const liveBase = await github.rest.repos.getBranch({owner, repo, branch: baseRef});
+              if (liveBase.data.commit.sha !== baseSha) {
+                throw new Error('PR base branch moved during review; rerun against the current base');
+              }
               if (process.env.REVIEW_OUTCOME !== 'success' || process.env.CANDIDATE_OUTCOME !== 'success')
                 throw new Error('GLM review did not finish with valid structured findings');
               const needsVerification = process.env.NEEDS_VERIFICATION === 'true';

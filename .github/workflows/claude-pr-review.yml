@@ -37,13 +37,20 @@ jobs:
           GIT_CONFIG_VALUE_0: "!/home/ubuntu/.local/bin/gh auth git-credential"
         run: |
           set -eu
+          model_id="${ANTHROPIC_MODEL:-}"
+          if [[ -z "$model_id" && -f "$HOME/.claude/settings.json" ]]; then
+            model_id="$(jq -r '.env.ANTHROPIC_MODEL // .model // empty' "$HOME/.claude/settings.json")"
+          fi
+          if [[ -n "$model_id" ]]; then
+            export ANTHROPIC_CUSTOM_MODEL_OPTION="${ANTHROPIC_CUSTOM_MODEL_OPTION:-$model_id}"
+          fi
           state="$HOME/.local/state/claude-review/${REPO//\//_}-pr-$PR_NUMBER.json"
           work="$HOME/.local/share/claude-review/${REPO//\//_}/$PR_NUMBER"
           python3 plugin/scripts/claude_pr_review.py \
             --repo "$REPO" --pr-number "$PR_NUMBER" \
             --gh /home/ubuntu/.local/bin/gh \
             --claude /home/ubuntu/.local/bin/claude \
-            --state "$state" --work "$work" --timeout 480
+            --state "$state" --work "$work" --timeout 900
 
   dispatched-review:
     if: >-
@@ -66,6 +73,13 @@ jobs:
           GIT_CONFIG_VALUE_0: "!/home/ubuntu/.local/bin/gh auth git-credential"
         run: |
           set -eu
+          model_id="${ANTHROPIC_MODEL:-}"
+          if [[ -z "$model_id" && -f "$HOME/.claude/settings.json" ]]; then
+            model_id="$(jq -r '.env.ANTHROPIC_MODEL // .model // empty' "$HOME/.claude/settings.json")"
+          fi
+          if [[ -n "$model_id" ]]; then
+            export ANTHROPIC_CUSTOM_MODEL_OPTION="${ANTHROPIC_CUSTOM_MODEL_OPTION:-$model_id}"
+          fi
           [[ "$REPO" == 'jboone1989/EventGraph' ]]
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
@@ -83,7 +97,7 @@ jobs:
             --repo "$REPO" --pr-number "$PR_NUMBER" \
             --gh /home/ubuntu/.local/bin/gh \
             --claude /home/ubuntu/.local/bin/claude \
-            --state "$state" --work "$work" --timeout 480 \
+            --state "$state" --work "$work" --timeout 900 \
             --expected-sha "$EXPECTED_SHA" "${manual_args[@]}"
 
   low-risk-merge:
