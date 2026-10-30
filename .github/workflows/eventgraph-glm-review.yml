@@ -152,6 +152,30 @@ jobs:
           cp "$RUNNER_TEMP/central-reviewer/docs/claude-review-checklist.md" "$GITHUB_WORKSPACE/review-checklist.md"
           test -s "$GITHUB_WORKSPACE/review-checklist.md"
       
+      - name: Enforce the immutable Spec gate for main PRs
+        if: steps.target.outputs.run == 'true' && steps.target.outputs.base_ref == 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.target.outputs.number }}
+          SPEC_BASE_SHA: ${{ steps.target.outputs.base_sha }}
+          SPEC_HEAD_SHA: ${{ steps.target.outputs.sha }}
+          SPEC_BASE_REF: ${{ steps.target.outputs.base_ref }}
+          SPEC_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Use the already-merged develop gate, never execute a script supplied
+          # by the untrusted PR head. The gate itself only reads Git objects.
+          git fetch --no-tags origin refs/heads/develop:refs/remotes/origin/develop
+          git show refs/remotes/origin/develop:scripts/ci/check-spec.mjs > "$RUNNER_TEMP/check-spec.mjs"
+          test -s "$RUNNER_TEMP/check-spec.mjs"
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
+          export SPEC_PR_BODY="$(jq -r '.body // ""' <<< "$pr")"
+          export SPEC_PR_AUTHOR="$(jq -r '.user.login' <<< "$pr")"
+          export SPEC_HEAD_REF="$(jq -r '.head.ref' <<< "$pr")"
+          export SPEC_HEAD_REPO="$(jq -r '.head.repo.full_name // ""' <<< "$pr")"
+          node "$RUNNER_TEMP/check-spec.mjs"
+
       - name: Require configured GLM key
         if: steps.target.outputs.run == 'true'
         env:
