@@ -240,34 +240,36 @@ jobs:
             Report only PR-introduced changed-line findings with concrete evidence,
             an actionable minimal fix and confidence >= 80. important is blocking;
             nit is nonblocking. Verify each candidate against actual changed code.
-            Return the schema findings list; return [] only after a real review.
+            Return only a valid JSON object {"findings":[...]}; no Markdown. Each finding must include path, line, severity, confidence, reason, evidence and fix. Return {"findings":[]} only after a real review.
           claude_args: >-
             --model ${{ vars.GLM_REVIEW_MODEL || 'glm-5.3' }}
             --tools Read,Glob,Grep
             --disallowedTools mcp__*
             --strict-mcp-config
-            --json-schema '{"type":"object","properties":{"findings":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"line":{"type":"integer"},"severity":{"type":"string","enum":["important","nit"]},"confidence":{"type":"integer","minimum":80,"maximum":100},"reason":{"type":"string"},"evidence":{"type":"string"},"fix":{"type":"string"}},"required":["path","line","severity","confidence","reason","evidence","fix"]}}},"required":["findings"]}'
+
 
       - name: Check review output and select independent verification
         id: candidates
         if: steps.target.outputs.run == 'true' && steps.review.outcome == 'success'
         shell: bash
         env:
-          REVIEW_JSON: ${{ steps.review.outputs.structured_output }}
+          REVIEW_FILE: ${{ steps.review.outputs.execution_file }}
         run: |
           node - <<'NODE'
           const fs = require('fs');
-          let result;
-          try { result = JSON.parse(process.env.REVIEW_JSON || 'null'); }
-          catch { throw new Error('Invalid structured GLM review JSON'); }
-          if (!result || !Array.isArray(result.findings)) {
+          // Parse the official Action's execution log; never infer success
+          // from incomplete assistant messages or partial output.
+          const entries = JSON.parse(fs.readFileSync(process.env.REVIEW_FILE, 'utf8'));
+          if (!Array.isArray(entries)) throw new Error('Missing GLM execution events');
+          const last = entries.findLast(e => e?.type === 'result' && typeof e.result === 'string');
+          if (!last || last.is_error === true || last.subtype !== 'success')
+            throw new Error('Missing successful GLM final result');
+          const value = JSON.parse(last.result.trim());
+          if (!value || !Array.isArray(value.findings))
             throw new Error('GLM review did not return a findings array');
-          }
-          const needed = result.findings.length > 0;
           fs.appendFileSync(process.env.GITHUB_OUTPUT,
-            'needs_verification=' + needed + '\n');
-          console.log(needed ? 'Verify reported findings independently' :
-            'Independent review found no candidates; no candidate verification needed');
+            'needs_verification=' + (value.findings.length > 0) + '\n' +
+            'review_json=' + JSON.stringify(value) + '\n');
           NODE
 
       - name: Independently verify GLM findings
@@ -300,15 +302,36 @@ jobs:
             or speculative findings. Keep only findings with confidence >= 80 and
             concrete evidence plus a minimal fix. Do not execute commands or edit files.
             Candidate findings JSON:
-            ${{ steps.review.outputs.structured_output }}
-            Return only the same required findings JSON schema. Return an empty list
-            only if the independent verification genuinely finds no valid findings.
+            ${{ steps.candidates.outputs.review_json }}
+            Return only a valid JSON object {"findings":[...]}; return {"findings":[]}
+            only when no valid findings remain. No Markdown or commentary.
           claude_args: >-
             --model ${{ vars.GLM_REVIEW_MODEL || 'glm-5.3' }}
             --tools Read,Glob,Grep
             --disallowedTools mcp__*
             --strict-mcp-config
-            --json-schema '{"type":"object","properties":{"findings":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"line":{"type":"integer"},"severity":{"type":"string","enum":["important","nit"]},"confidence":{"type":"integer","minimum":80,"maximum":100},"reason":{"type":"string"},"evidence":{"type":"string"},"fix":{"type":"string"}},"required":["path","line","severity","confidence","reason","evidence","fix"]}}},"required":["findings"]}'
+
+
+      - name: Parse independent verification result
+        id: verified
+        if: steps.candidates.outputs.needs_verification == 'true' && steps.verify.outcome == 'success'
+        shell: bash
+        env:
+          VERIFY_FILE: ${{ steps.verify.outputs.execution_file }}
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const entries = JSON.parse(fs.readFileSync(process.env.VERIFY_FILE, 'utf8'));
+          if (!Array.isArray(entries)) throw new Error('Missing GLM verification events');
+          const last = entries.findLast(e => e?.type === 'result' && typeof e.result === 'string');
+          if (!last || last.is_error === true || last.subtype !== 'success')
+            throw new Error('Missing successful GLM verification final result');
+          const value = JSON.parse(last.result.trim());
+          if (!value || !Array.isArray(value.findings))
+            throw new Error('GLM verification did not return a findings array');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,
+            'verified_json=' + JSON.stringify(value) + '\n');
+          NODE
 
       - name: Write the existing claude-review commit status
         if: always() && steps.target.outputs.run == 'true'
@@ -321,9 +344,9 @@ jobs:
           REVIEW_OUTCOME: ${{ steps.review.outcome }}
           CANDIDATE_OUTCOME: ${{ steps.candidates.outcome }}
           NEEDS_VERIFICATION: ${{ steps.candidates.outputs.needs_verification }}
-          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
-          REVIEW_JSON: ${{ steps.review.outputs.structured_output }}
-          VERIFIED_JSON: ${{ steps.verify.outputs.structured_output }}
+          VERIFY_OUTCOME: ${{ steps.verified.outcome }}
+          REVIEW_JSON: ${{ steps.candidates.outputs.review_json }}
+          VERIFIED_JSON: ${{ steps.verified.outputs.verified_json }}
         with:
           github-token: ${{ github.token }}
           script: |
