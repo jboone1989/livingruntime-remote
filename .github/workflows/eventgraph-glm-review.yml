@@ -76,8 +76,68 @@ jobs:
             echo "Not a successful pull_request/workflow_dispatch Check for this exact SHA; skipping review."
           fi
 
-      - uses: actions/checkout@v4
+      # Reuse a successful review only for the same exact head and LIVE target
+      # branch SHA. A changed base, a failure or an unidentifiable status retries.
+      # Do this BEFORE checkout and any Claude/model call.
+      - name: Skip previously successful review for the same PR base
+        id: dedupe
         if: steps.checkrun.outputs.valid == 'true'
+        uses: actions/github-script@v7
+        env:
+          CHECK_SHA: ${{ inputs.check_sha }}
+          EVENT_PR_NUMBER: ${{ inputs.pr_number }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const sha = process.env.CHECK_SHA;
+            let number = Number(process.env.EVENT_PR_NUMBER);
+            if (!Number.isSafeInteger(number) || number < 1) {
+              const related = await github.paginate(
+                github.rest.repos.listPullRequestsAssociatedWithCommit,
+                { owner, repo, commit_sha: sha, per_page: 100 }
+              );
+              const eligible = related.filter(pr =>
+                pr.state === 'open' && ['develop', 'main'].includes(pr.base.ref) &&
+                pr.head.sha === sha
+              );
+              if (eligible.length !== 1) {
+                core.info('No unique open PR for this commit; not reviewing.');
+                return;
+              }
+              number = eligible[0].number;
+            }
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: number });
+            if (pr.state !== 'open' || pr.draft ||
+                !['develop', 'main'].includes(pr.base.ref) ||
+                pr.head.sha !== sha ||
+                pr.head.repo?.full_name !== `${owner}/${repo}` ||
+                pr.base.repo?.full_name !== `${owner}/${repo}`) {
+              core.info('PR is no longer eligible for review.');
+              return;
+            }
+            const { data: base } = await github.rest.repos.getBranch({
+              owner, repo, branch: pr.base.ref
+            });
+            const exactBase = `base=${pr.base.ref}@${base.commit.sha}; `;
+            const statuses = await github.paginate(
+              github.rest.repos.listCommitStatusesForRef,
+              { owner, repo, ref: sha, per_page: 100 }
+            );
+            // The latest status for this specific pair is authoritative.
+            const prior = statuses.find(s =>
+              s.context === 'claude-review' &&
+              typeof s.description === 'string' &&
+              s.description.startsWith(exactBase)
+            );
+            if (prior?.state === 'success') {
+              core.info(`Review already succeeded for PR #${number}, ${sha}, ${exactBase}`);
+              return;
+            }
+            core.setOutput('review', 'true');
+
+      - uses: actions/checkout@v4
+        if: steps.dedupe.outputs.review == 'true'
         with:
           ref: ${{ inputs.check_sha }}
           persist-credentials: false
@@ -85,7 +145,7 @@ jobs:
 
       - name: Resolve the current PR and prepare read-only review files
         id: target
-        if: steps.checkrun.outputs.valid == 'true'
+        if: steps.dedupe.outputs.review == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           CHECK_SHA: ${{ inputs.check_sha }}
